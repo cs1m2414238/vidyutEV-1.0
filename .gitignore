@@ -1,3 +1,28 @@
-vidyut-backend/target/
-node_modules/
+# IDE & Tooling Directories
+.codex/
+.vscode/
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# Build Artifacts & Binaries
+**/target/
+**/node_modules/
+**/dist/
+**/build/
+**/.vite/
+**/out/
+.npm
+*.log
+
+# Environment & Secret Files
 .env
+.env.local
+.env.*.local
+!*.env.example
+
+# OS & System Files
+.DS_Store
+Thumbs.db
+desktop.ini
