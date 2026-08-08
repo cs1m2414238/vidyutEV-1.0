@@ -1,0 +1,411 @@
+/* Margdarshi Register Page CSS */
+
+.margdarshi-register-page {
+  position: relative;
+  width: 100%;
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow-x: hidden;
+  overflow-y: auto;
+  font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  box-sizing: border-box;
+  padding: 30px 20px;
+}
+
+/* Dual Split Background: Left Dark Blue, Right Slate Light Gray */
+.split-bg-left {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 50%;
+  height: 100%;
+  background: linear-gradient(140deg, #0d3e64 0%, #164f7b 50%, #1e5a88 100%);
+  z-index: 1;
+}
+
+.split-bg-right {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 50%;
+  height: 100%;
+  background: linear-gradient(140deg, #c7d5e0 0%, #d8e3eb 50%, #e8eff4 100%);
+  z-index: 1;
+}
+
+/* Main Container Card */
+.margdarshi-card {
+  position: relative;
+  z-index: 10;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  width: 100%;
+  max-width: 780px;
+  min-height: 470px;
+  background: #ffffff;
+  border-radius: 16px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.18), 0 4px 16px rgba(0, 0, 0, 0.08);
+  overflow: hidden;
+}
+
+/* Left Column: Sign Up Form */
+.form-column {
+  padding: 32px 30px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  background: #ffffff;
+}
+
+.form-header {
+  margin-bottom: 14px;
+}
+
+.signup-title {
+  font-size: 1.65rem;
+  font-weight: 800;
+  color: #255299;
+  margin: 0 0 4px 0;
+  letter-spacing: -0.02em;
+}
+
+.signup-subtitle {
+  font-size: 0.82rem;
+  color: #64748b;
+  margin: 0;
+  font-weight: 500;
+}
+
+/* Role selector tabs */
+.role-selector {
+  display: flex;
+  gap: 4px;
+  background: #f1f5f9;
+  padding: 3px;
+  border-radius: 8px;
+  margin-bottom: 14px;
+}
+
+.role-btn {
+  flex: 1;
+  padding: 5px 8px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: #64748b;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.role-btn.active {
+  background: #ffffff;
+  color: #255299;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
+}
+
+.signup-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.input-field-group {
+  width: 100%;
+}
+
+.input-field-group input {
+  width: 100%;
+  height: 38px;
+  padding: 0 12px;
+  border: 1px solid #d8e1e8;
+  border-radius: 6px;
+  font-size: 0.84rem;
+  color: #1e293b;
+  background: #ffffff;
+  outline: none;
+  transition: all 0.2s ease;
+  box-sizing: border-box;
+}
+
+.input-field-group input::placeholder {
+  color: #94a3b8;
+  font-size: 0.84rem;
+}
+
+.input-field-group input:focus {
+  border-color: #255299;
+  box-shadow: 0 0 0 3px rgba(37, 82, 153, 0.12);
+}
+
+.submit-signup-btn {
+  width: 100%;
+  height: 40px;
+  margin-top: 4px;
+  background: #285397;
+  color: #ffffff;
+  border: none;
+  border-radius: 6px;
+  font-size: 0.88rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background-color 0.2s ease, transform 0.1s ease;
+  box-shadow: 0 4px 12px rgba(40, 83, 151, 0.25);
+}
+
+.submit-signup-btn:hover:not(:disabled) {
+  background: #1e427d;
+  transform: translateY(-1px);
+}
+
+.submit-signup-btn:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+.signup-error-msg {
+  color: #ef4444;
+  font-size: 0.78rem;
+  margin: 0;
+}
+
+.already-account {
+  font-size: 0.78rem;
+  color: #475569;
+  margin-top: 10px;
+  margin-bottom: 0;
+}
+
+.login-link-btn {
+  color: #285397;
+  font-weight: 700;
+  text-decoration: none;
+  margin-left: 2px;
+}
+
+.login-link-btn:hover {
+  text-decoration: underline;
+}
+
+/* Right Column: Branding & Social Logins */
+.brand-column {
+  padding: 32px 28px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: space-between;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+  border-left: 1px solid #e2e8f0;
+  height: 100%;
+}
+
+.top-brand-title {
+  width: 100%;
+  text-align: right;
+}
+
+.brand-badge-pill {
+  font-size: 1.35rem;
+  font-weight: 850;
+  color: #1e3a8a;
+  letter-spacing: 0.05em;
+  font-family: system-ui, -apple-system, sans-serif;
+}
+
+/* Vidyut Logo & Feature Section */
+.brand-logo-section {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin: 20px 0;
+  text-align: center;
+}
+
+.vidyut-logo-wrapper {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.vidyut-logo-wrapper .brand-logo-img {
+  width: 90px;
+  height: 90px;
+  filter: drop-shadow(0 8px 20px rgba(34, 197, 94, 0.35));
+  transition: transform 0.3s ease;
+}
+
+.vidyut-logo-wrapper:hover .brand-logo-img {
+  transform: scale(1.06);
+}
+
+.vidyut-logo-sub {
+  font-size: 0.82rem;
+  font-weight: 650;
+  color: #475569;
+  letter-spacing: 0.02em;
+}
+
+.brand-feature-badges {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 18px;
+  max-width: 280px;
+}
+
+.feature-pill {
+  padding: 5px 12px;
+  border-radius: 20px;
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  color: #15803d;
+  font-size: 0.73rem;
+  font-weight: 700;
+  box-shadow: 0 1px 3px rgba(22, 197, 94, 0.08);
+}
+
+/* Brand Social Section */
+.brand-social-section {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+/* Divider line */
+.divider {
+  display: flex;
+  align-items: center;
+  text-align: center;
+  margin: 12px 0 8px 0;
+  color: #94a3b8;
+  gap: 12px;
+  width: 100%;
+}
+
+.divider hr {
+  flex: 1;
+  border: none;
+  border-top: 1px solid #e2e8f0;
+}
+
+.divider span {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: #64748b;
+  white-space: nowrap;
+  letter-spacing: 0.02em;
+}
+
+/* Social Connect Row */
+.socialconnect {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  width: 100%;
+}
+
+.socialconnect .social-icon-box {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  width: 46px;
+  height: 46px;
+  border: 1.5px solid #cbd5e1;
+  border-radius: 12px;
+  color: #0f172a;
+  text-decoration: none;
+  background-color: #ffffff;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.05);
+  transition: all 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.socialconnect .social-icon-box:hover {
+  border-color: #16a34a;
+  background-color: #f0fdf4;
+  transform: translateY(-3px) scale(1.06);
+  box-shadow: 0 10px 20px rgba(22, 197, 94, 0.2);
+}
+
+.social-g {
+  font-size: 1.15rem;
+  font-weight: 800;
+  font-family: 'Plus Jakarta Sans', system-ui, sans-serif;
+  color: #ea4335;
+}
+
+.social-f {
+  font-size: 1.25rem;
+  font-weight: 800;
+  font-family: 'Plus Jakarta Sans', system-ui, sans-serif;
+  color: #1877f2;
+}
+
+.social-apple {
+  font-size: 1.35rem;
+  line-height: 1;
+  color: #000000;
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+  .split-bg-left, .split-bg-right {
+    width: 100%;
+    height: 50%;
+  }
+  .split-bg-right {
+    top: 50%;
+  }
+
+  .margdarshi-card {
+    grid-template-columns: 1fr;
+    max-width: 450px;
+  }
+
+  .brand-column {
+    border-left: none;
+    border-top: 1px solid #f1f5f9;
+    padding: 30px 24px;
+  }
+
+  .form-column {
+    padding: 30px 24px;
+  }
+
+  .top-brand-title {
+    text-align: center;
+  }
+}
+
+.registration-principles {
+  width: min(360px, 85%);
+  display: grid;
+  gap: 12px;
+  margin: 8px auto 0;
+}
+
+.registration-principles p {
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid #dcebe4;
+  border-radius: 12px;
+  color: #64748b;
+  background: #f4fbf7;
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.registration-principles strong {
+  display: block;
+  color: #0f7d54;
+  font-size: 0.82rem;
+  margin-bottom: 2px;
+}

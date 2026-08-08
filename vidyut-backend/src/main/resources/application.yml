@@ -1,0 +1,8 @@
+spring:
+  profiles:
+    active: dev
+  application:
+    name: vidyut-backend
+
+server:
+  port: 8080

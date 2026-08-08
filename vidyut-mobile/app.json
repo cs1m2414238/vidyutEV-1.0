@@ -1,0 +1,35 @@
+{
+  "expo": {
+    "name": "Vidyut",
+    "slug": "vidyut-mobile",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "scheme": "vidyut",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.vidyut.mobile"
+    },
+    "android": {
+      "package": "com.vidyut.mobile",
+      "adaptiveIcon": {
+        "backgroundColor": "#00A86B",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png",
+        "backgroundImage": "./assets/android-icon-background.png"
+      }
+    },
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "Allow Vidyut to access your location to show nearby chargers."
+        }
+      ]
+    ],
+    "experiments": {}
+  }
+}
