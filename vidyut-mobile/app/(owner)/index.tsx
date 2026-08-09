@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Alert, FlatList, RefreshControl, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { FlatList, RefreshControl, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useQuery } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
@@ -9,6 +9,8 @@ import { AppHeader } from '../../src/components/AppHeader';
 import { Colors } from '../../src/constants/colors';
 import { getChargers } from '../../src/features/chargers/charger.api';
 import { useAuthStore } from '../../src/features/auth/auth.store';
+import { getActiveSessions } from '../../src/features/sessions/session.api';
+import { getVehicleWallets } from '../../src/features/wallet/wallet.api';
 
 export default function DiscoverScreen() {
   const router = useRouter();
@@ -16,6 +18,10 @@ export default function DiscoverScreen() {
   const [search, setSearch] = useState('');
   const [availableOnly, setAvailableOnly] = useState(false);
   const { data: chargers = [], isLoading, refetch, isRefetching } = useQuery({ queryKey: ['chargers'], queryFn: getChargers });
+  const { data: activeSessions = [] } = useQuery({ queryKey: ['active-sessions'], queryFn: getActiveSessions, refetchInterval: 10000 });
+  const { data: vehicleWallets = [] } = useQuery({ queryKey: ['vehicle-wallets'], queryFn: getVehicleWallets });
+  const activeSession = activeSessions[0];
+  const lowWallet = vehicleWallets.find((wallet) => wallet.lowBalance);
 
   const filtered = chargers.filter((charger) => {
     const matches = `${charger.name} ${charger.hostName} ${charger.address}`.toLowerCase().includes(search.trim().toLowerCase());
@@ -56,22 +62,27 @@ export default function DiscoverScreen() {
               <QuickAction icon="map-outline" label="Find charger" onPress={() => router.push('/(owner)/map')} />
               <QuickAction icon="calendar-outline" label="My bookings" tone="blue" onPress={() => router.push('/(owner)/bookings')} />
               <QuickAction icon="wallet-outline" label="Wallet & auto-recharge" tone="purple" onPress={() => router.push('/(owner)/wallet')} />
-              <QuickAction icon="qr-code-outline" label="Scan to charge" tone="purple" onPress={() => Alert.alert('Scan to charge', 'Camera access will open for a Vidyut charger QR code.')} />
+              <QuickAction icon="navigate-circle-outline" label="Vidyut Autopilot" tone="purple" onPress={() => router.push('/(owner)/autopilot')} />
+              <QuickAction icon="navigate-outline" label="Plan a road trip" tone="blue" onPress={() => router.push('/trip-planner')} />
+              <QuickAction icon="car-sport-outline" label="My vehicles" onPress={() => router.push('/vehicle')} />
             </View>
 
-            <View style={styles.sessionCard}>
+            {user?.profileCompleted === false ? <TouchableOpacity style={styles.profileAlert} onPress={() => router.push('/complete-profile')}><Ionicons name="person-add-outline" size={19} color={Colors.primary} /><View style={{ flex: 1 }}><Text style={styles.alertTitle}>Finish profile setup</Text><Text style={styles.alertText}>Add your 10-digit mobile number for booking support.</Text></View><Ionicons name="chevron-forward" size={17} color={Colors.textMuted} /></TouchableOpacity> : null}
+            {lowWallet ? <TouchableOpacity style={styles.walletAlert} onPress={() => router.push('/(owner)/wallet')}><Ionicons name="wallet-outline" size={19} color={Colors.warning} /><Text style={styles.walletAlertText}>{lowWallet.vehicleName} wallet is low at ₹{lowWallet.balance.toFixed(0)}</Text><Text style={styles.topUp}>Top up</Text></TouchableOpacity> : null}
+
+            {activeSession ? <TouchableOpacity style={styles.sessionCard} onPress={() => router.push(`/session/${activeSession.id}`)}>
               <View style={styles.sessionTop}>
-                <View><Text style={styles.sessionKicker}>CURRENT SESSION</Text><Text style={styles.sessionStation}>Green Park Station</Text></View>
+                <View><Text style={styles.sessionKicker}>CURRENT SESSION</Text><Text style={styles.sessionStation}>{activeSession.stationName}</Text></View>
                 <View style={styles.chargingBadge}><View style={styles.pulse} /><Text style={styles.chargingText}>Charging</Text></View>
               </View>
               <View style={styles.sessionMetrics}>
-                <SessionMetric label="Time" value="00:32:45" />
-                <SessionMetric label="Energy" value="12.45 kWh" />
-                <SessionMetric label="Amount" value="₹285.60" />
+                <SessionMetric label="Time" value={formatElapsed(activeSession.startedAt)} />
+                <SessionMetric label="Energy" value={`${activeSession.energyKwh.toFixed(2)} kWh`} />
+                <SessionMetric label="Amount" value={`₹${activeSession.cost.toFixed(2)}`} />
               </View>
-              <View style={styles.progressLabel}><Text style={styles.progressValue}>68% charged</Text><Text style={styles.progressRange}>+146 km range</Text></View>
-              <View style={styles.progressTrack}><View style={styles.progressFill} /></View>
-            </View>
+              <View style={styles.progressLabel}><Text style={styles.progressValue}>{activeSession.currentBatteryPercent}% estimated</Text><Text style={styles.progressRange}>Tap for live details</Text></View>
+              <View style={styles.progressTrack}><View style={[styles.progressFill, { width: `${Math.min(100, activeSession.currentBatteryPercent)}%` }]} /></View>
+            </TouchableOpacity> : null}
 
             <View style={styles.sectionRow}>
               <Text style={styles.sectionTitle}>Nearby chargers</Text>
@@ -86,6 +97,14 @@ export default function DiscoverScreen() {
       />
     </View>
   );
+}
+
+function formatElapsed(startedAt: string) {
+  const elapsed = Math.max(0, Date.now() - new Date(startedAt).getTime());
+  const hours = Math.floor(elapsed / 3600000);
+  const minutes = Math.floor(elapsed / 60000) % 60;
+  const seconds = Math.floor(elapsed / 1000) % 60;
+  return [hours, minutes, seconds].map((value) => String(value).padStart(2, '0')).join(':');
 }
 
 function QuickAction({ icon, label, tone = 'green', onPress }: { icon: keyof typeof Ionicons.glyphMap; label: string; tone?: 'green' | 'blue' | 'purple'; onPress: () => void }) {
@@ -112,6 +131,12 @@ const styles = StyleSheet.create({
   quickIcon: { width: 38, height: 38, borderRadius: 12, justifyContent: 'center', alignItems: 'center' },
   quickLabel: { marginTop: 7, color: Colors.textPrimary, fontSize: 9.5, fontWeight: '800', textAlign: 'center' },
   sessionCard: { marginHorizontal: 16, marginTop: 14, padding: 16, borderRadius: 19, backgroundColor: Colors.secondary },
+  profileAlert: { marginHorizontal: 16, marginTop: 13, padding: 12, flexDirection: 'row', alignItems: 'center', gap: 9, borderWidth: 1, borderColor: '#B6E2CF', borderRadius: 13, backgroundColor: Colors.primarySoft },
+  alertTitle: { color: Colors.primaryDark, fontSize: 10.5, fontWeight: '900' },
+  alertText: { marginTop: 2, color: Colors.textSecondary, fontSize: 8.5 },
+  walletAlert: { marginHorizontal: 16, marginTop: 10, padding: 11, flexDirection: 'row', alignItems: 'center', gap: 8, borderRadius: 12, backgroundColor: Colors.warningLight },
+  walletAlertText: { flex: 1, color: '#9A3412', fontSize: 9.5, fontWeight: '700' },
+  topUp: { color: '#9A3412', fontSize: 9.5, fontWeight: '900' },
   sessionTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   sessionKicker: { color: '#A7F3D0', fontSize: 8.5, fontWeight: '900', letterSpacing: 1 },
   sessionStation: { marginTop: 4, color: Colors.white, fontSize: 16, fontWeight: '900' },

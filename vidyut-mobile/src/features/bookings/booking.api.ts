@@ -1,5 +1,5 @@
 import { apiClient } from '../../services/apiClient';
-import { BookingItem, CreateBookingRequest } from './booking.types';
+import { BookingItem, BookingSlot, CreateBookingRequest, WaitlistItem } from './booking.types';
 import { CONFIG } from '../../constants/config';
 import { ApiResponse, getApiErrorMessage, isNetworkError, unwrapApiResponse } from '../../services/apiResponse';
 
@@ -14,6 +14,11 @@ interface BackendBooking {
   totalAmount: number;
   status: BookingItem['status'];
   createdAt: string;
+  durationMinutes?: number;
+  endTime?: string;
+  kwhDelivered?: number;
+  cancellationFee?: number;
+  refundAmount?: number;
 }
 
 function normalizeBooking(booking: BackendBooking): BookingItem {
@@ -24,10 +29,14 @@ function normalizeBooking(booking: BackendBooking): BookingItem {
     chargerName: booking.stationName,
     address: booking.stationAddress,
     startTime: booking.startTime,
-    durationMinutes: booking.durationHours * 60,
+    durationMinutes: booking.durationMinutes || booking.durationHours * 60,
     totalCost: booking.totalAmount,
     status: booking.status,
     createdAt: booking.createdAt,
+    endTime: booking.endTime,
+    kwhDelivered: booking.kwhDelivered,
+    cancellationFee: booking.cancellationFee,
+    refundAmount: booking.refundAmount,
   };
 }
 
@@ -65,7 +74,8 @@ export async function createBooking(
       stationId: request.stationId,
       vehicleId: request.vehicleId,
       startTime: request.startTime,
-      durationHours: Math.max(1, Math.ceil(request.durationMinutes / 60)),
+      durationMinutes: request.durationMinutes,
+      idempotencyKey: request.idempotencyKey || `mobile-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
     });
     return normalizeBooking(unwrapApiResponse(response.data));
   } catch (error) {
@@ -87,6 +97,26 @@ export async function createBooking(
     mockBookings.unshift(newBooking);
     return newBooking;
   }
+}
+
+export async function getBooking(id: number | string): Promise<BookingItem> {
+  try { const response = await apiClient.get<ApiResponse<BackendBooking>>(`/ev/bookings/${id}`); return normalizeBooking(unwrapApiResponse(response.data)); }
+  catch (error) { throw new Error(getApiErrorMessage(error, 'Unable to load the booking.')); }
+}
+
+export async function cancelBooking(id: number | string): Promise<BookingItem> {
+  try { const response = await apiClient.patch<ApiResponse<BackendBooking>>(`/ev/bookings/${id}/cancel`); return normalizeBooking(unwrapApiResponse(response.data)); }
+  catch (error) { throw new Error(getApiErrorMessage(error, 'Unable to cancel the booking.')); }
+}
+
+export async function getBookingSlots(stationId: number | string, date: string): Promise<BookingSlot[]> {
+  try { const response = await apiClient.get<ApiResponse<BookingSlot[]>>('/ev/bookings/availability', { params: { stationId, date } }); return unwrapApiResponse(response.data); }
+  catch (error) { throw new Error(getApiErrorMessage(error, 'Unable to load charging slots.')); }
+}
+
+export async function joinWaitlist(request: { stationId: number | string; vehicleId?: number; preferredStartTime?: string; durationMinutes: number }): Promise<WaitlistItem> {
+  try { const response = await apiClient.post<ApiResponse<WaitlistItem>>('/ev/bookings/waitlist', request); return unwrapApiResponse(response.data); }
+  catch (error) { throw new Error(getApiErrorMessage(error, 'Unable to join the waitlist.')); }
 }
 
 export async function getMyBookings(_userId: number | string): Promise<BookingItem[]> {

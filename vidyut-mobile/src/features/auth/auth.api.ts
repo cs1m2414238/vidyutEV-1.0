@@ -1,5 +1,5 @@
 import { apiClient } from '../../services/apiClient';
-import { AccessMode, AuthResponse, LoginCredentials, RegisterCompanyRequest, RegisterHostRequest, RegisterUserRequest } from './auth.types';
+import { AccessMode, AuthResponse, CompleteProfileRequest, LoginCredentials, RegisterCompanyRequest, RegisterHostRequest, RegisterUserRequest } from './auth.types';
 import { ApiResponse, getApiErrorMessage, unwrapApiResponse } from '../../services/apiResponse';
 
 interface BackendUser {
@@ -10,6 +10,9 @@ interface BackendUser {
   role: 'ROLE_EV_USER' | 'ROLE_HOST' | 'ROLE_COMPANY' | 'ROLE_ADMIN';
   accountType: 'INDIVIDUAL' | 'COMPANY' | 'ADMIN';
   allowedModes: AccessMode[];
+  profileCompleted?: boolean;
+  companyName?: string;
+  registrationNumber?: string;
 }
 
 interface BackendAuthResponse {
@@ -38,6 +41,9 @@ function normalizeAuthResponse(response: BackendAuthResponse): AuthResponse {
       activeMode: response.activeMode,
       allowedModes: response.user.allowedModes,
       accountType: response.user.accountType,
+      profileCompleted: response.user.profileCompleted,
+      companyName: response.user.companyName,
+      registrationNumber: response.user.registrationNumber,
     },
   };
 }
@@ -53,6 +59,14 @@ async function authPost(path: string, body: object, fallback: string): Promise<A
 
 export function loginApi(credentials: LoginCredentials): Promise<AuthResponse> {
   return authPost('/auth/login', credentials, 'Invalid email or password.');
+}
+
+export function googleAuthApi(accessToken: string, requestedMode: AccessMode = 'EV_USER'): Promise<AuthResponse> {
+  return authPost('/auth/google', { accessToken, requestedMode }, 'Google sign-in could not be completed.');
+}
+
+export function completeProfileApi(data: CompleteProfileRequest): Promise<AuthResponse> {
+  return authPost('/auth/complete-profile', data, 'Unable to save the profile details.');
 }
 
 export function registerUserApi(data: RegisterUserRequest): Promise<AuthResponse> {
@@ -88,4 +102,9 @@ export async function applyForHostApi(displayName: string): Promise<void> {
   } catch (error) {
     throw new Error(getApiErrorMessage(error, 'Unable to submit the host application.'));
   }
+}
+
+export async function deleteAccountApi(): Promise<void> {
+  try { await apiClient.delete('/account'); }
+  catch (error) { throw new Error(getApiErrorMessage(error, 'Unable to delete this account.')); }
 }

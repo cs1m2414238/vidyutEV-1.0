@@ -13,6 +13,32 @@
   color: #0f172a;
 }
 
+.ev-autopilot-banner {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 13px;
+  margin: -4px 0 0;
+  padding: 13px 16px;
+  border: 0;
+  border-radius: 15px;
+  color: #fff;
+  background: linear-gradient(115deg, #08251e, #0b5b42);
+  box-shadow: 0 9px 24px rgba(8, 54, 42, .13);
+  text-align: left;
+  cursor: pointer;
+}
+
+.ev-autopilot-banner-icon { display: grid; width: 39px; height: 39px; flex: 0 0 auto; place-items: center; border-radius: 12px; color: #073e2d; background: #6ee7b7; }
+.ev-autopilot-banner-copy { min-width: 0; flex: 1; }
+.ev-autopilot-banner-copy small { display: flex; align-items: center; gap: 5px; color: #80f0c3; font-size: 8px; font-weight: 900; letter-spacing: .08em; }
+.ev-autopilot-banner-copy strong { display: block; margin-top: 4px; color: #f5fffb; font-size: 11px; }
+.ev-autopilot-banner-action { color: #baf4dd; font-size: 10px; font-weight: 850; white-space: nowrap; }
+
+@media (max-width: 620px) {
+  .ev-autopilot-banner-action { display: none; }
+}
+
 /* Header Row */
 .dashboard-header-row {
   display: flex;
@@ -169,6 +195,34 @@
   width: 100%;
   height: 100%;
   position: relative;
+}
+
+.map-card-caption {
+  position: absolute;
+  z-index: 9;
+  top: 14px;
+  left: 14px;
+  display: flex;
+  padding: 9px 12px;
+  border: 1px solid rgba(255, 255, 255, .8);
+  border-radius: 11px;
+  flex-direction: column;
+  background: rgba(255, 255, 255, .92);
+  box-shadow: 0 8px 22px rgba(15, 23, 42, .1);
+  backdrop-filter: blur(8px);
+}
+
+.map-card-caption small {
+  color: #16a34a;
+  font-size: .55rem;
+  font-weight: 900;
+  letter-spacing: .09em;
+}
+
+.map-card-caption strong {
+  margin-top: 2px;
+  color: #0f172a;
+  font-size: .75rem;
 }
 
 .map-svg-bg {
@@ -355,6 +409,26 @@
   font-weight: 700;
 }
 
+.charging-status-badge.idle {
+  color: #475467;
+  background: #f2f4f7;
+}
+
+.charging-status-badge.idle .pulse-green {
+  background: #667085;
+  box-shadow: 0 0 0 3px rgba(102, 112, 133, .15);
+}
+
+.charging-status-badge.unknown {
+  color: #b54708;
+  background: #fff4e5;
+}
+
+.charging-status-badge.unknown .pulse-green {
+  background: #f79009;
+  box-shadow: 0 0 0 3px rgba(247, 144, 9, .15);
+}
+
 .pulse-green {
   width: 7px;
   height: 7px;
@@ -377,6 +451,9 @@
 }
 
 .metric-label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
   font-size: 0.72rem;
   color: #94a3b8;
   font-weight: 500;
@@ -428,6 +505,55 @@
   height: 100%;
   background: #22c55e;
   border-radius: 4px;
+}
+
+.battery-bar-fill.unknown {
+  width: 100% !important;
+  background: repeating-linear-gradient(135deg, #cbd5e1 0 7px, #e2e8f0 7px 14px);
+}
+
+.vehicle-status-source {
+  padding: 3px 8px;
+  border-radius: 99px;
+  color: #475467;
+  background: #f2f4f7;
+  font-size: .66rem;
+  font-weight: 700;
+}
+
+.dashboard-vehicle-summary {
+  display: flex;
+  min-height: 76px;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 13px;
+  border: 1px solid #e7eeeb;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #f8fbfa, #f0faf5);
+}
+
+.dashboard-vehicle-summary p {
+  margin: 0;
+  color: #64748b;
+  font-size: .72rem;
+  line-height: 1.5;
+}
+
+.dashboard-vehicle-summary button {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 3px;
+  padding: 7px 9px;
+  border: 1px solid #b6dfcd;
+  border-radius: 8px;
+  color: #08784f;
+  background: #fff;
+  font: inherit;
+  font-size: .68rem;
+  font-weight: 800;
+  cursor: pointer;
 }
 
 .session-sparkline-wrap {

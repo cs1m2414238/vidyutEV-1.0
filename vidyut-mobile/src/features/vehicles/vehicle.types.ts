@@ -5,6 +5,19 @@ export interface VehicleItem {
   registrationNumber: string;
   batteryCapacity?: string;
   connectorType?: string;
+  connectionStatus?: 'CONNECTED' | 'DISCONNECTED' | 'UNKNOWN';
+  batteryPercent?: number;
+  remainingRangeKm?: number;
+  charging?: boolean;
+  bluetoothSupported?: boolean;
+  androidAutoSupported?: boolean;
+  appleCarPlaySupported?: boolean;
+  bluetoothDeviceName?: string;
+  lastChargingStation?: string;
+  lastChargingAddress?: string;
+  lastChargedAt?: string;
+  telemetrySource?: string;
+  telemetryUpdatedAt?: string;
 }
 
 export interface CreateVehicleRequest {
@@ -13,3 +26,5 @@ export interface CreateVehicleRequest {
   batteryCapacity?: string;
   connectorType?: string;
 }
+
+export type UpdateVehicleRequest = Partial<Omit<VehicleItem, 'id' | 'userId'>>;

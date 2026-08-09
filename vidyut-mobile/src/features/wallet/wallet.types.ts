@@ -35,3 +35,14 @@ export interface SaveAutoRechargeRuleRequest {
   rechargeAmount: number;
   paymentMethod: string;
 }
+
+export interface VehicleWalletTransaction {
+  id: number; bookingId?: number; amount: number; balanceBefore: number; balanceAfter: number;
+  type: 'TOP_UP' | 'AUTO_RECHARGE' | 'CHARGING_PAYMENT' | 'REFUND' | string;
+  description: string; paymentMethod?: string; paymentReference?: string; timestamp: string;
+}
+
+export interface VehicleWalletData {
+  walletId: number; vehicleId: number; vehicleName: string; registrationNumber: string; tagUid: string;
+  balance: number; active: boolean; lowBalance: boolean; recentTransactions: VehicleWalletTransaction[];
+}

@@ -11,4 +11,7 @@ export const CONFIG = {
   ).replace(/\/+$/, ''),
   TIMEOUT: 10000,
   USE_MOCK_DATA: __DEV__ && process.env.EXPO_PUBLIC_USE_MOCK_DATA === 'true',
+  GOOGLE_WEB_CLIENT_ID: process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID || '',
+  GOOGLE_IOS_CLIENT_ID: process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID || '',
+  GOOGLE_ANDROID_CLIENT_ID: process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID || '',
 };

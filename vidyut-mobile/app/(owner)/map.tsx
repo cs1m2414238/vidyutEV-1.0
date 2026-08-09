@@ -1,91 +1,21 @@
-import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, SafeAreaView } from 'react-native';
+import React, { useEffect, useMemo, useState } from 'react';
+import { FlatList, SafeAreaView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { useQuery } from '@tanstack/react-query';
-import { Ionicons } from '@expo/vector-icons';
-import MapView, { Callout, Marker, PROVIDER_DEFAULT } from 'react-native-maps';
 import * as Location from 'expo-location';
-import { getChargers } from '../../src/features/chargers/charger.api';
-import { LoadingView } from '../../src/components/LoadingView';
+import MapView, { Callout, Circle, Marker, PROVIDER_DEFAULT, Region } from 'react-native-maps';
 import { Colors } from '../../src/constants/colors';
-import { AppHeader } from '../../src/components/AppHeader';
+import { LoadingView } from '../../src/components/LoadingView';
+import { searchChargers } from '../../src/features/chargers/charger.api';
+import { getMyVehicles } from '../../src/features/vehicles/vehicle.api';
+import type { Charger } from '../../src/features/chargers/charger.types';
+import { tokenStorage } from '../../src/services/tokenStorage';
 
-export default function MapScreen() {
-  const router = useRouter();
-  const [hasLocationPermission, setHasLocationPermission] = useState(false);
-  const { data: chargers = [], isLoading } = useQuery({
-    queryKey: ['chargers'],
-    queryFn: getChargers,
-  });
+const lucknow: Region = { latitude: 26.8467, longitude: 80.9462, latitudeDelta: .12, longitudeDelta: .08 };
+const pinColor = (status: Charger['status']) => status === 'AVAILABLE' ? Colors.success : status === 'QUEUE' ? '#F59E0B' : status === 'FULL' ? Colors.error : '#98A2B3';
+const normalize = (value?: string) => (value || '').replace(/[\s_-]/g, '').toUpperCase();
 
-  useEffect(() => {
-    Location.requestForegroundPermissionsAsync().then(({ status }) => {
-      setHasLocationPermission(status === 'granted');
-    });
-  }, []);
-
-  if (isLoading) {
-    return <LoadingView message="Loading nearby chargers..." />;
-  }
-
-  const initialRegion = {
-    latitude: 26.8467,
-    longitude: 80.9462,
-    latitudeDelta: 0.0822,
-    longitudeDelta: 0.0421,
-  };
-
-  return (
-    <SafeAreaView style={styles.container}>
-      <AppHeader title="Nearby chargers" subtitle="Tap a marker to view and book" rightIcon="options-outline" />
-      <MapView
-        style={styles.map}
-        provider={PROVIDER_DEFAULT}
-        initialRegion={initialRegion}
-        showsUserLocation={hasLocationPermission}
-        showsMyLocationButton={hasLocationPermission}
-      >
-        {chargers.map((charger) => (
-          <Marker
-            key={charger.id}
-            coordinate={{ latitude: charger.latitude, longitude: charger.longitude }}
-            title={charger.name}
-            description={`${charger.powerKw} kW • ₹${charger.pricePerKwh}/kWh`}
-            pinColor={charger.available ? Colors.primary : Colors.error}
-          >
-            <Callout onPress={() => router.push(`/charger/${charger.id}`)}>
-              <View style={styles.callout}>
-                <Text style={styles.calloutTitle}>{charger.name}</Text>
-                <Text style={styles.calloutSub}>
-                  {charger.powerKw} kW ({charger.connectorType})
-                </Text>
-                <Text style={styles.calloutPrice}>₹{charger.pricePerKwh} / kWh</Text>
-                <Text style={styles.calloutAction}>Book Charger →</Text>
-              </View>
-            </Callout>
-          </Marker>
-        ))}
-      </MapView>
-    </SafeAreaView>
-  );
-}
-
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: Colors.background },
-  header: {
-    height: 56,
-    backgroundColor: Colors.white,
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderBottomWidth: 1,
-    borderBottomColor: Colors.border,
-    paddingHorizontal: 16,
-  },
-  headerTitle: { fontSize: 16, fontWeight: '700', color: Colors.textPrimary },
-  map: { flex: 1 },
-  callout: { padding: 10, width: 180 },
-  calloutTitle: { fontWeight: '700', fontSize: 14, color: Colors.textPrimary },
-  calloutSub: { fontSize: 12, color: Colors.textSecondary, marginTop: 2 },
-  calloutPrice: { fontSize: 13, fontWeight: '700', color: Colors.primary, marginTop: 4 },
-  calloutAction: { fontSize: 12, fontWeight: '700', color: Colors.primary, marginTop: 6 },
-});
+export default function MapScreen(){const router=useRouter();const[region,setRegion]=useState(lucknow);const[location,setLocation]=useState<{latitude:number;longitude:number}|null>(null);const[search,setSearch]=useState('');const[recent,setRecent]=useState<string[]>([]);const[listMode,setListMode]=useState(false);const[compatibleOnly,setCompatibleOnly]=useState(true);const[availableOnly,setAvailableOnly]=useState(false);const vehicles=useQuery({queryKey:['vehicles'],queryFn:getMyVehicles});const vehicle=vehicles.data?.[0];useEffect(()=>{void tokenStorage.getRecentSearches().then(setRecent);Location.requestForegroundPermissionsAsync().then(async result=>{if(result.status!=='granted')return;const current=await Location.getCurrentPositionAsync({accuracy:Location.Accuracy.Balanced});const point={latitude:current.coords.latitude,longitude:current.coords.longitude};setLocation(point);setRegion({...point,latitudeDelta:.08,longitudeDelta:.05});}).catch(()=>undefined)},[]);const saveSearch=()=>{void tokenStorage.saveRecentSearch(search).then(setRecent)};const connector=compatibleOnly?vehicle?.connectorType:undefined;const query=useQuery({queryKey:['map-chargers',search,connector,availableOnly,location?.latitude,location?.longitude],queryFn:()=>searchChargers({query:search||undefined,connectorType:connector,availableOnly,lat:location?.latitude,lng:location?.longitude,radius:50}),refetchInterval:30000});const fullRange=useMemo(()=>{if(!vehicle)return 0;if(vehicle.remainingRangeKm&&vehicle.batteryPercent)return vehicle.remainingRangeKm*100/vehicle.batteryPercent;const cap=Number((vehicle.batteryCapacity||'').replace(/[^0-9.]/g,''));return cap?cap*6.2:0},[vehicle]);const rangeMeters=fullRange*(vehicle?.batteryPercent??70)/100*1000;if(query.isLoading)return <LoadingView message="Reading live charger status..."/>;const chargers=query.data??[];return <SafeAreaView style={styles.screen}><View style={styles.toolbar}><View style={styles.search}><Ionicons name="search" size={18} color={Colors.textMuted}/><TextInput value={search} onChangeText={setSearch} onSubmitEditing={saveSearch} returnKeyType="search" placeholder="Station, area or city" placeholderTextColor={Colors.textMuted} style={styles.searchInput}/>{search?<TouchableOpacity onPress={()=>setSearch('')}><Ionicons name="close-circle" size={18} color={Colors.textMuted}/></TouchableOpacity>:null}</View><TouchableOpacity style={styles.mode} onPress={()=>setListMode(!listMode)}><Ionicons name={listMode?'map-outline':'list-outline'} size={20} color={Colors.primary}/></TouchableOpacity></View><View style={styles.filters}><Filter label={vehicle?.connectorType?`Compatible ${vehicle.connectorType}`:'Compatible'} active={compatibleOnly} onPress={()=>setCompatibleOnly(!compatibleOnly)}/><Filter label="Available now" active={availableOnly} onPress={()=>setAvailableOnly(!availableOnly)}/><TouchableOpacity style={styles.trip} onPress={()=>router.push('/trip-planner')}><Ionicons name="navigate-outline" size={14} color={Colors.white}/><Text style={styles.tripText}>Plan trip</Text></TouchableOpacity></View>{!search&&recent.length?<View style={styles.recent}><Text style={styles.recentLabel}>Recent</Text>{recent.slice(0,3).map(value=><TouchableOpacity key={value} style={styles.recentChip} onPress={()=>setSearch(value)}><Text numberOfLines={1} style={styles.recentText}>{value}</Text></TouchableOpacity>)}</View>:null}{listMode?<FlatList data={chargers} keyExtractor={item=>String(item.id)} contentContainerStyle={styles.list} renderItem={({item})=><TouchableOpacity style={styles.card} onPress={()=>router.push(`/charger/${item.id}`)}><View style={[styles.pin,{backgroundColor:pinColor(item.status)}]}><Ionicons name="flash" size={18} color={Colors.white}/></View><View style={{flex:1}}><Text style={styles.name}>{item.name}</Text><Text numberOfLines={1} style={styles.address}>{item.address}</Text><Text style={styles.meta}>{item.connectorType} • {item.powerKw} kW • ₹{item.pricePerKwh}/kWh</Text></View><View><Text style={[styles.live,{color:pinColor(item.status)}]}>{item.status}</Text><Text style={styles.slots}>{item.availableSlots}/{item.totalSlots} free</Text></View></TouchableOpacity>}/>:<MapView style={styles.map} provider={PROVIDER_DEFAULT} region={region} onRegionChangeComplete={setRegion} showsUserLocation={!!location} showsMyLocationButton={!!location}>{location&&rangeMeters>0?<Circle center={location} radius={rangeMeters} strokeColor="rgba(15,143,93,.55)" fillColor="rgba(15,143,93,.08)" strokeWidth={2}/>:null}{chargers.map(item=><Marker key={item.id} coordinate={{latitude:item.latitude,longitude:item.longitude}} pinColor={pinColor(item.status)}><Callout onPress={()=>router.push(`/charger/${item.id}`)}><View style={styles.callout}><Text style={styles.name}>{item.name}</Text><Text style={styles.meta}>{item.connectorType} • {item.powerKw} kW</Text><Text style={[styles.live,{color:pinColor(item.status)}]}>{item.status} • {item.availableSlots} free</Text><Text style={styles.action}>View and book →</Text></View></Callout></Marker>)}</MapView>}<View style={styles.legend}>{(['AVAILABLE','QUEUE','FULL','OFFLINE'] as const).map(status=><View key={status} style={styles.legendItem}><View style={[styles.legendDot,{backgroundColor:pinColor(status)}]}/><Text style={styles.legendText}>{status.toLowerCase()}</Text></View>)}</View></SafeAreaView>}
+function Filter({label,active,onPress}:{label:string;active:boolean;onPress:()=>void}){return <TouchableOpacity style={[styles.filter,active&&styles.filterOn]} onPress={onPress}><Text style={[styles.filterText,active&&styles.filterTextOn]}>{label}</Text></TouchableOpacity>}
+const styles=StyleSheet.create({screen:{flex:1,backgroundColor:Colors.background},toolbar:{padding:12,paddingBottom:8,flexDirection:'row',gap:8,backgroundColor:Colors.white},search:{flex:1,height:44,paddingHorizontal:12,flexDirection:'row',alignItems:'center',gap:8,borderWidth:1,borderColor:Colors.border,borderRadius:13,backgroundColor:Colors.background},searchInput:{flex:1,color:Colors.textPrimary,fontSize:11.5},mode:{width:44,height:44,borderWidth:1,borderColor:Colors.border,borderRadius:13,alignItems:'center',justifyContent:'center'},filters:{paddingHorizontal:12,paddingBottom:10,flexDirection:'row',gap:6,backgroundColor:Colors.white},filter:{paddingHorizontal:10,paddingVertical:8,borderWidth:1,borderColor:Colors.border,borderRadius:10},filterOn:{borderColor:Colors.primary,backgroundColor:Colors.primaryLight},filterText:{color:Colors.textSecondary,fontSize:8.5,fontWeight:'800'},filterTextOn:{color:Colors.primary},trip:{marginLeft:'auto',paddingHorizontal:10,paddingVertical:8,flexDirection:'row',gap:4,borderRadius:10,backgroundColor:Colors.primary},tripText:{color:Colors.white,fontSize:8.5,fontWeight:'900'},recent:{paddingHorizontal:12,paddingBottom:9,flexDirection:'row',alignItems:'center',gap:6,backgroundColor:Colors.white},recentLabel:{color:Colors.textMuted,fontSize:8,fontWeight:'800'},recentChip:{maxWidth:100,paddingHorizontal:8,paddingVertical:6,borderRadius:8,backgroundColor:Colors.borderSoft},recentText:{color:Colors.textSecondary,fontSize:8.5,fontWeight:'700'},map:{flex:1},list:{padding:12,paddingBottom:80},card:{marginBottom:9,padding:12,flexDirection:'row',alignItems:'center',gap:10,borderWidth:1,borderColor:Colors.border,borderRadius:15,backgroundColor:Colors.white},pin:{width:40,height:40,borderRadius:13,alignItems:'center',justifyContent:'center'},name:{color:Colors.textPrimary,fontSize:11.5,fontWeight:'900'},address:{marginTop:2,color:Colors.textSecondary,fontSize:8.5},meta:{marginTop:4,color:Colors.textSecondary,fontSize:8.5},live:{fontSize:8.5,fontWeight:'900'},slots:{marginTop:3,color:Colors.textMuted,fontSize:7.5,textAlign:'right'},callout:{width:190,padding:10},action:{marginTop:7,color:Colors.primary,fontSize:9,fontWeight:'900'},legend:{position:'absolute',left:14,bottom:13,paddingHorizontal:9,paddingVertical:7,flexDirection:'row',gap:9,borderRadius:11,backgroundColor:'rgba(255,255,255,.95)'},legendItem:{flexDirection:'row',alignItems:'center',gap:4},legendDot:{width:7,height:7,borderRadius:4},legendText:{color:Colors.textSecondary,fontSize:7.5}});

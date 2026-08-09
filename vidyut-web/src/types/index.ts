@@ -14,18 +14,7 @@ export interface Charger {
   distance: string;
   imageUrl: string;
   description?: string;
-}
-
-export interface BookingItem {
-  id: string;
-  chargerId: number;
-  chargerName: string;
-  address: string;
-  startTime: string;
-  durationMinutes: number;
-  totalCost: number;
-  status: 'CONFIRMED' | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELLED';
-  energyDelivered?: number;
+  bookingSlotMinutes?: number;
 }
 
 export interface User {
@@ -37,6 +26,13 @@ export interface User {
   totalBookings: number;
   totalEnergyKwh: number;
   co2SavedKg: number;
+  contactName?: string;
+  companyName?: string;
+  registrationNumber?: string;
+  profileCompleted?: boolean;
+  emailVerified?: boolean;
+  accountType?: 'INDIVIDUAL' | 'COMPANY' | 'ADMIN';
+  hostStatus?: 'PENDING' | 'VERIFIED' | 'NOT_APPLIED';
 }
 
 export type NavItem = {

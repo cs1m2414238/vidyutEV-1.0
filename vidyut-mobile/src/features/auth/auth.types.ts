@@ -12,6 +12,9 @@ export interface User {
   accountType: 'INDIVIDUAL' | 'COMPANY' | 'ADMIN';
   phone?: string;
   avatarUrl?: string;
+  profileCompleted?: boolean;
+  companyName?: string;
+  registrationNumber?: string;
 }
 
 export interface AuthResponse {
@@ -41,4 +44,13 @@ export interface RegisterCompanyRequest {
   password: string;
   phone: string;
   registrationNumber: string;
+}
+
+export interface CompleteProfileRequest {
+  mode: AccessMode;
+  fullName: string;
+  phone: string;
+  companyName?: string;
+  registrationNumber?: string;
+  hostDisplayName?: string;
 }

@@ -10,12 +10,27 @@ export interface ApiUser {
   accountType: 'INDIVIDUAL' | 'COMPANY' | 'ADMIN';
   allowedModes: AccessMode[];
   defaultMode: AccessMode;
+  contactName?: string;
+  companyName?: string;
+  registrationNumber?: string;
+  profileCompleted?: boolean;
+  emailVerified?: boolean;
+  hostStatus?: 'PENDING' | 'VERIFIED' | 'NOT_APPLIED';
 }
 
 export interface AuthData {
   token: string;
   activeMode: AccessMode;
   user: ApiUser;
+}
+
+export interface CompleteProfilePayload {
+  mode: Exclude<AccessMode, 'ADMIN'>;
+  fullName: string;
+  phone: string;
+  companyName?: string;
+  registrationNumber?: string;
+  hostDisplayName?: string;
 }
 
 interface ApiEnvelope<T> {
@@ -35,14 +50,15 @@ const API_BASE_URL = (
 
 export async function apiRequest<T>(path: string, init: RequestInit): Promise<T> {
   let response: Response;
+  const token = localStorage.getItem('vidyut_token');
+  const headers = new Headers(init.headers);
+  if (!headers.has('Content-Type')) headers.set('Content-Type', 'application/json');
+  if (token && !headers.has('Authorization')) headers.set('Authorization', `Bearer ${token}`);
 
   try {
     response = await fetch(`${API_BASE_URL}${path}`, {
       ...init,
-      headers: {
-        'Content-Type': 'application/json',
-        ...init.headers,
-      },
+      headers,
     });
   } catch {
     throw new Error('Unable to reach the Vidyut server. Check that the backend is running.');
@@ -81,6 +97,27 @@ export async function switchAuthMode(mode: AccessMode, token: string): Promise<A
   });
 }
 
+export async function authenticateWithGoogle(
+  accessToken: string,
+  requestedMode?: Exclude<AccessMode, 'ADMIN'>,
+): Promise<AuthData> {
+  return apiRequest<AuthData>('/auth/google', {
+    method: 'POST',
+    body: JSON.stringify({ accessToken, requestedMode }),
+  });
+}
+
+export async function completeProfile(
+  payload: CompleteProfilePayload,
+  token: string,
+): Promise<AuthData> {
+  return apiRequest<AuthData>('/auth/complete-profile', {
+    method: 'PUT',
+    headers: { Authorization: `Bearer ${token}` },
+    body: JSON.stringify(payload),
+  });
+}
+
 export function saveAuthSession(auth: AuthData): void {
   localStorage.setItem('vidyut_token', auth.token);
   localStorage.setItem('vidyut_user', JSON.stringify(auth.user));
@@ -94,6 +131,10 @@ export function loadAuthSession(): AuthData | null {
     const activeMode = localStorage.getItem('vidyut_active_mode') as AccessMode | null;
 
     if (!token || !userJson || !activeMode) return null;
+    if (token.startsWith('oauth_') || token.startsWith('session_')) {
+      clearAuthSession();
+      return null;
+    }
 
     const user = JSON.parse(userJson) as ApiUser;
     if (!user.email || !Array.isArray(user.allowedModes) || !user.allowedModes.includes(activeMode)) {
@@ -110,4 +151,100 @@ export function clearAuthSession(): void {
   localStorage.removeItem('vidyut_token');
   localStorage.removeItem('vidyut_user');
   localStorage.removeItem('vidyut_active_mode');
+}
+
+/* =========================
+   BOOKING TYPES & SERVICES
+========================= */
+
+export type BookingStatus =
+  | "PENDING"
+  | "CONFIRMED"
+  | "IN_PROGRESS"
+  | "COMPLETED"
+  | "CANCELLED"
+  | "EXPIRED";
+
+export interface BookingCreateRequest {
+  chargerId: number;
+  startTime: string;
+  endTime: string;
+}
+
+export interface BookingResponse {
+  id: number;
+  chargerId: number;
+  stationName: string;
+  startTime: string;
+  endTime: string;
+  status: BookingStatus;
+  createdAt: string;
+}
+
+/* =========================
+   CREATE BOOKING
+========================= */
+
+export async function createBooking(
+  booking: BookingCreateRequest
+): Promise<BookingResponse> {
+  return apiRequest<BookingResponse>("/bookings", {
+    method: "POST",
+    body: JSON.stringify(booking),
+  });
+}
+
+/* =========================
+   GET MY BOOKINGS
+========================= */
+
+export async function getMyBookings(): Promise<BookingResponse[]> {
+  return apiRequest<BookingResponse[]>("/bookings/my", {
+    method: "GET",
+  });
+}
+
+/* =========================
+   GET ONE BOOKING
+========================= */
+
+export async function getBooking(
+  bookingId: number
+): Promise<BookingResponse> {
+  return apiRequest<BookingResponse>(`/bookings/${bookingId}`, {
+    method: "GET",
+  });
+}
+
+/* =========================
+   CANCEL BOOKING
+========================= */
+
+export async function cancelBooking(
+  bookingId: number
+): Promise<BookingResponse> {
+  return apiRequest<BookingResponse>(`/bookings/${bookingId}/cancel`, {
+    method: "PATCH",
+  });
+}
+
+/* =========================
+   UNREAD ACTIVE COUNT
+========================= */
+
+export async function getUnreadBookingCount(): Promise<number> {
+  const response = await apiRequest<{ count: number }>("/bookings/unread-count", {
+    method: "GET",
+  });
+  return response.count;
+}
+
+/* =========================
+   MARK BOOKINGS AS SEEN
+========================= */
+
+export async function markBookingsSeen(): Promise<void> {
+  await apiRequest<void>("/bookings/mark-seen", {
+    method: "PATCH",
+  });
 }

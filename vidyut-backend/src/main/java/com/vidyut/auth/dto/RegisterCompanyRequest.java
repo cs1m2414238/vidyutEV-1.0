@@ -1,7 +1,7 @@
 package com.vidyut.auth.dto;
 
-import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Email;
+import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -14,10 +14,8 @@ import lombok.NoArgsConstructor;
 @AllArgsConstructor
 public class RegisterCompanyRequest {
 
-    @NotBlank(message = "Company name is required")
     private String companyName;
 
-    @NotBlank(message = "Registration number is required")
     private String registrationNumber;
 
     @NotBlank(message = "Admin email is required")

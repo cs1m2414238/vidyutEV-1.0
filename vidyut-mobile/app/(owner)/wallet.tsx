@@ -13,6 +13,7 @@ import {
 } from 'react-native';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
+import { useRouter } from 'expo-router';
 import { AppHeader } from '../../src/components/AppHeader';
 import { LoadingView } from '../../src/components/LoadingView';
 import { PrimaryButton } from '../../src/components/PrimaryButton';
@@ -21,9 +22,9 @@ import { addVehicle, getMyVehicles } from '../../src/features/vehicles/vehicle.a
 import { VehicleItem } from '../../src/features/vehicles/vehicle.types';
 import {
   getAutoRechargeRules,
-  getWallet,
+  getVehicleWallets,
   saveAutoRechargeRule,
-  topUpWallet,
+  topUpVehicleWallet,
 } from '../../src/features/wallet/wallet.api';
 import { AutoRechargeRule } from '../../src/features/wallet/wallet.types';
 
@@ -53,6 +54,7 @@ function formatDate(value?: string | null): string {
 }
 
 export default function WalletScreen() {
+  const router = useRouter();
   const queryClient = useQueryClient();
   const [selectedVehicleId, setSelectedVehicleId] = useState<number | null>(null);
   const [ruleDraft, setRuleDraft] = useState(initialRule);
@@ -65,12 +67,13 @@ export default function WalletScreen() {
     connectorType: 'CCS2',
   });
 
-  const walletQuery = useQuery({ queryKey: ['wallet'], queryFn: getWallet });
+  const walletQuery = useQuery({ queryKey: ['vehicle-wallets'], queryFn: getVehicleWallets });
   const vehiclesQuery = useQuery({ queryKey: ['vehicles'], queryFn: getMyVehicles });
   const rulesQuery = useQuery({ queryKey: ['auto-recharge-rules'], queryFn: getAutoRechargeRules });
 
   const vehicles = vehiclesQuery.data ?? [];
   const rules = rulesQuery.data ?? [];
+  const selectedWallet = walletQuery.data?.find((wallet) => wallet.vehicleId === selectedVehicleId);
 
   useEffect(() => {
     if (!selectedVehicleId && vehicles.length) setSelectedVehicleId(vehicles[0].id);
@@ -90,9 +93,12 @@ export default function WalletScreen() {
   }, [selectedVehicleId, rules]);
 
   const topUpMutation = useMutation({
-    mutationFn: topUpWallet,
+    mutationFn: topUpVehicleWallet,
     onSuccess: (wallet) => {
-      queryClient.setQueryData(['wallet'], wallet);
+      queryClient.setQueryData(['vehicle-wallets'], (current: typeof walletQuery.data = []) => [
+        wallet,
+        ...(current ?? []).filter((item) => item.vehicleId !== wallet.vehicleId),
+      ]);
       Alert.alert('Wallet topped up', `${money(Number(topUpAmount))} was added successfully.`);
     },
     onError: (error: Error) => Alert.alert('Top-up failed', error.message),
@@ -135,7 +141,11 @@ export default function WalletScreen() {
       Alert.alert('Check amount', 'Enter an amount of at least ₹100.');
       return;
     }
-    topUpMutation.mutate(amount);
+    if (!selectedVehicleId) {
+      Alert.alert('Choose a vehicle', 'Each EV has its own wallet balance.');
+      return;
+    }
+    topUpMutation.mutate({ vehicleId: selectedVehicleId, amount });
   };
 
   const handleSaveRule = () => {
@@ -188,10 +198,11 @@ export default function WalletScreen() {
 
         <View style={styles.balanceCard}>
           <View style={styles.balanceTop}>
-            <View><Text style={styles.balanceKicker}>AVAILABLE BALANCE</Text><Text style={styles.balance}>{money(walletQuery.data?.balance ?? 0)}</Text></View>
+            <View><Text style={styles.balanceKicker}>{selectedWallet?.vehicleName?.toUpperCase() || 'VEHICLE'} BALANCE</Text><Text style={styles.balance}>{money(selectedWallet?.balance ?? 0)}</Text></View>
             <View style={styles.walletIcon}><Ionicons name="wallet" size={22} color={Colors.white} /></View>
           </View>
-          <Text style={styles.balanceHint}>Protected for Vidyut charging payments</Text>
+          <Text style={styles.balanceHint}>Independent balance • protected for this vehicle only</Text>
+          {selectedWallet ? <TouchableOpacity style={styles.tagButton} onPress={() => router.push({ pathname: '/wallet-tag', params: { vehicleId: String(selectedWallet.vehicleId) } })}><Ionicons name="qr-code-outline" size={15} color="#D1FAE5" /><Text style={styles.tagButtonText}>View charging tag</Text></TouchableOpacity> : null}
           <View style={styles.topUpRow}>
             <View style={styles.topUpInput}><Text style={styles.rupee}>₹</Text><TextInput value={topUpAmount} onChangeText={setTopUpAmount} keyboardType="number-pad" style={styles.amountInput} placeholderTextColor="#A7F3D0" /></View>
             <TouchableOpacity style={styles.topUpButton} onPress={handleTopUp} disabled={topUpMutation.isPending}>
@@ -278,9 +289,9 @@ export default function WalletScreen() {
 
         <Text style={[styles.sectionTitle, styles.activityTitle]}>Recent activity</Text>
         <View style={styles.activityCard}>
-          {(walletQuery.data?.recentTransactions ?? []).map((transaction) => {
-            const credit = transaction.type === 'TOP_UP' || transaction.type === 'AUTO_RECHARGE';
-            const vehicle = vehicles.find((item) => item.id === transaction.vehicleId);
+          {(selectedWallet?.recentTransactions ?? []).map((transaction) => {
+            const credit = transaction.type === 'TOP_UP' || transaction.type === 'AUTO_RECHARGE' || transaction.type === 'REFUND';
+            const vehicle = vehicles.find((item) => item.id === selectedVehicleId);
             return (
               <View key={transaction.id} style={styles.activityRow}>
                 <View style={[styles.activityIcon, credit ? styles.creditIcon : styles.debitIcon]}><Ionicons name={credit ? 'arrow-down' : 'arrow-up'} size={16} color={credit ? Colors.primary : Colors.error} /></View>
@@ -289,7 +300,7 @@ export default function WalletScreen() {
               </View>
             );
           })}
-          {!walletQuery.data?.recentTransactions?.length ? <View style={styles.noActivity}><Ionicons name="receipt-outline" size={23} color={Colors.textMuted} /><Text style={styles.noActivityText}>Your wallet activity will appear here.</Text></View> : null}
+          {!selectedWallet?.recentTransactions?.length ? <View style={styles.noActivity}><Ionicons name="receipt-outline" size={23} color={Colors.textMuted} /><Text style={styles.noActivityText}>This vehicle's wallet activity will appear here.</Text></View> : null}
         </View>
       </ScrollView>
 
@@ -339,6 +350,8 @@ const styles = StyleSheet.create({
   balance: { marginTop: 7, color: Colors.white, fontSize: 29, fontWeight: '900', letterSpacing: -.7 },
   walletIcon: { width: 43, height: 43, borderRadius: 14, justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(255,255,255,.12)' },
   balanceHint: { marginTop: 2, color: 'rgba(255,255,255,.62)', fontSize: 9.5 },
+  tagButton: { alignSelf: 'flex-start', marginTop: 10, paddingHorizontal: 9, paddingVertical: 7, flexDirection: 'row', alignItems: 'center', gap: 5, borderRadius: 9, backgroundColor: 'rgba(255,255,255,.10)' },
+  tagButtonText: { color: '#D1FAE5', fontSize: 8.5, fontWeight: '800' },
   topUpRow: { marginTop: 18, flexDirection: 'row', gap: 8 },
   topUpInput: { flex: 1, height: 42, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 11, borderWidth: 1, borderColor: 'rgba(255,255,255,.18)', borderRadius: 11, backgroundColor: 'rgba(255,255,255,.09)' },
   rupee: { color: Colors.white, fontSize: 12, fontWeight: '800' },

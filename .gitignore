@@ -13,8 +13,15 @@
 **/build/
 **/.vite/
 **/out/
+**/.venv/
+**/__pycache__/
+**/.pytest_cache/
+**/*.egg-info/
+tmp/pdfs/
 .npm
 *.log
+*.py[cod]
+.coverage
 
 # Environment & Secret Files
 .env

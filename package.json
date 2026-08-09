@@ -1,0 +1,7 @@
+{
+    "name": "ev-vidyut-app",
+    "version": "1.0.0",
+    "scripts": {
+        "dev": "npx concurrently -k \"cd vidyut-backend && mvn spring-boot:run\" \" cd vidyut-web && npm run dev\""
+    }
+}

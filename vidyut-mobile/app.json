@@ -28,7 +28,8 @@
         {
           "locationAlwaysAndWhenInUsePermission": "Allow Vidyut to access your location to show nearby chargers."
         }
-      ]
+      ],
+      "expo-web-browser"
     ],
     "experiments": {}
   }

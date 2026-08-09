@@ -36,4 +36,19 @@ public class ChargingStationController {
             @RequestParam(defaultValue = "10.0") double radius) {
         return ResponseEntity.ok(ApiResponse.success(stationService.getNearbyStations(lat, lng, radius)));
     }
+
+    @GetMapping("/search")
+    public ResponseEntity<ApiResponse<List<StationResponse>>> searchStations(
+            @RequestParam(required = false) String query,
+            @RequestParam(required = false) String connectorType,
+            @RequestParam(required = false) Double lat,
+            @RequestParam(required = false) Double lng,
+            @RequestParam(required = false, defaultValue = "50") Double radius,
+            @RequestParam(required = false, defaultValue = "0") Integer minAvailableSlots,
+            @RequestParam(required = false) Double maxPricePerKwh,
+            @RequestParam(required = false) Double minPowerKw,
+            @RequestParam(required = false, defaultValue = "false") Boolean availableOnly) {
+        return ResponseEntity.ok(ApiResponse.success(stationService.searchStations(query, connectorType, lat, lng,
+                radius, minAvailableSlots, maxPricePerKwh, minPowerKw, availableOnly)));
+    }
 }

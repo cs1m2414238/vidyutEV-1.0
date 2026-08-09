@@ -1,6 +1,7 @@
 import { useState } from 'react';
-import { Search, MapPin, Calendar, Wallet, AlertCircle, Info } from 'lucide-react';
+import { Search, MapPin, Calendar, Wallet, AlertCircle, Info, Navigation, Sparkles, BatteryCharging, Bluetooth, Route, ChevronRight } from 'lucide-react';
 import type { User, Charger } from '../../types';
+import type { Vehicle } from '../../services/vehicles';
 
 interface EVOwnerDashboardProps {
   user: User;
@@ -10,6 +11,9 @@ interface EVOwnerDashboardProps {
   onBookNow?: () => void;
   onOpenBookings?: () => void;
   onOpenWallet?: () => void;
+  onOpenAutopilot?: () => void;
+  vehicle?: Vehicle | null;
+  onOpenVehicle?: (vehicleId: number) => void;
 }
 
 export function EVOwnerDashboard({
@@ -20,6 +24,9 @@ export function EVOwnerDashboard({
   onBookNow,
   onOpenBookings,
   onOpenWallet,
+  onOpenAutopilot,
+  vehicle,
+  onOpenVehicle,
 }: EVOwnerDashboardProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const selectedStation = chargers[0] || {
@@ -39,7 +46,9 @@ export function EVOwnerDashboard({
     imageUrl: '',
   };
 
-  const [isCharging, setIsCharging] = useState(true);
+  const batteryPercent = vehicle?.batteryPercent == null ? null : Math.max(0, Math.min(100, vehicle.batteryPercent));
+  const vehicleStatus = vehicle?.charging == null ? 'Status unknown' : vehicle.charging ? 'Charging' : 'Not charging';
+  const vehicleStatusClass = vehicle?.charging == null ? 'unknown' : vehicle.charging ? 'charging' : 'idle';
 
   return (
     <div className="ev-dashboard-container">
@@ -67,11 +76,24 @@ export function EVOwnerDashboard({
         </div>
       </div>
 
+      <button type="button" className="ev-autopilot-banner" onClick={onOpenAutopilot}>
+        <span className="ev-autopilot-banner-icon"><Navigation size={22} /></span>
+        <span className="ev-autopilot-banner-copy">
+          <small><Sparkles size={12} /> NEW · VIDYUT AUTOPILOT</small>
+          <strong>Tell us where you’re going. We’ll plan, reserve, reroute and pay.</strong>
+        </span>
+        <span className="ev-autopilot-banner-action">Plan a journey →</span>
+      </button>
+
       {/* Main Top 3 Cards Grid */}
       <div className="ev-top-grid">
         {/* Card 1: Interactive Map Card */}
         <div className="dashboard-card map-card-container">
           <div className="map-view-canvas">
+            <div className="map-card-caption">
+              <small>NEARBY NETWORK</small>
+              <strong>Nearest available charger</strong>
+            </div>
             {/* Soft Map SVG Graphic with Location Pins */}
             <svg width="100%" height="100%" viewBox="0 0 600 340" preserveAspectRatio="none" className="map-svg-bg">
               <defs>
@@ -188,80 +210,54 @@ export function EVOwnerDashboard({
           </div>
         </div>
 
-        {/* Card 3: Current Session */}
+        {/* Card 3: Persisted vehicle status */}
         <div className="dashboard-card current-session-card">
           <div className="session-header-row">
             <div>
-              <h3 className="card-heading">Current Session</h3>
-              <p className="session-station-name">Green Park Station</p>
+              <h3 className="card-heading">Vehicle status</h3>
+              <p className="session-station-name">{vehicle?.makeAndModel || 'No vehicle selected'}</p>
             </div>
-            {isCharging && (
-              <span className="charging-status-badge">
-                <span className="pulse-green" /> Charging
-              </span>
-            )}
+            <span className={`charging-status-badge ${vehicleStatusClass}`}>
+              <span className="pulse-green" /> {vehicleStatus}
+            </span>
           </div>
 
           <div className="session-metrics-row">
             <div className="metric-box">
-              <span className="metric-label">Time Elapsed</span>
-              <span className="metric-val">00:32:45</span>
+              <span className="metric-label"><BatteryCharging size={12} /> Battery</span>
+              <span className="metric-val">{batteryPercent == null ? 'Not synced' : `${batteryPercent}%`}</span>
             </div>
             <div className="metric-box">
-              <span className="metric-label">Energy Delivered</span>
-              <span className="metric-val">12.45 kWh</span>
+              <span className="metric-label"><Route size={12} /> Range</span>
+              <span className="metric-val">{vehicle?.remainingRangeKm == null ? 'Not synced' : `${Math.round(vehicle.remainingRangeKm)} km`}</span>
             </div>
             <div className="metric-box">
-              <span className="metric-label">Amount</span>
-              <span className="metric-val">₹285.60</span>
+              <span className="metric-label"><Bluetooth size={12} /> Connection</span>
+              <span className="metric-val">{vehicle?.connectionStatus === 'CONNECTED' ? 'Connected' : vehicle?.connectionStatus === 'DISCONNECTED' ? 'Offline' : 'Not synced'}</span>
             </div>
           </div>
 
           <div className="battery-progress-section">
             <div className="battery-label-row">
-              <span className="battery-percent">⚡ 68%</span>
-              <button
-                type="button"
-                className="stop-session-btn"
-                onClick={() => setIsCharging(false)}
-              >
-                {isCharging ? 'Stop' : 'Ended'}
-              </button>
+              <span className="battery-percent">{batteryPercent == null ? 'Battery reading unavailable' : `${batteryPercent}% remaining`}</span>
+              <span className="vehicle-status-source">{vehicle?.telemetrySource === 'BLUETOOTH' ? 'Bluetooth' : vehicle?.telemetrySource === 'CHARGING_SESSION' ? 'Charging session' : vehicle?.telemetrySource === 'MANUAL' ? 'Manual' : 'No source'}</span>
             </div>
             <div className="battery-bar-track">
-              <div className="battery-bar-fill" style={{ width: '68%' }} />
+              <div className={`battery-bar-fill ${batteryPercent == null ? 'unknown' : ''}`} style={{ width: `${batteryPercent ?? 0}%` }} />
             </div>
           </div>
 
-          {/* Mini Sparkline Chart Preview */}
-          <div className="session-sparkline-wrap">
-            <svg width="100%" height="70" viewBox="0 0 300 70" preserveAspectRatio="none">
-              <defs>
-                <linearGradient id="sessionGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#22c55e" stopOpacity="0.3" />
-                  <stop offset="100%" stopColor="#22c55e" stopOpacity="0.0" />
-                </linearGradient>
-              </defs>
-              <path
-                d="M 0 50 Q 30 45 60 25 T 120 15 T 180 35 T 240 10 T 300 20 L 300 70 L 0 70 Z"
-                fill="url(#sessionGrad)"
-              />
-              <path
-                d="M 0 50 Q 30 45 60 25 T 120 15 T 180 35 T 240 10 T 300 20"
-                fill="none"
-                stroke="#22c55e"
-                strokeWidth="2.5"
-              />
-              <circle cx="280" cy="16" r="4" fill="#22c55e" stroke="#ffffff" strokeWidth="2" />
-            </svg>
-            <div className="chart-tooltip-badge">₹1,250</div>
-            <div className="chart-date-labels">
-              <span>1 May</span>
-              <span>8 May</span>
-              <span>15 May</span>
-              <span>22 May</span>
-              <span>29 May</span>
-            </div>
+          <div className="dashboard-vehicle-summary">
+            <p>{vehicle
+              ? vehicle.charging
+                ? 'The dashboard shows charging because the latest saved vehicle reading reports active charging.'
+                : vehicle.charging === false
+                  ? 'The latest saved vehicle reading reports that it is not charging.'
+                  : 'Connect by Bluetooth or add a manual reading to determine its charging state.'
+              : 'Add a vehicle to see battery, range and charging information here.'}</p>
+            {vehicle && onOpenVehicle && (
+              <button type="button" onClick={() => onOpenVehicle(vehicle.id)}>View vehicle <ChevronRight size={14} /></button>
+            )}
           </div>
         </div>
       </div>

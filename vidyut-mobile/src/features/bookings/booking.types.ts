@@ -3,6 +3,7 @@ export interface CreateBookingRequest {
   vehicleId?: number;
   startTime: string;
   durationMinutes: number;
+  idempotencyKey?: string;
 }
 
 export interface BookingItem {
@@ -14,6 +15,17 @@ export interface BookingItem {
   startTime: string;
   durationMinutes: number;
   totalCost: number;
-  status: 'CONFIRMED' | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELLED';
+  endTime?: string;
+  kwhDelivered?: number;
+  cancellationFee?: number;
+  refundAmount?: number;
+  status: 'PENDING' | 'CONFIRMED' | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELLED' | 'EXPIRED';
   createdAt: string;
+}
+
+export interface BookingSlot { startTime: string; endTime: string; availableConnectors: number; available: boolean }
+
+export interface WaitlistItem {
+  id: number; stationId: number; stationName: string; vehicleId?: number; preferredStartTime?: string;
+  durationMinutes: number; position: number; status: string; createdAt: string;
 }

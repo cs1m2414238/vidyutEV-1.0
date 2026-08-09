@@ -6,3 +6,12 @@ spring:
 
 server:
   port: 8080
+
+vidyut:
+  oauth:
+    google-client-id: ${GOOGLE_CLIENT_ID:558967442483-k5mnia7mcfjal59sjfgcn2iumn8pku3g.apps.googleusercontent.com}
+    google-client-ids: ${GOOGLE_CLIENT_IDS:${GOOGLE_CLIENT_ID:558967442483-k5mnia7mcfjal59sjfgcn2iumn8pku3g.apps.googleusercontent.com}}
+  payments:
+    demo-enabled: false
+  agent:
+    base-url: ${VIDYUT_AGENT_BASE_URL:http://localhost:8001}

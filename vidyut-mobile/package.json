@@ -8,6 +8,7 @@
     "axios": "^1.9.0",
     "babel-preset-expo": "~57.0.0",
     "expo": "~57.0.11",
+    "expo-auth-session": "~57.0.6",
     "expo-constants": "~57.0.9",
     "expo-font": "~57.0.1",
     "expo-linking": "~57.0.5",
@@ -15,12 +16,15 @@
     "expo-router": "~57.0.11",
     "expo-secure-store": "~57.0.1",
     "expo-status-bar": "~57.0.1",
+    "expo-web-browser": "~57.0.2",
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "react-native": "0.86.2",
     "react-native-maps": "1.27.2",
+    "react-native-qrcode-svg": "^6.3.21",
     "react-native-safe-area-context": "~5.7.0",
     "react-native-screens": "^4.10.0",
+    "react-native-svg": "15.15.4",
     "zustand": "^5.0.6"
   },
   "devDependencies": {

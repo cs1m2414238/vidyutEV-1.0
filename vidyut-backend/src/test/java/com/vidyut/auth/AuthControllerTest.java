@@ -8,6 +8,7 @@ import com.vidyut.account.repository.EvUserProfileRepository;
 import com.vidyut.auth.dto.RegisterCompanyRequest;
 import com.vidyut.auth.dto.RegisterUserRequest;
 import com.vidyut.auth.service.AuthService;
+import com.vidyut.company.repository.CompanyRepository;
 import com.vidyut.wallet.repository.EvWalletRepository;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -22,7 +23,9 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.put;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -35,6 +38,7 @@ class AuthControllerTest {
     @Autowired AccountRepository accountRepository;
     @Autowired EvUserProfileRepository evUserProfileRepository;
     @Autowired EvWalletRepository walletRepository;
+    @Autowired CompanyRepository companyRepository;
     @Autowired PasswordEncoder passwordEncoder;
     @Autowired AuthService authService;
 
@@ -52,7 +56,24 @@ class AuthControllerTest {
         assertThat(walletRepository.findByUserId(account.getId()))
                 .get().extracting("balance").isEqualTo(0.0);
 
+        mockMvc.perform(put("/api/auth/complete-profile")
+                        .header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"mode":"EV_USER","fullName":"Test Driver","phone":"9876543210"}
+                                """))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.user.profileCompleted").value(true))
+                .andExpect(jsonPath("$.data.user.phone").value("9876543210"));
+        assertThat(evUserProfileRepository.findById(account.getId()).orElseThrow().getPhone())
+                .isEqualTo("9876543210");
+
         mockMvc.perform(get("/api/ev/bookings").header("Authorization", bearer(token)))
+                .andExpect(status().isOk());
+        mockMvc.perform(get("/api/ev/bookings/unread-count").header("Authorization", bearer(token)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.count").value(0));
+        mockMvc.perform(patch("/api/ev/bookings/mark-seen").header("Authorization", bearer(token)))
                 .andExpect(status().isOk());
         mockMvc.perform(get("/api/company/profile").header("Authorization", bearer(token)))
                 .andExpect(status().isForbidden())
@@ -94,8 +115,6 @@ class AuthControllerTest {
     void companyAccountIsDisjointFromIndividualModes() throws Exception {
         String suffix = UUID.randomUUID().toString().substring(0, 8);
         RegisterCompanyRequest request = RegisterCompanyRequest.builder()
-                .companyName("Vidyut Company " + suffix)
-                .registrationNumber("CIN-" + suffix)
                 .adminEmail("company-" + suffix + "@vidyut.test")
                 .adminPassword("Password123!")
                 .adminFullName("Company Operator")
@@ -108,9 +127,24 @@ class AuthControllerTest {
                 .andExpect(jsonPath("$.data.activeMode").value("COMPANY"))
                 .andExpect(jsonPath("$.data.user.roles.length()").value(1))
                 .andExpect(jsonPath("$.data.user.roles[0]").value("ROLE_COMPANY"))
+                .andExpect(jsonPath("$.data.user.profileCompleted").value(false))
                 .andReturn();
 
         String token = dataToken(result);
+        mockMvc.perform(put("/api/auth/complete-profile")
+                        .header("Authorization", bearer(token))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"mode":"COMPANY","fullName":"Company Operator","phone":"9123456789",
+                                 "companyName":"Vidyut Company %s","registrationNumber":"CIN-%s"}
+                                """.formatted(suffix, suffix)))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.user.profileCompleted").value(true))
+                .andExpect(jsonPath("$.data.user.companyName").value("Vidyut Company " + suffix));
+        var company = companyRepository.findByAccount_Id(
+                accountRepository.findByEmailIgnoreCase(request.getAdminEmail()).orElseThrow().getId()).orElseThrow();
+        assertThat(company.getRegistrationNumber()).isEqualTo(("CIN-" + suffix).toUpperCase());
+
         mockMvc.perform(get("/api/company/profile").header("Authorization", bearer(token)))
                 .andExpect(status().isOk());
         mockMvc.perform(get("/api/host/stations").header("Authorization", bearer(token)))

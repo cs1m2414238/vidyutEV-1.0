@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Building2, CarFront, HousePlug } from 'lucide-react';
+import { ArrowRight, Building2, CarFront, CircleAlert, HousePlug, UserRound } from 'lucide-react';
 import { Sidebar } from './components/Sidebar';
 import { TopBar } from './components/TopBar';
 import { MapView } from './components/MapView';
@@ -7,15 +7,20 @@ import { ChargerDetailModal } from './components/ChargerDetailModal';
 import { BookingsView } from './components/BookingsView';
 import { FeatureView } from './components/FeatureView';
 import { WalletView } from './components/WalletView';
+import { VehiclesView } from './components/VehiclesView';
+import { VehicleDetailView } from './components/VehicleDetailView';
 import { CompanyWorkspace } from './components/CompanyWorkspace';
 import { HostWorkspace } from './components/HostWorkspace';
+import { AutopilotView } from './components/AutopilotView';
+import { TripPlannerView } from './components/TripPlannerView';
 import { ModeSelection } from './components/ModeSelection';
-import { mockUser, mockChargers, mockBookings } from './data/mockData';
-import type { Charger, BookingItem, User } from './types';
+import { mockUser, mockChargers } from './data/mockData';
+import type { Charger, User } from './types';
 import LoginPage from './components/LoginPage';
 import SplashScreen from './components/SplashScreen';
 import LandingPage from './components/LandingPage';
 import VidyutRegisterPage from './components/RegisterPage';
+import { CompleteProfileModal } from './components/CompleteProfileModal';
 import {
   clearAuthSession,
   loadAuthSession,
@@ -23,6 +28,10 @@ import {
   switchAuthMode,
 } from './services/api';
 import type { AccessMode, AuthData } from './services/api';
+import { createBooking, getUnreadBookingCount } from './services/bookings';
+import { getStations, stationToCharger } from './services/stations';
+import { getVehicles } from './services/vehicles';
+import type { Vehicle } from './services/vehicles';
 import { EVOwnerDashboard } from './components/dashboards/EVOwnerDashboard';
 import './components/dashboards/Dashboards.css';
 import './components/DashboardShell.css';
@@ -42,8 +51,23 @@ function userFromAuth(auth: AuthData, fallback: User = mockUser): User {
     id: String(auth.user.id),
     name: auth.user.fullName,
     email: auth.user.email,
-    phone: auth.user.phone || fallback.phone,
+    phone: auth.user.phone || '',
+    contactName: auth.user.contactName,
+    companyName: auth.user.companyName,
+    registrationNumber: auth.user.registrationNumber,
+    profileCompleted: auth.user.profileCompleted,
+    accountType: auth.user.accountType,
+    emailVerified: auth.user.emailVerified,
+    hostStatus: auth.user.hostStatus,
   };
+}
+
+function isProfileIncomplete(user: User, activeMode: AccessMode): boolean {
+  if (activeMode === 'ADMIN') return false;
+  if (user.profileCompleted === false) return true;
+  if (!/^\d{10}$/.test((user.phone || '').replace(/\D/g, ''))) return true;
+  if (activeMode === 'COMPANY' && (!user.companyName?.trim() || !user.registrationNumber?.trim())) return true;
+  return false;
 }
 
 function getHashForState(view: AppView, tab: string): string {
@@ -65,7 +89,7 @@ function parseStateFromHash(hash: string): { view: AppView; tab: string } {
   if (clean === 'landing' || clean === '') return { view: 'landing', tab: 'dashboard' };
   if (clean.startsWith('dashboard')) {
     const parts = clean.split('/');
-    const tab = parts[1] || 'dashboard';
+    const tab = parts.slice(1).join('/') || 'dashboard';
     return { view: 'dashboard', tab };
   }
   return { view: 'landing', tab: 'dashboard' };
@@ -88,9 +112,11 @@ export function App() {
   });
   const [selectedCharger, setSelectedCharger] = useState<Charger | null>(null);
   const [mapFilter, setMapFilter] = useState<'all' | 'available' | 'fast'>('available');
+  const [chargers, setChargers] = useState<Charger[]>(mockChargers);
   const [user, setUser] = useState<User>(() => restoredSession ? userFromAuth(restoredSession) : mockUser);
   const [isLoggedIn, setIsLoggedIn] = useState(Boolean(restoredSession));
-  const [bookings, setBookings] = useState<BookingItem[]>(mockBookings);
+  const [bookingUnreadCount, setBookingUnreadCount] = useState(0);
+  const [bookingRefreshKey, setBookingRefreshKey] = useState(0);
   const [companyCounts, setCompanyCounts] = useState({ bookings: 0, notifications: 0 });
   const [hostCounts, setHostCounts] = useState({ bookings: 0, notifications: 0 });
   const [modalCharger, setModalCharger] = useState<Charger | null>(null);
@@ -101,6 +127,9 @@ export function App() {
   const [modeError, setModeError] = useState('');
   const [loadingMode, setLoadingMode] = useState<AccessMode | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [showProfileModal, setShowProfileModal] = useState(false);
+  const [profileModalDismissed, setProfileModalDismissed] = useState(false);
+  const [primaryVehicle, setPrimaryVehicle] = useState<Vehicle | null>(null);
 
   // Sync state with browser URL history stack
   const navigateToState = (newView: AppView, newTab: string = activeTab, replace: boolean = false) => {
@@ -139,6 +168,36 @@ export function App() {
     };
   }, [activeTab, currentView]);
 
+  useEffect(() => {
+    if (!isLoggedIn || activeMode !== 'EV_USER' || !authToken) return undefined;
+    let ignore = false;
+
+    void Promise.allSettled([
+      getStations(),
+      getUnreadBookingCount(authToken),
+      getVehicles(authToken),
+    ]).then(([stationResult, bookingCountResult, vehicleResult]) => {
+      if (ignore) return;
+      if (stationResult.status === 'fulfilled') {
+        setChargers(stationResult.value.map(stationToCharger));
+      }
+      if (bookingCountResult.status === 'fulfilled') {
+        setBookingUnreadCount(bookingCountResult.value);
+      }
+      if (vehicleResult.status === 'fulfilled') {
+        const preferred = vehicleResult.value.find((vehicle) => vehicle.charging)
+          || vehicleResult.value.find((vehicle) => vehicle.connectionStatus === 'CONNECTED')
+          || vehicleResult.value[0]
+          || null;
+        setPrimaryVehicle(preferred);
+      }
+    });
+
+    return () => {
+      ignore = true;
+    };
+  }, [isLoggedIn, activeMode, authToken]);
+
   const applyAuthenticatedSession = (auth: AuthData, promptForMode: boolean) => {
     const modes = auth.user.allowedModes?.length ? auth.user.allowedModes : [auth.user.defaultMode || auth.activeMode];
     saveAuthSession(auth);
@@ -149,6 +208,8 @@ export function App() {
     setActiveDashboardRole(roleForMode(auth.activeMode));
     setModeError('');
     setIsLoggedIn(true);
+    setProfileModalDismissed(false);
+    setShowProfileModal(false);
     const targetView: AppView = promptForMode && modes.length > 1 ? 'mode-select' : 'dashboard';
     navigateToState(targetView, 'dashboard');
   };
@@ -163,27 +224,20 @@ export function App() {
     setModalCharger(charger);
   };
 
-  const handleConfirmBooking = (charger: Charger, duration: number) => {
-    const energy = charger.powerKw * (duration / 60);
-    const cost = Number((charger.pricePerKwh * energy).toFixed(2));
-    const newBooking: BookingItem = {
-      id: `BK-${Math.floor(1000 + Math.random() * 9000)}`,
-      chargerId: charger.id,
-      chargerName: charger.name,
-      address: charger.address,
+  const handleConfirmBooking = async (charger: Charger, durationMinutes: number) => {
+    if (!authToken) throw new Error('Please sign in again before booking a charger.');
+    if (!primaryVehicle) throw new Error('Add a vehicle before booking so connector compatibility and payment use the correct EV.');
+    await createBooking(authToken, {
+      stationId: charger.id,
+      vehicleId: primaryVehicle.id,
       startTime: new Date().toISOString(),
-      durationMinutes: duration,
-      totalCost: cost,
-      status: 'CONFIRMED',
-      energyDelivered: Number(energy.toFixed(1)),
-    };
-
-    setBookings((current) => [newBooking, ...current]);
+      durationMinutes,
+    });
+    setBookingUnreadCount((current) => current + 1);
+    setBookingRefreshKey((current) => current + 1);
     setUser((current) => ({
       ...current,
       totalBookings: current.totalBookings + 1,
-      walletBalance: current.walletBalance - cost,
-      totalEnergyKwh: current.totalEnergyKwh + (newBooking.energyDelivered || 0),
     }));
   };
 
@@ -215,6 +269,10 @@ export function App() {
     setAuthToken('');
     setAllowedModes([]);
     setIsLoggedIn(false);
+    setBookingUnreadCount(0);
+    setBookingRefreshKey(0);
+    setChargers(mockChargers);
+    setPrimaryVehicle(null);
     setSidebarOpen(false);
     navigateToState('landing', 'dashboard', true);
   };
@@ -270,21 +328,33 @@ export function App() {
 
   const showOwnerBookings = activeDashboardRole === 'EV_OWNER' && activeTab === 'bookings';
   const showOwnerWallet = activeDashboardRole === 'EV_OWNER' && activeTab === 'wallet';
+  const showOwnerVehicles = activeDashboardRole === 'EV_OWNER' && activeTab === 'vehicles';
+  const vehicleDetailMatch = activeDashboardRole === 'EV_OWNER' ? activeTab.match(/^vehicles\/(\d+)$/) : null;
+  const selectedVehicleId = vehicleDetailMatch ? Number(vehicleDetailMatch[1]) : null;
+  const showOwnerVehicleDetail = selectedVehicleId != null && Number.isInteger(selectedVehicleId) && selectedVehicleId > 0;
+  const showOwnerAutopilot = activeDashboardRole === 'EV_OWNER' && activeTab === 'autopilot';
+  const showOwnerTripPlanner = activeDashboardRole === 'EV_OWNER' && activeTab === 'trip';
   const showCompanyWorkspace = activeDashboardRole === 'COMPANY_ADMIN';
   const showHostWorkspace = activeDashboardRole === 'LANDOWNER';
-  const showModeFeature = activeTab !== 'dashboard' && activeTab !== 'find' && !showOwnerBookings && !showOwnerWallet && !showCompanyWorkspace && !showHostWorkspace;
+  const showModeFeature = activeTab !== 'dashboard' && activeTab !== 'find' && !showOwnerBookings && !showOwnerWallet && !showOwnerVehicles && !showOwnerVehicleDetail && !showOwnerAutopilot && !showOwnerTripPlanner && !showCompanyWorkspace && !showHostWorkspace;
+  const profileIncomplete = isProfileIncomplete(user, activeMode);
 
   return (
     <div className="app-shell">
       <Sidebar
-        active={activeTab}
+        active={activeTab.split('/')[0]}
         onNav={(tab) => navigateToState('dashboard', tab)}
         user={user}
-        bookingCount={activeDashboardRole === 'COMPANY_ADMIN' ? companyCounts.bookings : activeDashboardRole === 'LANDOWNER' ? hostCounts.bookings : bookings.length}
+        bookingCount={activeDashboardRole === 'COMPANY_ADMIN' ? companyCounts.bookings : activeDashboardRole === 'LANDOWNER' ? hostCounts.bookings : bookingUnreadCount}
         onLogout={handleLogout}
         role={activeDashboardRole}
         open={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
+        profileIncomplete={profileIncomplete}
+        onCompleteProfile={() => {
+          setShowProfileModal(true);
+          setSidebarOpen(false);
+        }}
       />
 
       <main className="app-main">
@@ -309,32 +379,90 @@ export function App() {
               </button>
             )}
           </div>
+          {profileIncomplete && (
+            <button
+              className="profile-mode-alert"
+              onClick={() => setShowProfileModal(true)}
+            >
+              <CircleAlert size={15} /> Finish profile <ArrowRight size={14} />
+            </button>
+          )}
           {modeError && <span className="mode-error" role="alert">{modeError}</span>}
         </div>
 
         <div className="app-body">
+          {profileIncomplete && (activeTab === 'settings' || activeTab === 'profile') && (
+            <section className="account-profile-notice" aria-label="Profile completion status">
+              <span><UserRound size={20} /></span>
+              <div>
+                <strong>Your {activeMode === 'COMPANY' ? 'Company' : activeMode === 'HOST' ? 'Host' : 'EV Owner'} profile needs a few details</strong>
+                <p>Add the missing account information now, or continue using the workspace and return later.</p>
+              </div>
+              <button type="button" onClick={() => setShowProfileModal(true)}>Complete profile <ArrowRight size={14} /></button>
+            </section>
+          )}
           {activeTab === 'dashboard' && activeDashboardRole === 'EV_OWNER' && (
             <EVOwnerDashboard
               user={user}
-              chargers={mockChargers}
+              chargers={chargers}
               onSelectCharger={handleSelectCharger}
               onExploreChargers={() => setActiveTab('find')}
               onBookNow={() => setActiveTab('find')}
               onOpenBookings={() => setActiveTab('bookings')}
               onOpenWallet={() => setActiveTab('wallet')}
+              onOpenAutopilot={() => setActiveTab('autopilot')}
+              vehicle={primaryVehicle}
+              onOpenVehicle={(vehicleId) => navigateToState('dashboard', `vehicles/${vehicleId}`)}
             />
           )}
           {showHostWorkspace && <HostWorkspace tab={activeTab} token={authToken} hostName={user.name} onNavigate={setActiveTab} onCountsChange={setHostCounts} />}
           {showCompanyWorkspace && <CompanyWorkspace tab={activeTab} token={authToken} companyName={user.name} onNavigate={setActiveTab} onCountsChange={setCompanyCounts} />}
 
-          {showOwnerBookings && <BookingsView bookings={bookings} />}
+          {showOwnerBookings && (
+            <BookingsView
+              token={authToken}
+              refreshKey={bookingRefreshKey}
+              onUnreadCountChange={setBookingUnreadCount}
+              onFindChargers={() => setActiveTab('find')}
+            />
+          )}
 
           {showOwnerWallet && <WalletView token={authToken} onOpenVehicles={() => setActiveTab('vehicles')} />}
+
+          {showOwnerVehicles && (
+            <VehiclesView
+              token={authToken}
+              onFindChargers={() => setActiveTab('find')}
+              onOpenWallet={() => setActiveTab('wallet')}
+              onOpenVehicle={(vehicleId) => navigateToState('dashboard', `vehicles/${vehicleId}`)}
+            />
+          )}
+
+          {showOwnerVehicleDetail && selectedVehicleId != null && (
+            <VehicleDetailView
+              token={authToken}
+              vehicleId={selectedVehicleId}
+              onBack={() => navigateToState('dashboard', 'vehicles')}
+              onFindChargers={() => navigateToState('dashboard', 'find')}
+              onOpenWallet={() => navigateToState('dashboard', 'wallet')}
+              onVehicleUpdated={(updated) => setPrimaryVehicle((current) => !current || current.id === updated.id ? updated : current)}
+            />
+          )}
+
+          {showOwnerAutopilot && (
+            <AutopilotView
+              token={authToken}
+              userName={user.name}
+              onOpenWallet={() => setActiveTab('wallet')}
+            />
+          )}
+
+          {showOwnerTripPlanner && <TripPlannerView token={authToken} />}
 
           {activeTab === 'find' && activeDashboardRole === 'EV_OWNER' && (
             <div style={{ height: 'calc(100dvh - 180px)', minHeight: 520 }}>
               <MapView
-                chargers={mockChargers}
+                chargers={chargers}
                 selectedId={selectedCharger?.id ?? null}
                 onSelect={handleSelectCharger}
                 filter={mapFilter}
@@ -352,6 +480,28 @@ export function App() {
         onClose={() => setModalCharger(null)}
         onConfirmBooking={handleConfirmBooking}
       />
+
+      {(showProfileModal || (profileIncomplete && !profileModalDismissed)) && (
+        <CompleteProfileModal
+          user={user}
+          activeMode={activeMode}
+          authToken={authToken}
+          onComplete={(auth) => {
+            setShowProfileModal(false);
+            setProfileModalDismissed(true);
+            applyAuthenticatedSession(auth, false);
+          }}
+          onSkip={() => {
+            setShowProfileModal(false);
+            setProfileModalDismissed(true);
+          }}
+          onCancel={() => {
+            setShowProfileModal(false);
+            setProfileModalDismissed(true);
+          }}
+          onLogout={handleLogout}
+        />
+      )}
     </div>
   );
 }

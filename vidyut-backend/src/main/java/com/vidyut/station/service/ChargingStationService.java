@@ -9,6 +9,9 @@ public interface ChargingStationService {
     StationResponse getStationById(Long id);
     List<StationResponse> getAllStations();
     List<NearbyStationResponse> getNearbyStations(double latitude, double longitude, double radiusKm);
+    List<StationResponse> searchStations(String query, String connectorType, Double latitude, Double longitude,
+                                         Double radiusKm, Integer minAvailableSlots, Double maxPricePerKwh,
+                                         Double minPowerKw, Boolean availableOnly);
     StationResponse updateStation(Long id, StationUpdateRequest request);
     StationResponse updateStation(Long id, Long ownerAccountId, StationUpdateRequest request);
     void deleteStation(Long id);

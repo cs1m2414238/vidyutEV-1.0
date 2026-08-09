@@ -17,12 +17,18 @@ public class BookingResponse {
     private Long userId;
     private Long stationId;
     private Long vehicleId;
+    private String idempotencyKey;
     private String stationName;
     private String stationAddress;
     private LocalDateTime startTime;
+    private LocalDateTime endTime;
     private int durationHours;
+    private int durationMinutes;
     private double totalAmount;
     private double kwhDelivered;
+    private double cancellationFee;
+    private double refundAmount;
     private BookingStatus status;
+    private boolean seen;
     private LocalDateTime createdAt;
 }

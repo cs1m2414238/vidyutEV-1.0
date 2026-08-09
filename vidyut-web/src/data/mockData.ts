@@ -1,4 +1,4 @@
-import type { Charger, BookingItem, User } from '../types';
+import type { Charger, User } from '../types';
 
 export const mockUser: User = {
   id: 'u1',
@@ -96,52 +96,5 @@ export const mockChargers: Charger[] = [
     distance: '2.6 km',
     imageUrl: 'https://images.unsplash.com/photo-1593941707882-a5bba14938c7?auto=format&fit=crop&w=400&q=80',
     description: 'Solar powered charger — green energy with lowest prices in the city.',
-  },
-];
-
-export const mockBookings: BookingItem[] = [
-  {
-    id: 'BK-9041',
-    chargerId: 1,
-    chargerName: 'GreenCharge Hub',
-    address: 'Gomti Nagar, Lucknow',
-    startTime: new Date(Date.now() - 86400000).toISOString(),
-    durationMinutes: 75,
-    totalCost: 234.5,
-    status: 'COMPLETED',
-    energyDelivered: 18.76,
-  },
-  {
-    id: 'BK-9082',
-    chargerId: 2,
-    chargerName: 'EcoVolt Point',
-    address: 'Vibhuti Khand, Lucknow',
-    startTime: new Date(Date.now() + 7200000).toISOString(),
-    durationMinutes: 60,
-    totalCost: 168.0,
-    status: 'CONFIRMED',
-    energyDelivered: 11.0,
-  },
-  {
-    id: 'BK-9067',
-    chargerId: 4,
-    chargerName: 'PowerUp Station',
-    address: 'Aliganj, Lucknow',
-    startTime: new Date(Date.now() - 172800000).toISOString(),
-    durationMinutes: 45,
-    totalCost: 180.0,
-    status: 'COMPLETED',
-    energyDelivered: 16.5,
-  },
-  {
-    id: 'BK-8991',
-    chargerId: 3,
-    chargerName: 'ChargeNest',
-    address: 'Hazratganj, Lucknow',
-    startTime: new Date(Date.now() - 259200000).toISOString(),
-    durationMinutes: 90,
-    totalCost: 292.5,
-    status: 'COMPLETED',
-    energyDelivered: 22.5,
   },
 ];

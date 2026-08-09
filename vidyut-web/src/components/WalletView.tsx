@@ -30,10 +30,14 @@ interface WalletTransaction {
   timestamp: string;
 }
 
-interface WalletData {
+interface VehicleWalletData {
   walletId: number;
-  userId: number;
+  vehicleId: number;
+  vehicleName: string;
+  registrationNumber: string;
+  tagUid: string;
   balance: number;
+  lowBalance: boolean;
   recentTransactions: WalletTransaction[];
 }
 
@@ -84,7 +88,7 @@ function friendlyDate(value?: string | null): string {
 }
 
 export function WalletView({ token, onOpenVehicles }: { token: string; onOpenVehicles: () => void }) {
-  const [wallet, setWallet] = useState<WalletData | null>(null);
+  const [wallets, setWallets] = useState<VehicleWalletData[]>([]);
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [rules, setRules] = useState<AutoRechargeRule[]>([]);
   const [selectedVehicleId, setSelectedVehicleId] = useState<number | null>(null);
@@ -104,11 +108,11 @@ export function WalletView({ token, onOpenVehicles }: { token: string; onOpenVeh
     setError('');
     try {
       const [walletData, vehicleData, ruleData] = await Promise.all([
-        apiRequest<WalletData>('/ev/wallet', { method: 'GET', ...authInit }),
+        apiRequest<VehicleWalletData[]>('/ev/wallet/vehicles', { method: 'GET', ...authInit }),
         apiRequest<Vehicle[]>('/ev/vehicles', { method: 'GET', ...authInit }),
         apiRequest<AutoRechargeRule[]>('/ev/wallet/auto-recharge', { method: 'GET', ...authInit }),
       ]);
-      setWallet(walletData);
+      setWallets(walletData);
       setVehicles(vehicleData);
       setRules(ruleData);
       setSelectedVehicleId((current) => current && vehicleData.some((vehicle) => vehicle.id === current) ? current : vehicleData[0]?.id ?? null);
@@ -138,6 +142,7 @@ export function WalletView({ token, onOpenVehicles }: { token: string; onOpenVeh
   }, [selectedVehicleId, rules]);
 
   const selectedVehicle = vehicles.find((vehicle) => vehicle.id === selectedVehicleId);
+  const selectedWallet = wallets.find((wallet) => wallet.vehicleId === selectedVehicleId);
   const selectedRule = rules.find((rule) => rule.vehicleId === selectedVehicleId);
   const activeRuleCount = rules.filter((rule) => rule.enabled).length;
 
@@ -149,13 +154,14 @@ export function WalletView({ token, onOpenVehicles }: { token: string; onOpenVeh
     setSaving(true);
     setError('');
     try {
-      const nextWallet = await apiRequest<WalletData>('/ev/wallet/topup', {
+      if (!selectedVehicleId) throw new Error('Choose a vehicle before adding money.');
+      const nextWallet = await apiRequest<VehicleWalletData>(`/ev/wallet/vehicles/${selectedVehicleId}/topup`, {
         method: 'POST',
         ...authInit,
-        body: JSON.stringify({ amount: topUpAmount }),
+        body: JSON.stringify({ amount: topUpAmount, paymentMethod: 'UPI_TOKEN', paymentReference: `WEB-${Date.now()}` }),
       });
-      setWallet(nextWallet);
-      setNotice(`${rupees(topUpAmount)} added to your wallet.`);
+      setWallets((current) => [nextWallet, ...current.filter((wallet) => wallet.vehicleId !== nextWallet.vehicleId)]);
+      setNotice(`${rupees(topUpAmount)} added to ${nextWallet.vehicleName}'s wallet.`);
     } catch (topUpError) {
       setError(topUpError instanceof Error ? topUpError.message : 'Unable to top up your wallet.');
     } finally {
@@ -227,9 +233,9 @@ export function WalletView({ token, onOpenVehicles }: { token: string; onOpenVeh
 
       <div className="wallet-summary-grid">
         <article className="wallet-balance-card">
-          <div className="wallet-card-label"><WalletCards size={16} /> Available balance</div>
-          <strong>{loading ? '—' : rupees(wallet?.balance ?? 0)}</strong>
-          <span>Secured for Vidyut charging payments</span>
+          <div className="wallet-card-label"><WalletCards size={16} /> {selectedWallet?.vehicleName || 'Vehicle'} balance</div>
+          <strong>{loading ? '—' : rupees(selectedWallet?.balance ?? 0)}</strong>
+          <span>Independent balance for this EV • Tag {selectedWallet?.tagUid || 'created after adding a vehicle'}</span>
           <div className="wallet-topup-row">
             <label>
               <span className="sr-only">Top-up amount</span>
@@ -334,9 +340,9 @@ export function WalletView({ token, onOpenVehicles }: { token: string; onOpenVeh
             <div><h2>Recent wallet activity</h2><p>Top-ups and charging payments</p></div>
           </div>
           <div className="transaction-list">
-            {(wallet?.recentTransactions ?? []).map((transaction) => {
-              const isCredit = transaction.type === 'TOP_UP' || transaction.type === 'AUTO_RECHARGE';
-              const vehicle = vehicles.find((item) => item.id === transaction.vehicleId);
+            {(selectedWallet?.recentTransactions ?? []).map((transaction) => {
+              const isCredit = transaction.type === 'TOP_UP' || transaction.type === 'AUTO_RECHARGE' || transaction.type === 'REFUND';
+              const vehicle = selectedVehicle;
               return (
                 <article key={transaction.id} className="transaction-row">
                   <div className={`transaction-icon ${isCredit ? 'credit' : 'debit'}`}>{isCredit ? <ArrowDownLeft size={17} /> : <ArrowUpRight size={17} />}</div>
@@ -345,7 +351,7 @@ export function WalletView({ token, onOpenVehicles }: { token: string; onOpenVeh
                 </article>
               );
             })}
-            {!loading && !(wallet?.recentTransactions?.length) && <div className="wallet-empty compact"><WalletCards size={24} /><h3>No wallet activity yet</h3><p>Your transactions will appear here.</p></div>}
+            {!loading && !(selectedWallet?.recentTransactions?.length) && <div className="wallet-empty compact"><WalletCards size={24} /><h3>No wallet activity yet</h3><p>This vehicle's transactions will appear here.</p></div>}
           </div>
           <button className="manage-vehicles" onClick={onOpenVehicles}>Manage all vehicles <ArrowUpRight size={14} /></button>
         </section>

@@ -14,4 +14,28 @@ export interface Charger {
   distance?: string;
   imageUrl?: string;
   description?: string;
+  city?: string;
+  status: 'AVAILABLE' | 'QUEUE' | 'FULL' | 'OFFLINE';
+  totalSlots: number;
+  availableSlots: number;
+  queueCount: number;
+  workingHours?: string;
+  amenities?: string;
+  chargingInstructions?: string;
+  photoUrls?: string;
+  connectors: Array<{ type: string; powerKw: number; available: boolean; status?: string }>;
+  distanceKm?: number;
+  bookingSlotMinutes?: number;
+}
+
+export interface ChargerSearchFilters {
+  query?: string;
+  connectorType?: string;
+  lat?: number;
+  lng?: number;
+  radius?: number;
+  minAvailableSlots?: number;
+  maxPricePerKwh?: number;
+  minPowerKw?: number;
+  availableOnly?: boolean;
 }

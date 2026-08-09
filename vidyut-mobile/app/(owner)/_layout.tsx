@@ -42,6 +42,16 @@ export default function OwnerLayout() {
       />
 
       <Tabs.Screen
+        name="autopilot"
+        options={{
+          title: 'Autopilot',
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons name="navigate-circle-outline" size={size} color={color} />
+          ),
+        }}
+      />
+
+      <Tabs.Screen
         name="map"
         options={{
           title: 'Map',

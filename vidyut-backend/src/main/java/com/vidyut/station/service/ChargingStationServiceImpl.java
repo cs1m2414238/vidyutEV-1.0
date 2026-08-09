@@ -6,9 +6,12 @@ import com.vidyut.station.entity.*;
 import com.vidyut.station.repository.ChargingStationRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
+import java.util.Locale;
 import java.util.stream.Collectors;
 
 @Service
@@ -58,6 +61,7 @@ public class ChargingStationServiceImpl implements ChargingStationService {
     }
 
     @Override
+    @Transactional(readOnly = true)
     public StationResponse getStationById(Long id) {
         ChargingStation station = stationRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Station not found with id: " + id));
@@ -65,6 +69,7 @@ public class ChargingStationServiceImpl implements ChargingStationService {
     }
 
     @Override
+    @Transactional(readOnly = true)
     public List<StationResponse> getAllStations() {
         return stationRepository.findAll().stream()
                 .map(this::mapToResponse)
@@ -72,6 +77,7 @@ public class ChargingStationServiceImpl implements ChargingStationService {
     }
 
     @Override
+    @Transactional(readOnly = true)
     public List<NearbyStationResponse> getNearbyStations(double latitude, double longitude, double radiusKm) {
         return stationRepository.findAll().stream()
                 .map(s -> {
@@ -83,6 +89,47 @@ public class ChargingStationServiceImpl implements ChargingStationService {
                 })
                 .filter(n -> n.getDistanceKm() <= radiusKm)
                 .collect(Collectors.toList());
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<StationResponse> searchStations(String query, String connectorType, Double latitude, Double longitude,
+                                                Double radiusKm, Integer minAvailableSlots, Double maxPricePerKwh,
+                                                Double minPowerKw, Boolean availableOnly) {
+        String normalizedQuery = query == null ? "" : query.trim().toLowerCase(Locale.ROOT);
+        String normalizedConnector = connectorType == null ? ""
+                : connectorType.replace("-", "").replace("_", "").replace(" ", "").toUpperCase(Locale.ROOT);
+        double maxRadius = radiusKm == null || radiusKm <= 0 ? Double.MAX_VALUE : radiusKm;
+        int requiredSlots = minAvailableSlots == null ? 0 : Math.max(0, minAvailableSlots);
+
+        return stationRepository.findAll().stream()
+                .map(station -> {
+                    StationResponse response = mapToResponse(station);
+                    if (latitude != null && longitude != null) {
+                        response.setDistanceKm(round(calculateDistance(latitude, longitude,
+                                station.getLatitude(), station.getLongitude())));
+                    }
+                    return response;
+                })
+                .filter(station -> normalizedQuery.isBlank()
+                        || contains(station.getName(), normalizedQuery)
+                        || contains(station.getAddress(), normalizedQuery)
+                        || contains(station.getCity(), normalizedQuery))
+                .filter(station -> normalizedConnector.isBlank() || station.getConnectors().stream()
+                        .anyMatch(connector -> connector.getType().name().replace("_", "")
+                                .equalsIgnoreCase(normalizedConnector)))
+                .filter(station -> minPowerKw == null || station.getConnectors().stream()
+                        .anyMatch(connector -> connector.getPowerKw() >= minPowerKw))
+                .filter(station -> maxPricePerKwh == null || station.getPricePerKwh() <= maxPricePerKwh)
+                .filter(station -> station.getDistanceKm() == null || station.getDistanceKm() <= maxRadius)
+                .filter(station -> station.getAvailableSlots() >= requiredSlots)
+                .filter(station -> !Boolean.TRUE.equals(availableOnly)
+                        || (station.getStatus() == StationStatus.ACTIVE && station.getAvailableSlots() > 0))
+                .sorted(Comparator.comparing((StationResponse station) -> station.getDistanceKm() == null
+                                ? Double.MAX_VALUE : station.getDistanceKm())
+                        .thenComparing(Comparator.comparingInt(StationResponse::getAvailableSlots).reversed())
+                        .thenComparingDouble(StationResponse::getPricePerKwh))
+                .toList();
     }
 
     @Override
@@ -129,11 +176,17 @@ public class ChargingStationServiceImpl implements ChargingStationService {
     }
 
     @Override
+    @Transactional(readOnly = true)
     public List<StationResponse> getStationsByOwner(Long ownerAccountId) {
         return stationRepository.findByHostUserId(ownerAccountId).stream().map(this::mapToResponse).toList();
     }
 
     private StationResponse mapToResponse(ChargingStation station) {
+        int totalSlots = station.getConnectors().size();
+        int availableSlots = (int) station.getConnectors().stream()
+                .filter(connector -> connector.isAvailable() && !connector.isMaintenanceMode()
+                        && connector.getStatus() == ChargerStatus.ONLINE)
+                .count();
         return StationResponse.builder()
                 .id(station.getId())
                 .name(station.getName())
@@ -167,8 +220,26 @@ public class ChargingStationServiceImpl implements ChargingStationService {
                 .status(station.getStatus())
                 .availability(station.getAvailability())
                 .hostUserId(station.getHostUserId())
-                .connectors(station.getConnectors())
+                .connectors(new ArrayList<>(station.getConnectors()))
+                .totalSlots(totalSlots)
+                .availableSlots(availableSlots)
+                .liveStatus(liveStatus(station, availableSlots))
                 .build();
+    }
+
+    private String liveStatus(ChargingStation station, int availableSlots) {
+        if (station.getStatus() != StationStatus.ACTIVE || station.isEmergencyDisabled()) return "OFFLINE";
+        if (availableSlots > 0) return "AVAILABLE";
+        if (station.getQueueCount() > 0) return "QUEUE";
+        return "FULL";
+    }
+
+    private boolean contains(String value, String normalizedQuery) {
+        return value != null && value.toLowerCase(Locale.ROOT).contains(normalizedQuery);
+    }
+
+    private double round(double value) {
+        return Math.round(value * 10.0) / 10.0;
     }
 
     private void applyExtendedUpdate(ChargingStation station, StationUpdateRequest request) {

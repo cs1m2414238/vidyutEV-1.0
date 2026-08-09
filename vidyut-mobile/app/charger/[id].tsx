@@ -6,27 +6,23 @@ import {
   ScrollView,
   Image,
   SafeAreaView,
-  Alert,
+  Linking,
   TouchableOpacity,
 } from 'react-native';
 import { Redirect, useLocalSearchParams, useRouter } from 'expo-router';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
 import { PrimaryButton } from '../../src/components/PrimaryButton';
 import { LoadingView } from '../../src/components/LoadingView';
 import { Colors } from '../../src/constants/colors';
 import { getChargerById } from '../../src/features/chargers/charger.api';
-import { createBooking } from '../../src/features/bookings/booking.api';
 import { useAuthStore } from '../../src/features/auth/auth.store';
 import { getMyVehicles } from '../../src/features/vehicles/vehicle.api';
 
 export default function ChargerDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
-  const queryClient = useQueryClient();
   const currentUser = useAuthStore((state) => state.user);
-  const userId = currentUser?.id;
-  const [isBooking, setIsBooking] = useState(false);
   const [selectedVehicleId, setSelectedVehicleId] = useState<number | null>(null);
 
   const { data: charger, isLoading } = useQuery({
@@ -55,38 +51,10 @@ export default function ChargerDetailScreen() {
 
   const isAvailable = charger.available;
 
-  const handleBookNow = async () => {
-    setIsBooking(true);
-    try {
-      if (userId === undefined) {
-        router.replace('/(auth)/login');
-        return;
-      }
-
-      await createBooking({
-        stationId: charger.id,
-        vehicleId: selectedVehicleId ?? undefined,
-        startTime: new Date().toISOString(),
-        durationMinutes: 60,
-      }, userId);
-      await queryClient.invalidateQueries({ queryKey: ['bookings', userId] });
-
-      Alert.alert(
-        'Booking Confirmed!',
-        `Your 60-minute charging slot at ${charger.name} has been reserved successfully.`,
-        [
-          {
-            text: 'View Bookings',
-            onPress: () => router.push('/(owner)/bookings'),
-          },
-        ]
-      );
-    } catch (err: any) {
-      Alert.alert('Booking Error', err?.message || 'Failed to complete booking request.');
-    } finally {
-      setIsBooking(false);
-    }
-  };
+  const handleBookNow = () => router.push({ pathname: '/booking/new', params: {
+    stationId: String(charger.id), vehicleId: selectedVehicleId ? String(selectedVehicleId) : undefined,
+  } });
+  const openDirections = () => Linking.openURL(`https://www.google.com/maps/dir/?api=1&destination=${charger.latitude},${charger.longitude}`);
 
   return (
     <SafeAreaView style={styles.container}>
@@ -147,8 +115,18 @@ export default function ChargerDetailScreen() {
           <DetailRow label="Power Rating" value={`${charger.powerKw} kW`} />
           <DetailRow label="Tariff Price" value={`₹${charger.pricePerKwh} / kWh`} />
           <DetailRow label="Address" value={charger.address} />
+          <DetailRow label="Live slots" value={`${charger.availableSlots} of ${charger.totalSlots} available`} />
+          <DetailRow label="Hours" value={charger.workingHours || 'Hours not reported'} />
           {charger.distance ? <DetailRow label="Distance" value={charger.distance} /> : null}
         </View>
+
+        <TouchableOpacity style={styles.directions} onPress={openDirections}>
+          <Ionicons name="navigate-outline" size={19} color={Colors.primary} />
+          <View style={{ flex: 1 }}><Text style={styles.directionsTitle}>Get directions</Text><Text style={styles.directionsText}>Open turn-by-turn navigation in Google Maps</Text></View>
+          <Ionicons name="open-outline" size={17} color={Colors.textMuted} />
+        </TouchableOpacity>
+
+        <View style={styles.descBox}><Text style={styles.descTitle}>Connectors</Text>{charger.connectors.map((connector, index) => <View key={`${connector.type}-${index}`} style={styles.connectorRow}><Ionicons name="flash-outline" size={17} color={connector.available ? Colors.primary : Colors.textMuted} /><Text style={styles.connectorName}>{connector.type}</Text><Text style={styles.connectorMeta}>{connector.powerKw} kW • {connector.available ? 'Available' : 'In use'}</Text></View>)}</View>
 
         <View style={styles.vehicleSection}>
           <View style={styles.vehicleSectionTop}>
@@ -190,7 +168,6 @@ export default function ChargerDetailScreen() {
         <PrimaryButton
           title={!vehicles.length ? 'Add vehicle to continue' : isAvailable ? 'Book Now' : 'Currently Unavailable'}
           onPress={!vehicles.length ? () => router.push('/(owner)/wallet') : handleBookNow}
-          loading={isBooking}
           disabled={!isAvailable && vehicles.length > 0}
         />
       </View>
@@ -315,6 +292,12 @@ const styles = StyleSheet.create({
     color: Colors.textSecondary,
     lineHeight: 18,
   },
+  directions: { marginTop: 14, minHeight: 58, padding: 13, flexDirection: 'row', alignItems: 'center', gap: 10, borderWidth: 1, borderColor: '#B6E2CF', borderRadius: 14, backgroundColor: Colors.primarySoft },
+  directionsTitle: { color: Colors.primaryDark, fontSize: 11, fontWeight: '900' },
+  directionsText: { marginTop: 2, color: Colors.textSecondary, fontSize: 8.5 },
+  connectorRow: { paddingVertical: 9, flexDirection: 'row', alignItems: 'center', gap: 8, borderBottomWidth: 1, borderBottomColor: Colors.borderSoft },
+  connectorName: { flex: 1, color: Colors.textPrimary, fontSize: 11, fontWeight: '800' },
+  connectorMeta: { color: Colors.textSecondary, fontSize: 9 },
   vehicleSection: {
     marginTop: 16,
     padding: 16,

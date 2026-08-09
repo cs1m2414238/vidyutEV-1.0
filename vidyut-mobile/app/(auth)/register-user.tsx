@@ -1,12 +1,13 @@
-import React, { useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import { Alert, KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { InputField } from '../../src/components/InputField';
 import { PrimaryButton } from '../../src/components/PrimaryButton';
 import { Colors } from '../../src/constants/colors';
-import { registerHostApi, registerUserApi } from '../../src/features/auth/auth.api';
+import { googleAuthApi, registerHostApi, registerUserApi } from '../../src/features/auth/auth.api';
 import { useAuthStore } from '../../src/features/auth/auth.store';
+import { GoogleSignInButton } from '../../src/components/GoogleSignInButton';
 
 type IndividualRole = 'EV_USER' | 'HOST';
 
@@ -20,19 +21,30 @@ export default function RegisterUserScreen() {
   const [password, setPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false);
 
+  const handleGoogle = useCallback(async (accessToken: string) => {
+    setIsLoading(true);
+    try {
+      const response = await googleAuthApi(accessToken, role);
+      await login(response.user, response.token);
+      router.replace('/');
+    } finally { setIsLoading(false); }
+  }, [login, role, router]);
+
   const submit = async () => {
-    if (!name.trim() || !email.trim() || !password || !phone.trim()) {
-      Alert.alert('Complete your profile', 'Name, email, phone and password are required.');
+    if (!name.trim() || !email.trim() || !password) {
+      Alert.alert('Complete your account', 'Name, email and password are required.');
       return;
     }
-    if (password.length < 6) {
-      Alert.alert('Choose a stronger password', 'Use at least 6 characters.');
+    if (password.length < 8) {
+      Alert.alert('Choose a stronger password', 'Use at least 8 characters.');
       return;
     }
+    const phoneDigits = phone.replace(/\D/g, '');
+    if (phoneDigits && phoneDigits.length !== 10) { Alert.alert('Check phone number', 'Use exactly 10 digits, or leave it for profile completion.'); return; }
 
     setIsLoading(true);
     try {
-      const request = { name: name.trim(), email: email.trim().toLowerCase(), phone: phone.trim(), password };
+      const request = { name: name.trim(), email: email.trim().toLowerCase(), phone: phoneDigits || undefined, password };
       const response = role === 'EV_USER' ? await registerUserApi(request) : await registerHostApi(request);
       await login(response.user, response.token);
       router.replace(role === 'EV_USER' ? '/(owner)' : '/(host)');
@@ -62,6 +74,8 @@ export default function RegisterUserScreen() {
           <InputField label="Phone number" placeholder="+91 98765 43210" value={phone} onChangeText={setPhone} keyboardType="phone-pad" autoComplete="tel" />
           <InputField label="Password" placeholder="At least 6 characters" value={password} onChangeText={setPassword} secureTextEntry autoComplete="new-password" />
           <PrimaryButton title={role === 'EV_USER' ? 'Create EV Owner account' : 'Create Host account'} onPress={submit} loading={isLoading} />
+          <View style={styles.orRow}><View style={styles.orLine} /><Text style={styles.orText}>OR</Text><View style={styles.orLine} /></View>
+          <GoogleSignInButton onAccessToken={handleGoogle} disabled={isLoading} />
         </View>
 
         <TouchableOpacity onPress={() => router.replace('/(auth)/login')}><Text style={styles.loginLink}>Already registered? <Text style={styles.loginStrong}>Sign in</Text></Text></TouchableOpacity>
@@ -94,4 +108,7 @@ const styles = StyleSheet.create({
   card: { marginTop: 16, padding: 18, paddingBottom: 20, borderRadius: 21, borderWidth: 1, borderColor: Colors.borderSoft, backgroundColor: Colors.white },
   loginLink: { marginTop: 20, color: Colors.textSecondary, fontSize: 12, textAlign: 'center' },
   loginStrong: { color: Colors.primary, fontWeight: '800' },
+  orRow: { marginVertical: 16, flexDirection: 'row', alignItems: 'center', gap: 10 },
+  orLine: { flex: 1, height: 1, backgroundColor: Colors.border },
+  orText: { color: Colors.textMuted, fontSize: 9, fontWeight: '900' },
 });

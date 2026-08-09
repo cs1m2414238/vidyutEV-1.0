@@ -1,5 +1,5 @@
 import { apiClient } from '../../services/apiClient';
-import { Charger } from './charger.types';
+import { Charger, ChargerSearchFilters } from './charger.types';
 import { mockChargers } from './charger.mock';
 import { CONFIG } from '../../constants/config';
 import { ApiResponse, getApiErrorMessage, isNetworkError, unwrapApiResponse } from '../../services/apiResponse';
@@ -8,6 +8,7 @@ interface BackendConnector {
   type: string;
   powerKw: number;
   available: boolean;
+  status?: string;
 }
 
 interface BackendStation {
@@ -25,6 +26,16 @@ interface BackendStation {
   availability: 'AVAILABLE' | 'CHARGING' | 'RESERVED' | 'UNAVAILABLE';
   hostUserId?: number;
   connectors?: BackendConnector[];
+  totalSlots?: number;
+  availableSlots?: number;
+  queueCount?: number;
+  liveStatus?: Charger['status'];
+  workingHours?: string;
+  amenities?: string;
+  chargingInstructions?: string;
+  photoUrls?: string;
+  distanceKm?: number;
+  bookingSlotMinutes?: number;
 }
 
 function normalizeStation(station: BackendStation): Charger {
@@ -47,7 +58,29 @@ function normalizeStation(station: BackendStation): Charger {
     rating: station.rating,
     reviewCount: station.reviewCount,
     imageUrl: station.imageUrl,
+    city: station.city,
+    status: station.liveStatus || (station.status !== 'ACTIVE' ? 'OFFLINE' : station.availability === 'AVAILABLE' ? 'AVAILABLE' : 'FULL'),
+    totalSlots: station.totalSlots ?? station.connectors?.length ?? 0,
+    availableSlots: station.availableSlots ?? (station.connectors || []).filter((item) => item.available).length,
+    queueCount: station.queueCount ?? 0,
+    workingHours: station.workingHours,
+    amenities: station.amenities,
+    chargingInstructions: station.chargingInstructions,
+    photoUrls: station.photoUrls,
+    connectors: station.connectors ?? [],
+    distanceKm: station.distanceKm,
+    bookingSlotMinutes: station.bookingSlotMinutes,
   };
+}
+
+export async function searchChargers(filters: ChargerSearchFilters): Promise<Charger[]> {
+  try {
+    const response = await apiClient.get<ApiResponse<BackendStation[]>>('/stations/search', { params: filters });
+    return unwrapApiResponse(response.data).map(normalizeStation);
+  } catch (error) {
+    if (CONFIG.USE_MOCK_DATA && isNetworkError(error)) return mockChargers;
+    throw new Error(getApiErrorMessage(error, 'Unable to search charging stations.'));
+  }
 }
 
 export async function getChargers(): Promise<Charger[]> {

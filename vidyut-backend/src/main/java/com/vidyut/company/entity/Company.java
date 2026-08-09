@@ -25,10 +25,10 @@ public class Company {
     @JoinColumn(name = "account_id", nullable = false, unique = true)
     private Account account;
 
-    @Column(nullable = false, unique = true)
+    @Column(unique = true)
     private String companyName;
 
-    @Column(nullable = false, unique = true)
+    @Column(unique = true)
     private String registrationNumber;
 
     private String supportEmail;

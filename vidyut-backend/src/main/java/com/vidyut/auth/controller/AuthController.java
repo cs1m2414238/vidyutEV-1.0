@@ -23,6 +23,12 @@ public class AuthController {
         return ResponseEntity.ok(ApiResponse.success("Login successful", authService.login(request)));
     }
 
+    @PostMapping("/google")
+    public ResponseEntity<ApiResponse<AuthResponse>> google(@Valid @RequestBody GoogleAuthRequest request) {
+        return ResponseEntity.ok(ApiResponse.success("Google sign-in successful",
+                authService.authenticateWithGoogle(request)));
+    }
+
     @PostMapping("/register/user")
     public ResponseEntity<ApiResponse<AuthResponse>> registerUser(@Valid @RequestBody RegisterUserRequest request) {
         return ResponseEntity.ok(ApiResponse.success("Registration successful", authService.registerUser(request)));
@@ -48,5 +54,12 @@ public class AuthController {
     public ResponseEntity<ApiResponse<UserResponse>> applyForHost(@RequestBody HostApplicationRequest request) {
         return ResponseEntity.ok(ApiResponse.success("Host application submitted for approval",
                 authService.applyForHost(currentUser.getCurrentUserEmail(), request.getDisplayName())));
+    }
+
+    @PutMapping("/complete-profile")
+    public ResponseEntity<ApiResponse<AuthResponse>> completeProfile(
+            @Valid @RequestBody CompleteProfileRequest request) {
+        return ResponseEntity.ok(ApiResponse.success("Profile completed",
+                authService.completeProfile(currentUser.getCurrentUserEmail(), request)));
     }
 }

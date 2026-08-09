@@ -44,6 +44,12 @@ public class GlobalExceptionHandler {
                 .body(ApiErrorResponse.of(ex.getMessage(), "FORBIDDEN", List.of()));
     }
 
+    @ExceptionHandler(AgentServiceUnavailableException.class)
+    public ResponseEntity<ApiErrorResponse> handleAgentUnavailable(AgentServiceUnavailableException ex) {
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .body(ApiErrorResponse.of(ex.getMessage(), "AGENT_UNAVAILABLE", List.of()));
+    }
+
     @ExceptionHandler(MethodArgumentNotValidException.class)
     public ResponseEntity<ApiErrorResponse> handleValidationErrors(MethodArgumentNotValidException ex) {
         List<String> details = ex.getBindingResult().getFieldErrors().stream()

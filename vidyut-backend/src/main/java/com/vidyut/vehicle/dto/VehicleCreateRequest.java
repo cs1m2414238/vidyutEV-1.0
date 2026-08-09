@@ -19,5 +19,6 @@ public class VehicleCreateRequest {
     private String registrationNumber;
 
     private String batteryCapacity;
+
     private String connectorType;
 }

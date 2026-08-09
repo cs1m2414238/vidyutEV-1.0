@@ -35,6 +35,7 @@ public class SecurityConfig {
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(HttpMethod.POST,
                                 "/api/auth/login",
+                                "/api/auth/google",
                                 "/api/auth/register/user",
                                 "/api/auth/register/host",
                                 "/api/auth/register/company").permitAll()

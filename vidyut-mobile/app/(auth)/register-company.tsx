@@ -1,12 +1,13 @@
-import React, { useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import { Alert, KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { InputField } from '../../src/components/InputField';
 import { PrimaryButton } from '../../src/components/PrimaryButton';
 import { Colors } from '../../src/constants/colors';
-import { registerCompanyApi } from '../../src/features/auth/auth.api';
+import { googleAuthApi, registerCompanyApi } from '../../src/features/auth/auth.api';
 import { useAuthStore } from '../../src/features/auth/auth.store';
+import { GoogleSignInButton } from '../../src/components/GoogleSignInButton';
 
 export default function RegisterCompanyScreen() {
   const router = useRouter();
@@ -18,14 +19,19 @@ export default function RegisterCompanyScreen() {
   const [password, setPassword] = useState('');
   const [registrationNumber, setRegistrationNumber] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const handleGoogle = useCallback(async (accessToken: string) => {
+    setIsLoading(true);
+    try { const response = await googleAuthApi(accessToken, 'COMPANY'); await login(response.user, response.token); router.replace('/'); }
+    finally { setIsLoading(false); }
+  }, [login, router]);
 
   const submit = async () => {
-    if (![companyName, contactName, email, phone, password, registrationNumber].every((value) => value.trim())) {
-      Alert.alert('Complete company details', 'Every field is required for a protected company account.');
+    if (![contactName, email, password].every((value) => value.trim())) {
+      Alert.alert('Complete your account', 'Administrator name, email and password are required.');
       return;
     }
-    if (password.length < 6) {
-      Alert.alert('Choose a stronger password', 'Use at least 6 characters.');
+    if (password.length < 8) {
+      Alert.alert('Choose a stronger password', 'Use at least 8 characters.');
       return;
     }
 
@@ -58,6 +64,8 @@ export default function RegisterCompanyScreen() {
           <InputField label="Support phone" placeholder="+91 98765 43210" value={phone} onChangeText={setPhone} keyboardType="phone-pad" autoComplete="tel" />
           <InputField label="Password" placeholder="At least 6 characters" value={password} onChangeText={setPassword} secureTextEntry autoComplete="new-password" />
           <PrimaryButton title="Create company workspace" onPress={submit} loading={isLoading} />
+          <View style={styles.orRow}><View style={styles.orLine} /><Text style={styles.orText}>OR</Text><View style={styles.orLine} /></View>
+          <GoogleSignInButton onAccessToken={handleGoogle} disabled={isLoading} />
         </View>
 
         <View style={styles.note}><Ionicons name="shield-checkmark-outline" size={18} color={Colors.blue} /><Text style={styles.noteText}>This login will only access Company routes and company-owned resources.</Text></View>
@@ -80,4 +88,7 @@ const styles = StyleSheet.create({
   noteText: { flex: 1, color: Colors.textSecondary, fontSize: 10.5, lineHeight: 15 },
   loginLink: { marginTop: 20, color: Colors.textSecondary, fontSize: 12, textAlign: 'center' },
   loginStrong: { color: Colors.primary, fontWeight: '800' },
+  orRow: { marginVertical: 16, flexDirection: 'row', alignItems: 'center', gap: 10 },
+  orLine: { flex: 1, height: 1, backgroundColor: Colors.border },
+  orText: { color: Colors.textMuted, fontSize: 9, fontWeight: '900' },
 });

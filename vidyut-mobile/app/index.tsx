@@ -3,6 +3,7 @@ import { View, ActivityIndicator, StyleSheet } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useAuthStore } from '../src/features/auth/auth.store';
 import { Colors } from '../src/constants/colors';
+import { tokenStorage } from '../src/services/tokenStorage';
 
 export default function IndexScreen() {
   const router = useRouter();
@@ -10,30 +11,43 @@ export default function IndexScreen() {
 
   useEffect(() => {
     if (isLoading) return;
+    let current = true;
+    const route = async () => {
+      if (!await tokenStorage.hasSeenOnboarding()) {
+        if (current) router.replace('/onboarding');
+        return;
+      }
 
     if (!isAuthenticated || !user) {
-      router.replace('/(auth)/login');
+      if (current) router.replace('/(auth)/login');
+      return;
+    }
+
+    if (user.profileCompleted === false && !await tokenStorage.hasSkippedProfilePrompt(user.id)) {
+      if (current) router.replace('/complete-profile');
       return;
     }
 
     switch (user.activeMode) {
       case 'EV_USER':
-        router.replace('/(owner)');
+        if (current) router.replace('/(owner)');
         break;
       case 'HOST':
-        router.replace('/(host)');
+        if (current) router.replace('/(host)');
         break;
       case 'COMPANY':
-        router.replace('/(company)');
+        if (current) router.replace('/(company)');
         break;
       case 'ADMIN':
-        router.replace('/(admin)');
+        if (current) router.replace('/(admin)');
         break;
 
       default:
-        router.replace('/(owner)');
+        if (current) router.replace('/(owner)');
         break;
-    }
+    }};
+    route();
+    return () => { current = false; };
   }, [user, isAuthenticated, isLoading]);
 
   return (

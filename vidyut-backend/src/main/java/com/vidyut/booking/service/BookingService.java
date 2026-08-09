@@ -5,13 +5,18 @@ import com.vidyut.booking.dto.BookingResponse;
 import com.vidyut.booking.dto.BookingStatusUpdateRequest;
 
 import java.util.List;
+import java.time.LocalDate;
+import com.vidyut.booking.dto.BookingSlotResponse;
 
 public interface BookingService {
     BookingResponse createBooking(BookingCreateRequest request, Long userId);
     BookingResponse getBookingById(Long id);
     BookingResponse getBookingById(Long id, Long userId);
     List<BookingResponse> getBookingsByUserId(Long userId);
+    long getUnreadActiveCount(Long userId);
+    void markBookingsSeen(Long userId);
     BookingResponse updateBookingStatus(Long id, BookingStatusUpdateRequest request);
-    void cancelBooking(Long id);
-    void cancelBooking(Long id, Long userId);
+    BookingResponse cancelBooking(Long id);
+    BookingResponse cancelBooking(Long id, Long userId);
+    List<BookingSlotResponse> getAvailability(Long stationId, LocalDate date);
 }

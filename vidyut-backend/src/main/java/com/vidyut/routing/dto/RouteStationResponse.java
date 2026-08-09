@@ -14,4 +14,10 @@ public class RouteStationResponse {
     private StationResponse station;
     private double distanceFromOriginKm;
     private int recommendedChargeMinutes;
+    private double detourKm;
+    private int etaMinutes;
+    private int availableSlots;
+    private boolean connectorMatched;
+    private double estimatedChargingCost;
+    private String reason;
 }

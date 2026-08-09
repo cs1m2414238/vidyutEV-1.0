@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import {
   Alert,
   KeyboardAvoidingView,
@@ -14,8 +14,9 @@ import { Ionicons } from '@expo/vector-icons';
 import { InputField } from '../../src/components/InputField';
 import { PrimaryButton } from '../../src/components/PrimaryButton';
 import { Colors } from '../../src/constants/colors';
-import { loginApi } from '../../src/features/auth/auth.api';
+import { googleAuthApi, loginApi } from '../../src/features/auth/auth.api';
 import { useAuthStore } from '../../src/features/auth/auth.store';
+import { GoogleSignInButton } from '../../src/components/GoogleSignInButton';
 
 export default function LoginScreen() {
   const router = useRouter();
@@ -24,6 +25,17 @@ export default function LoginScreen() {
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+
+  const finishAuth = useCallback(async (response: Awaited<ReturnType<typeof loginApi>>) => {
+    await setAuthLogin(response.user, response.token);
+    router.replace('/');
+  }, [router, setAuthLogin]);
+
+  const handleGoogle = useCallback(async (accessToken: string) => {
+    setIsLoading(true);
+    try { await finishAuth(await googleAuthApi(accessToken, 'EV_USER')); }
+    finally { setIsLoading(false); }
+  }, [finishAuth]);
 
   const handleLogin = async () => {
     if (!email.trim() || !password) {
@@ -96,6 +108,9 @@ export default function LoginScreen() {
             <PrimaryButton title="Sign in securely" onPress={handleLogin} loading={isLoading} style={styles.signIn} />
           </View>
 
+          <View style={styles.orRow}><View style={styles.orLine} /><Text style={styles.orText}>OR</Text><View style={styles.orLine} /></View>
+          <GoogleSignInButton onAccessToken={handleGoogle} disabled={isLoading} />
+
           <View style={styles.securityNote}>
             <Ionicons name="shield-checkmark-outline" size={18} color={Colors.primary} />
             <Text style={styles.securityText}>Your active token is limited to the selected account mode.</Text>
@@ -133,6 +148,9 @@ const styles = StyleSheet.create({
   passwordToggle: { alignSelf: 'flex-end', flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: -7 },
   passwordToggleText: { color: Colors.primary, fontSize: 11, fontWeight: '700' },
   signIn: { marginTop: 17 },
+  orRow: { marginVertical: 17, flexDirection: 'row', alignItems: 'center', gap: 10 },
+  orLine: { flex: 1, height: 1, backgroundColor: Colors.border },
+  orText: { color: Colors.textMuted, fontSize: 9, fontWeight: '900' },
   securityNote: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 15, padding: 11, borderRadius: 12, backgroundColor: Colors.primarySoft },
   securityText: { flex: 1, color: Colors.textSecondary, fontSize: 10.5, lineHeight: 15 },
   divider: { height: 1, marginVertical: 18, backgroundColor: Colors.borderSoft },

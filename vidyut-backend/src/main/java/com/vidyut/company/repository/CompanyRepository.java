@@ -10,5 +10,7 @@ import java.util.Optional;
 public interface CompanyRepository extends JpaRepository<Company, Long> {
     Optional<Company> findByAccount_Id(Long accountId);
     boolean existsByCompanyName(String companyName);
+    boolean existsByCompanyNameAndAccount_IdNot(String companyName, Long accountId);
     boolean existsByRegistrationNumber(String registrationNumber);
+    boolean existsByRegistrationNumberAndAccount_IdNot(String registrationNumber, Long accountId);
 }

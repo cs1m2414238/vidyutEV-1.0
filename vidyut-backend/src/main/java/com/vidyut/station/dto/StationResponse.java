@@ -48,4 +48,8 @@ public class StationResponse {
     private StationAvailability availability;
     private Long hostUserId;
     private List<ChargingConnector> connectors;
+    private int totalSlots;
+    private int availableSlots;
+    private String liveStatus;
+    private Double distanceKm;
 }

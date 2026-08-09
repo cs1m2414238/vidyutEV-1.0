@@ -1,264 +1,109 @@
-import React, { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { CalendarClock, CircleAlert, Gauge, MapPin, PlugZap, Star, X, Zap } from 'lucide-react';
 import type { Charger } from '../types';
+import './ChargerDetailModal.css';
 
 interface ChargerDetailModalProps {
   charger: Charger | null;
   onClose: () => void;
-  onConfirmBooking: (charger: Charger, duration: number) => void;
+  onConfirmBooking: (charger: Charger, durationMinutes: number) => Promise<void>;
 }
 
-export const ChargerDetailModal: React.FC<ChargerDetailModalProps> = ({
-  charger,
-  onClose,
-  onConfirmBooking,
-}) => {
+export function ChargerDetailModal({ charger, onClose, onConfirmBooking }: ChargerDetailModalProps) {
   const [duration, setDuration] = useState(60);
   const [isBooking, setIsBooking] = useState(false);
+  const [bookingError, setBookingError] = useState('');
+
+  const durations = useMemo(() => {
+    const slot = charger?.bookingSlotMinutes || 30;
+    return [slot, slot * 2, slot * 3, slot * 4].filter((minutes) => minutes <= 720);
+  }, [charger?.bookingSlotMinutes]);
+
+  useEffect(() => {
+    if (!charger) return;
+    const preferredDuration = charger.bookingSlotMinutes && charger.bookingSlotMinutes >= 30
+      ? charger.bookingSlotMinutes
+      : 60;
+    setDuration(preferredDuration);
+    setBookingError('');
+    setIsBooking(false);
+  }, [charger]);
+
+  useEffect(() => {
+    if (!charger || isBooking) return undefined;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', closeOnEscape);
+    return () => window.removeEventListener('keydown', closeOnEscape);
+  }, [charger, isBooking, onClose]);
 
   if (!charger) return null;
 
-  const totalCost = (charger.pricePerKwh * (charger.powerKw * (duration / 60))).toFixed(2);
+  const energy = charger.powerKw * (duration / 60);
+  const totalCost = charger.pricePerKwh * energy;
 
-  const handleBook = () => {
+  const handleBook = async () => {
     setIsBooking(true);
-    setTimeout(() => {
-      onConfirmBooking(charger, duration);
-      setIsBooking(false);
+    setBookingError('');
+    try {
+      await onConfirmBooking(charger, duration);
       onClose();
-    }, 600);
+    } catch (error) {
+      setBookingError(error instanceof Error ? error.message : 'Unable to confirm this booking.');
+    } finally {
+      setIsBooking(false);
+    }
   };
 
   return (
-    <div style={styles.overlay} onClick={onClose}>
-      <div style={styles.modal} onClick={(e) => e.stopPropagation()}>
-        <button style={styles.closeBtn} onClick={onClose}>✕</button>
-
-        <img src={charger.imageUrl} alt={charger.name} style={styles.image} />
-
-        <div style={styles.header}>
-          <div>
-            <h2 style={styles.title}>{charger.name}</h2>
-            <div style={styles.host}>Hosted by {charger.hostName} • {charger.address}</div>
-          </div>
-          <span
-            style={{
-              ...styles.badge,
-              backgroundColor: charger.available ? '#DCFCE7' : '#FFEDD5',
-              color: charger.available ? '#15803D' : '#C2410C',
-            }}
-          >
-            {charger.available ? 'Available' : 'Busy'}
-          </span>
+    <div className="charger-dialog-backdrop" role="presentation" onMouseDown={() => !isBooking && onClose()}>
+      <section className="charger-dialog" role="dialog" aria-modal="true" aria-labelledby="charger-dialog-title" onMouseDown={(event) => event.stopPropagation()}>
+        <button className="charger-dialog-close" type="button" onClick={onClose} disabled={isBooking} aria-label="Close charger details"><X size={18} /></button>
+        <div className="charger-dialog-image-wrap">
+          <img src={charger.imageUrl} alt="" className="charger-dialog-image" />
+          <span className={charger.available ? 'available' : 'busy'}>{charger.available ? 'Available now' : 'Currently busy'}</span>
         </div>
 
-        <div style={styles.specsGrid}>
-          <div style={styles.specBox}>
-            <div style={styles.specLabel}>Power</div>
-            <div style={styles.specVal}>{charger.powerKw} kW</div>
+        <div className="charger-dialog-body">
+          <div className="charger-dialog-heading">
+            <div>
+              <span className="charger-dialog-eyebrow">Verified charging station</span>
+              <h2 id="charger-dialog-title">{charger.name}</h2>
+              <p><MapPin size={13} />{charger.address}</p>
+            </div>
+            <span className="charger-rating"><Star size={14} fill="currentColor" />{charger.rating}</span>
           </div>
-          <div style={styles.specBox}>
-            <div style={styles.specLabel}>Connector</div>
-            <div style={styles.specVal}>{charger.connectorType}</div>
-          </div>
-          <div style={styles.specBox}>
-            <div style={styles.specLabel}>Rate</div>
-            <div style={styles.specVal}>₹{charger.pricePerKwh}/kWh</div>
-          </div>
-          <div style={styles.specBox}>
-            <div style={styles.specLabel}>Rating</div>
-            <div style={styles.specVal}>⭐ {charger.rating}</div>
-          </div>
-        </div>
 
-        {/* Duration selector */}
-        <div style={styles.section}>
-          <div style={styles.sectionTitle}>Select Charging Duration</div>
-          <div style={styles.durationRow}>
-            {[30, 45, 60, 90, 120].map((mins) => (
-              <button
-                key={mins}
-                style={{
-                  ...styles.durationBtn,
-                  ...(duration === mins ? styles.durationBtnActive : {}),
-                }}
-                onClick={() => setDuration(mins)}
-              >
-                {mins} mins
-              </button>
-            ))}
+          <div className="charger-spec-grid">
+            <article><span><Gauge size={16} /></span><small>Power</small><strong>{charger.powerKw} kW</strong></article>
+            <article><span><PlugZap size={16} /></span><small>Connector</small><strong>{charger.connectorType}</strong></article>
+            <article><span><Zap size={16} /></span><small>Rate</small><strong>₹{charger.pricePerKwh}/kWh</strong></article>
           </div>
-        </div>
 
-        {/* Cost breakdown */}
-        <div style={styles.costBox}>
-          <div style={styles.costRow}>
-            <span>Estimated Cost ({duration} mins):</span>
-            <span style={styles.costVal}>₹{totalCost}</span>
+          <div className="charger-duration-section">
+            <div><h3>Select charging duration</h3><p>Starting now • saved to My bookings</p></div>
+            <div className="charger-duration-options">
+              {durations.map((minutes) => (
+                <button key={minutes} type="button" className={duration === minutes ? 'active' : ''} onClick={() => setDuration(minutes)} disabled={isBooking}>
+                  {minutes < 60 ? `${minutes} min` : minutes % 60 === 0 ? `${minutes / 60} hr` : `${Math.floor(minutes / 60)}h ${minutes % 60}m`}
+                </button>
+              ))}
+            </div>
           </div>
-        </div>
 
-        <button
-          style={{
-            ...styles.bookBtn,
-            opacity: charger.available && !isBooking ? 1 : 0.6,
-          }}
-          disabled={!charger.available || isBooking}
-          onClick={handleBook}
-        >
-          {isBooking ? 'Confirming Booking...' : charger.available ? 'Confirm & Book Now' : 'Currently Unavailable'}
-        </button>
-      </div>
+          <div className="charger-cost-summary">
+            <span><CalendarClock size={18} /><div><small>Estimated session</small><strong>{energy.toFixed(1)} kWh • {duration} minutes</strong></div></span>
+            <div><small>Estimated total</small><strong>₹{totalCost.toFixed(2)}</strong></div>
+          </div>
+
+          {bookingError && <div className="charger-booking-error" role="alert"><CircleAlert size={16} />{bookingError}</div>}
+
+          <button className="charger-book-button" type="button" disabled={!charger.available || isBooking} onClick={() => void handleBook()}>
+            {isBooking ? 'Confirming securely…' : charger.available ? 'Confirm booking' : 'Currently unavailable'}
+          </button>
+        </div>
+      </section>
     </div>
   );
-};
-
-const styles: Record<string, React.CSSProperties> = {
-  overlay: {
-    position: 'fixed',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    zIndex: 1000,
-    backdropFilter: 'blur(4px)',
-  },
-  modal: {
-    backgroundColor: '#fff',
-    borderRadius: 20,
-    width: '90%',
-    maxWidth: 520,
-    padding: 24,
-    position: 'relative',
-    boxShadow: '0 20px 40px rgba(0,0,0,0.2)',
-  },
-  closeBtn: {
-    position: 'absolute',
-    top: 16,
-    right: 16,
-    fontSize: 18,
-    color: '#64748B',
-    cursor: 'pointer',
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: '#F1F5F9',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  image: {
-    width: '100%',
-    height: 180,
-    borderRadius: 14,
-    objectFit: 'cover',
-    marginBottom: 16,
-  },
-  header: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    marginBottom: 16,
-  },
-  title: {
-    fontSize: 18,
-    fontWeight: 800,
-    color: '#1E293B',
-  },
-  host: {
-    fontSize: 12,
-    color: '#64748B',
-    marginTop: 2,
-  },
-  badge: {
-    fontSize: 11,
-    fontWeight: 700,
-    padding: '4px 10px',
-    borderRadius: 10,
-  },
-  specsGrid: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(4, 1fr)',
-    gap: 8,
-    marginBottom: 16,
-  },
-  specBox: {
-    backgroundColor: '#F8FAFC',
-    borderRadius: 10,
-    padding: 10,
-    textAlign: 'center',
-    border: '1px solid #F1F5F9',
-  },
-  specLabel: {
-    fontSize: 10,
-    color: '#64748B',
-  },
-  specVal: {
-    fontSize: 13,
-    fontWeight: 800,
-    color: '#1E293B',
-    marginTop: 2,
-  },
-  section: {
-    marginBottom: 16,
-  },
-  sectionTitle: {
-    fontSize: 12,
-    fontWeight: 700,
-    color: '#1E293B',
-    marginBottom: 8,
-  },
-  durationRow: {
-    display: 'flex',
-    gap: 8,
-  },
-  durationBtn: {
-    flex: 1,
-    padding: '8px',
-    borderRadius: 8,
-    border: '1px solid #E2E8F0',
-    backgroundColor: '#fff',
-    fontSize: 12,
-    fontWeight: 600,
-    color: '#64748B',
-    cursor: 'pointer',
-  },
-  durationBtnActive: {
-    backgroundColor: '#00A86B',
-    borderColor: '#00A86B',
-    color: '#fff',
-  },
-  costBox: {
-    backgroundColor: '#E6F7F0',
-    borderRadius: 10,
-    padding: 12,
-    marginBottom: 16,
-  },
-  costRow: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    fontSize: 13,
-    fontWeight: 600,
-    color: '#1E293B',
-  },
-  costVal: {
-    fontSize: 18,
-    fontWeight: 800,
-    color: '#00A86B',
-  },
-  bookBtn: {
-    width: '100%',
-    padding: 14,
-    borderRadius: 12,
-    backgroundColor: '#00A86B',
-    color: '#fff',
-    fontSize: 14,
-    fontWeight: 800,
-    border: 'none',
-    cursor: 'pointer',
-  },
-};
+}

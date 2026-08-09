@@ -17,4 +17,11 @@ public class RoutePlanResponse {
     private double totalDistanceKm;
     private int totalDurationMinutes;
     private List<RouteStationResponse> recommendedChargingStops;
+    private Long vehicleId;
+    private double usableRangeKm;
+    private double reserveBatteryPercent;
+    private double estimatedArrivalBatteryPercent;
+    private boolean destinationWithinRange;
+    private String routeSource;
+    private String externalMapsUrl;
 }

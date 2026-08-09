@@ -44,6 +44,9 @@ public class Account {
     @Column(name = "password_hash", nullable = false)
     private String passwordHash;
 
+    @Column(name = "google_subject", unique = true, length = 255)
+    private String googleSubject;
+
     @Enumerated(EnumType.STRING)
     @Column(name = "account_type", nullable = false, length = 20)
     private AccountType accountType;

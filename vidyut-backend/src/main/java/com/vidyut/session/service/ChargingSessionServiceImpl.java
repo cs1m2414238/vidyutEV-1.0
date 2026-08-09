@@ -1,0 +1,190 @@
+package com.vidyut.session.service;
+
+import com.vidyut.booking.entity.*;
+import com.vidyut.booking.repository.BookingRepository;
+import com.vidyut.common.exception.BadRequestException;
+import com.vidyut.common.exception.ResourceNotFoundException;
+import com.vidyut.session.dto.ChargingSessionResponse;
+import com.vidyut.session.entity.*;
+import com.vidyut.session.repository.ChargingSessionRepository;
+import com.vidyut.station.entity.*;
+import com.vidyut.station.repository.ChargingStationRepository;
+import com.vidyut.vehicle.entity.Vehicle;
+import com.vidyut.vehicle.repository.VehicleRepository;
+import com.vidyut.wallet.service.VehicleWalletService;
+import lombok.RequiredArgsConstructor;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.time.Duration;
+import java.time.LocalDateTime;
+import java.util.List;
+
+@Service
+@RequiredArgsConstructor
+public class ChargingSessionServiceImpl implements ChargingSessionService {
+    private final ChargingSessionRepository sessionRepository;
+    private final BookingRepository bookingRepository;
+    private final ChargingStationRepository stationRepository;
+    private final VehicleRepository vehicleRepository;
+    private final VehicleWalletService vehicleWalletService;
+
+    @Override
+    @Transactional
+    public ChargingSessionResponse start(Long userId, Long bookingId) {
+        ChargingSession existing = sessionRepository.findByBookingIdAndUserId(bookingId, userId).orElse(null);
+        if (existing != null) return map(refresh(existing));
+        Booking booking = ownedBooking(userId, bookingId);
+        if (booking.getStatus() != BookingStatus.CONFIRMED && booking.getStatus() != BookingStatus.PENDING) {
+            throw new BadRequestException("Only a confirmed booking can start charging");
+        }
+        ChargingStation station = stationRepository.findById(booking.getStationId())
+                .orElseThrow(() -> new ResourceNotFoundException("Charging station not found"));
+        double powerKw = station.getConnectors().stream()
+                .filter(connector -> connector.getStatus() == ChargerStatus.ONLINE && connector.isAvailable()
+                        && !connector.isMaintenanceMode())
+                .mapToDouble(ChargingConnector::getPowerKw).max()
+                .orElseThrow(() -> new BadRequestException("No connector is ready to start charging"));
+        int startBattery = booking.getVehicleId() == null ? 20 : vehicleRepository.findByIdAndUserId(
+                booking.getVehicleId(), userId).map(Vehicle::getBatteryPercent).orElse(20);
+        if (startBattery < 0) startBattery = 20;
+        int durationMinutes = booking.getDurationMinutes() > 0 ? booking.getDurationMinutes()
+                : Math.max(1, booking.getDurationHours()) * 60;
+        LocalDateTime now = LocalDateTime.now();
+        ChargingSession session = ChargingSession.builder()
+                .userId(userId).bookingId(bookingId).stationId(station.getId()).vehicleId(booking.getVehicleId())
+                .powerKw(powerKw).startBatteryPercent(startBattery).currentBatteryPercent(startBattery)
+                .targetBatteryPercent(80).startedAt(now).estimatedCompletionAt(now.plusMinutes(durationMinutes)).build();
+        booking.setStatus(BookingStatus.IN_PROGRESS);
+        bookingRepository.save(booking);
+        updateVehicleCharging(session, station, true);
+        return map(sessionRepository.save(session));
+    }
+
+    @Override
+    @Transactional
+    public ChargingSessionResponse get(Long userId, Long sessionId) {
+        return map(refresh(ownedSession(userId, sessionId)));
+    }
+
+    @Override
+    @Transactional
+    public List<ChargingSessionResponse> getActive(Long userId) {
+        return sessionRepository.findByUserIdAndStatusOrderByStartedAtDesc(userId, ChargingSessionStatus.ACTIVE)
+                .stream().map(this::refresh).map(this::map).toList();
+    }
+
+    @Override
+    @Transactional
+    public ChargingSessionResponse stop(Long userId, Long sessionId) {
+        ChargingSession session = refresh(ownedSession(userId, sessionId));
+        if (session.getStatus() == ChargingSessionStatus.COMPLETED) return map(session);
+        complete(session);
+        return map(session);
+    }
+
+    @Override
+    @Transactional
+    public ChargingSessionResponse pay(Long userId, Long sessionId) {
+        ChargingSession session = refresh(ownedSession(userId, sessionId));
+        if (session.getStatus() != ChargingSessionStatus.COMPLETED) {
+            throw new BadRequestException("Stop the charging session before payment");
+        }
+        if ("PAID".equals(session.getPaymentStatus())) return map(session);
+        if (session.getVehicleId() == null) throw new BadRequestException("This booking has no vehicle wallet");
+        vehicleWalletService.deduct(userId, session.getVehicleId(), session.getCost(), session.getBookingId(),
+                "Charging session #" + session.getId());
+        session.setPaymentStatus("PAID");
+        session.setUpdatedAt(LocalDateTime.now());
+        return map(sessionRepository.save(session));
+    }
+
+    private ChargingSession refresh(ChargingSession session) {
+        if (session.getStatus() == ChargingSessionStatus.COMPLETED) return session;
+        long seconds = Math.max(0, Duration.between(session.getStartedAt(), LocalDateTime.now()).toSeconds());
+        double energy = round(session.getPowerKw() * seconds / 3600.0);
+        Booking booking = bookingRepository.findById(session.getBookingId()).orElseThrow();
+        double maxEnergy = Math.max(booking.getKwhDelivered(), 0.1);
+        session.setEnergyKwh(Math.min(energy, maxEnergy));
+        ChargingStation station = stationRepository.findById(session.getStationId()).orElseThrow();
+        session.setCost(round(session.getEnergyKwh() * station.getPricePerKwh()));
+        if (session.getVehicleId() != null) {
+            vehicleRepository.findByIdAndUserId(session.getVehicleId(), session.getUserId()).ifPresent(vehicle -> {
+                double capacity = parseCapacity(vehicle.getBatteryCapacity());
+                int added = capacity <= 0 ? 0 : (int) Math.round(session.getEnergyKwh() / capacity * 100);
+                session.setCurrentBatteryPercent(Math.min(session.getTargetBatteryPercent(),
+                        session.getStartBatteryPercent() + added));
+            });
+        }
+        session.setUpdatedAt(LocalDateTime.now());
+        if (!LocalDateTime.now().isBefore(session.getEstimatedCompletionAt())
+                || session.getCurrentBatteryPercent() >= session.getTargetBatteryPercent()) {
+            complete(session);
+        }
+        return sessionRepository.save(session);
+    }
+
+    private void complete(ChargingSession session) {
+        session.setStatus(ChargingSessionStatus.COMPLETED);
+        session.setCompletedAt(LocalDateTime.now());
+        session.setUpdatedAt(LocalDateTime.now());
+        sessionRepository.save(session);
+        Booking booking = bookingRepository.findById(session.getBookingId()).orElseThrow();
+        booking.setStatus(BookingStatus.COMPLETED);
+        booking.setKwhDelivered(session.getEnergyKwh());
+        booking.setTotalAmount(session.getCost());
+        bookingRepository.save(booking);
+        ChargingStation station = stationRepository.findById(session.getStationId()).orElseThrow();
+        updateVehicleCharging(session, station, false);
+    }
+
+    private void updateVehicleCharging(ChargingSession session, ChargingStation station, boolean charging) {
+        if (session.getVehicleId() == null) return;
+        vehicleRepository.findByIdAndUserId(session.getVehicleId(), session.getUserId()).ifPresent(vehicle -> {
+            vehicle.setCharging(charging);
+            vehicle.setBatteryPercent(session.getCurrentBatteryPercent());
+            vehicle.setTelemetryUpdatedAt(LocalDateTime.now());
+            if (!charging) {
+                vehicle.setLastChargingStation(station.getName());
+                vehicle.setLastChargingAddress(station.getAddress());
+                vehicle.setLastChargedAt(LocalDateTime.now());
+            }
+            vehicleRepository.save(vehicle);
+        });
+    }
+
+    private Booking ownedBooking(Long userId, Long bookingId) {
+        return bookingRepository.findByIdAndUserId(bookingId, userId)
+                .orElseThrow(() -> new ResourceNotFoundException("Booking not found for this account"));
+    }
+
+    private ChargingSession ownedSession(Long userId, Long sessionId) {
+        return sessionRepository.findByIdAndUserId(sessionId, userId)
+                .orElseThrow(() -> new ResourceNotFoundException("Charging session not found"));
+    }
+
+    private ChargingSessionResponse map(ChargingSession session) {
+        Booking booking = bookingRepository.findById(session.getBookingId()).orElseThrow();
+        String vehicleName = session.getVehicleId() == null ? null : vehicleRepository.findById(session.getVehicleId())
+                .map(Vehicle::getMakeAndModel).orElse(null);
+        return ChargingSessionResponse.builder()
+                .id(session.getId()).bookingId(session.getBookingId()).stationId(session.getStationId())
+                .stationName(booking.getStationName()).vehicleId(session.getVehicleId()).vehicleName(vehicleName)
+                .status(session.getStatus()).paymentStatus(session.getPaymentStatus()).powerKw(session.getPowerKw())
+                .energyKwh(session.getEnergyKwh()).cost(session.getCost())
+                .co2SavedKg(round(session.getEnergyKwh() * 0.82))
+                .startBatteryPercent(session.getStartBatteryPercent())
+                .currentBatteryPercent(session.getCurrentBatteryPercent())
+                .targetBatteryPercent(session.getTargetBatteryPercent()).startedAt(session.getStartedAt())
+                .estimatedCompletionAt(session.getEstimatedCompletionAt()).completedAt(session.getCompletedAt())
+                .updatedAt(session.getUpdatedAt()).build();
+    }
+
+    private double parseCapacity(String value) {
+        if (value == null) return 0;
+        try { return Double.parseDouble(value.replaceAll("[^0-9.]", "")); }
+        catch (NumberFormatException ignored) { return 0; }
+    }
+
+    private double round(double value) { return Math.round(value * 100.0) / 100.0; }
+}

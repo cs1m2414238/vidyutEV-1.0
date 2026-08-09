@@ -6,16 +6,26 @@ import com.vidyut.booking.dto.BookingStatusUpdateRequest;
 import com.vidyut.booking.entity.Booking;
 import com.vidyut.booking.entity.BookingStatus;
 import com.vidyut.booking.repository.BookingRepository;
+import com.vidyut.common.exception.BadRequestException;
+import com.vidyut.common.exception.DuplicateResourceException;
 import com.vidyut.common.exception.ResourceNotFoundException;
+import com.vidyut.station.entity.ChargerStatus;
 import com.vidyut.station.entity.ChargingStation;
+import com.vidyut.station.entity.StationAvailability;
+import com.vidyut.station.entity.StationStatus;
 import com.vidyut.station.repository.ChargingStationRepository;
 import com.vidyut.vehicle.repository.VehicleRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.time.LocalDate;
+import java.time.LocalTime;
+import java.util.EnumSet;
 import java.util.List;
-import java.util.stream.Collectors;
+import java.util.ArrayList;
+import com.vidyut.booking.dto.BookingSlotResponse;
 
 @Service
 @RequiredArgsConstructor
@@ -26,27 +36,68 @@ public class BookingServiceImpl implements BookingService {
     private final VehicleRepository vehicleRepository;
 
     @Override
+    @Transactional
     public BookingResponse createBooking(BookingCreateRequest request, Long userId) {
-        ChargingStation station = stationRepository.findById(request.getStationId())
+        String idempotencyKey = request.getIdempotencyKey() == null ? null : request.getIdempotencyKey().trim();
+        if (idempotencyKey != null && !idempotencyKey.isBlank()) {
+            Booking existing = bookingRepository.findByUserIdAndIdempotencyKey(userId, idempotencyKey).orElse(null);
+            if (existing != null) return mapToResponse(existing);
+        }
+        ChargingStation station = stationRepository.findLockedById(request.getStationId())
                 .orElseThrow(() -> new ResourceNotFoundException("Charging station not found with id: " + request.getStationId()));
+        if (idempotencyKey != null && !idempotencyKey.isBlank()) {
+            Booking existing = bookingRepository.findByUserIdAndIdempotencyKey(userId, idempotencyKey).orElse(null);
+            if (existing != null) return mapToResponse(existing);
+        }
 
-        int hours = request.getDurationHours() > 0 ? request.getDurationHours() : 1;
-        double estKwh = hours * 7.4;
-        double totalAmount = estKwh * station.getPricePerKwh();
+        if (station.getStatus() != StationStatus.ACTIVE || station.getAvailability() != StationAvailability.AVAILABLE
+                || station.isEmergencyDisabled()) {
+            throw new BadRequestException("This charging station is not currently available for booking");
+        }
+
+        int durationMinutes = requestedDurationMinutes(request);
+        int bookingSlotMinutes = Math.max(15, station.getBookingSlotMinutes());
+        if (durationMinutes % bookingSlotMinutes != 0) {
+            throw new BadRequestException("Booking duration must use " + bookingSlotMinutes + "-minute slots");
+        }
+        int hours = Math.max(1, (int) Math.ceil(durationMinutes / 60.0));
+        double powerKw = station.getConnectors().stream()
+                .filter(connector -> connector.isAvailable() && !connector.isMaintenanceMode()
+                        && connector.getStatus() == ChargerStatus.ONLINE)
+                .mapToDouble(connector -> connector.getPowerKw())
+                .max()
+                .orElseThrow(() -> new BadRequestException("This station has no available charging connector"));
+        double estKwh = round(powerKw * durationMinutes / 60.0);
+        double totalAmount = round(estKwh * station.getPricePerKwh());
 
         if (request.getVehicleId() != null) {
             vehicleRepository.findByIdAndUserId(request.getVehicleId(), userId)
                     .orElseThrow(() -> new ResourceNotFoundException("Vehicle not found for this account"));
         }
 
+        LocalDateTime startTime = request.getStartTime() != null ? request.getStartTime() : LocalDateTime.now();
+        LocalDateTime endTime = startTime.plusMinutes(durationMinutes);
+        int connectorCapacity = (int) station.getConnectors().stream()
+                .filter(connector -> connector.isAvailable() && !connector.isMaintenanceMode()
+                        && connector.getStatus() == ChargerStatus.ONLINE)
+                .count();
+        long overlapping = bookingRepository.countOverlapping(station.getId(), startTime, endTime,
+                EnumSet.of(BookingStatus.PENDING, BookingStatus.CONFIRMED, BookingStatus.IN_PROGRESS));
+        if (overlapping >= connectorCapacity) {
+            throw new DuplicateResourceException("The selected charging slot is full. Join the waitlist or choose another time.");
+        }
+
         Booking booking = Booking.builder()
                 .userId(userId)
                 .stationId(station.getId())
                 .vehicleId(request.getVehicleId())
+                .idempotencyKey(idempotencyKey == null || idempotencyKey.isBlank() ? null : idempotencyKey)
                 .stationName(station.getName())
                 .stationAddress(station.getAddress())
-                .startTime(request.getStartTime() != null ? request.getStartTime() : LocalDateTime.now())
+                .startTime(startTime)
+                .endTime(endTime)
                 .durationHours(hours)
+                .durationMinutes(durationMinutes)
                 .totalAmount(totalAmount)
                 .kwhDelivered(estKwh)
                 .status(BookingStatus.CONFIRMED)
@@ -71,9 +122,21 @@ public class BookingServiceImpl implements BookingService {
 
     @Override
     public List<BookingResponse> getBookingsByUserId(Long userId) {
-        return bookingRepository.findByUserId(userId).stream()
+        return bookingRepository.findByUserIdOrderByCreatedAtDesc(userId).stream()
                 .map(this::mapToResponse)
-                .collect(Collectors.toList());
+                .toList();
+    }
+
+    @Override
+    public long getUnreadActiveCount(Long userId) {
+        return bookingRepository.countByUserIdAndSeenFalseAndStatusIn(userId,
+                EnumSet.of(BookingStatus.PENDING, BookingStatus.CONFIRMED, BookingStatus.IN_PROGRESS));
+    }
+
+    @Override
+    @Transactional
+    public void markBookingsSeen(Long userId) {
+        bookingRepository.markAllSeenByUserId(userId);
     }
 
     @Override
@@ -87,19 +150,90 @@ public class BookingServiceImpl implements BookingService {
     }
 
     @Override
-    public void cancelBooking(Long id) {
+    public BookingResponse cancelBooking(Long id) {
         Booking booking = bookingRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Booking not found with id: " + id));
         booking.setStatus(BookingStatus.CANCELLED);
-        bookingRepository.save(booking);
+        return mapToResponse(bookingRepository.save(booking));
     }
 
     @Override
-    public void cancelBooking(Long id, Long userId) {
+    public BookingResponse cancelBooking(Long id, Long userId) {
         Booking booking = bookingRepository.findByIdAndUserId(id, userId)
                 .orElseThrow(() -> new ResourceNotFoundException("Booking not found for this account"));
+        if (booking.getStatus() == BookingStatus.IN_PROGRESS || booking.getStatus() == BookingStatus.COMPLETED
+                || booking.getStatus() == BookingStatus.CANCELLED || booking.getStatus() == BookingStatus.EXPIRED) {
+            throw new BadRequestException("This booking can no longer be cancelled");
+        }
+        double fee = cancellationFee(booking);
+        booking.setCancellationFee(fee);
+        // Bookings are estimated but not prepaid; there is no captured amount to refund here.
+        booking.setRefundAmount(0);
         booking.setStatus(BookingStatus.CANCELLED);
-        bookingRepository.save(booking);
+        return mapToResponse(bookingRepository.save(booking));
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<BookingSlotResponse> getAvailability(Long stationId, LocalDate date) {
+        ChargingStation station = stationRepository.findById(stationId)
+                .orElseThrow(() -> new ResourceNotFoundException("Charging station not found with id: " + stationId));
+        int slotMinutes = Math.max(15, station.getBookingSlotMinutes());
+        int capacity = (int) station.getConnectors().stream()
+                .filter(connector -> connector.isAvailable() && !connector.isMaintenanceMode()
+                        && connector.getStatus() == ChargerStatus.ONLINE)
+                .count();
+        LocalDateTime dayStart = date.atStartOfDay();
+        LocalDateTime dayEnd = date.plusDays(1).atStartOfDay();
+        List<Booking> bookings = bookingRepository.findByStationIdAndStartTimeBetweenAndStatusInOrderByStartTimeAsc(
+                stationId, dayStart, dayEnd,
+                EnumSet.of(BookingStatus.PENDING, BookingStatus.CONFIRMED, BookingStatus.IN_PROGRESS));
+        LocalDateTime cursor = date.atTime(LocalTime.of(6, 0));
+        LocalDateTime finalSlot = date.atTime(LocalTime.of(23, 0));
+        List<BookingSlotResponse> slots = new ArrayList<>();
+        while (!cursor.isAfter(finalSlot)) {
+            LocalDateTime slotEnd = cursor.plusMinutes(slotMinutes);
+            LocalDateTime slotStart = cursor;
+            long used = bookings.stream().filter(booking -> booking.getStartTime().isBefore(slotEnd)
+                    && effectiveEndTime(booking).isAfter(slotStart)).count();
+            int available = Math.max(0, capacity - (int) used);
+            slots.add(BookingSlotResponse.builder()
+                    .startTime(slotStart)
+                    .endTime(slotEnd)
+                    .availableConnectors(available)
+                    .available(available > 0 && slotStart.isAfter(LocalDateTime.now()))
+                    .build());
+            cursor = slotEnd;
+        }
+        return slots;
+    }
+
+    private int requestedDurationMinutes(BookingCreateRequest request) {
+        if (request.getDurationMinutes() != null && request.getDurationMinutes() > 0) {
+            return request.getDurationMinutes();
+        }
+        if (request.getDurationHours() != null && request.getDurationHours() > 0) {
+            return request.getDurationHours() * 60;
+        }
+        return 60;
+    }
+
+    private double round(double value) {
+        return Math.round(value * 100.0) / 100.0;
+    }
+
+    private LocalDateTime effectiveEndTime(Booking booking) {
+        if (booking.getEndTime() != null) return booking.getEndTime();
+        int minutes = booking.getDurationMinutes() > 0 ? booking.getDurationMinutes()
+                : Math.max(1, booking.getDurationHours()) * 60;
+        return booking.getStartTime().plusMinutes(minutes);
+    }
+
+    private double cancellationFee(Booking booking) {
+        if (booking.getStartTime() == null || booking.getStartTime().isAfter(LocalDateTime.now().plusHours(2))) {
+            return 0;
+        }
+        return round(Math.min(booking.getTotalAmount(), booking.getTotalAmount() * 0.10));
     }
 
     private BookingResponse mapToResponse(Booking booking) {
@@ -108,13 +242,21 @@ public class BookingServiceImpl implements BookingService {
                 .userId(booking.getUserId())
                 .stationId(booking.getStationId())
                 .vehicleId(booking.getVehicleId())
+                .idempotencyKey(booking.getIdempotencyKey())
                 .stationName(booking.getStationName())
                 .stationAddress(booking.getStationAddress())
                 .startTime(booking.getStartTime())
+                .endTime(effectiveEndTime(booking))
                 .durationHours(booking.getDurationHours())
+                .durationMinutes(booking.getDurationMinutes() > 0
+                        ? booking.getDurationMinutes()
+                        : Math.max(1, booking.getDurationHours()) * 60)
                 .totalAmount(booking.getTotalAmount())
                 .kwhDelivered(booking.getKwhDelivered())
+                .cancellationFee(booking.getCancellationFee())
+                .refundAmount(booking.getRefundAmount())
                 .status(booking.getStatus())
+                .seen(booking.isSeen())
                 .createdAt(booking.getCreatedAt())
                 .build();
     }

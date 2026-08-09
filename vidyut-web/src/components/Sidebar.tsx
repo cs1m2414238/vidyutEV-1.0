@@ -1,11 +1,13 @@
 import type { LucideIcon } from 'lucide-react';
 import {
   BatteryCharging,
+  ArrowRight,
   Building2,
   CalendarDays,
   Clock3,
   CarFront,
   CircleDollarSign,
+  CircleAlert,
   FileBarChart,
   Gauge,
   Bot,
@@ -20,6 +22,8 @@ import {
   LogOut,
   MapPinned,
   MessageSquare,
+  Navigation,
+  Route,
   Settings,
   ShieldCheck,
   Users,
@@ -46,12 +50,16 @@ interface SidebarProps {
   role?: UserRole;
   open?: boolean;
   onClose?: () => void;
+  profileIncomplete?: boolean;
+  onCompleteProfile?: () => void;
 }
 
 const roleItems: Record<UserRole, SidebarItem[]> = {
   EV_OWNER: [
     { icon: LayoutDashboard, label: 'Dashboard', id: 'dashboard' },
+    { icon: Navigation, label: 'Vidyut Autopilot', id: 'autopilot' },
     { icon: MapPinned, label: 'Find Charger', id: 'find' },
+    { icon: Route, label: 'Trip Planner', id: 'trip' },
     { icon: CalendarDays, label: 'My Bookings', id: 'bookings' },
     { icon: History, label: 'Charging History', id: 'history' },
     { icon: WalletCards, label: 'Wallet', id: 'wallet' },
@@ -106,6 +114,8 @@ export function Sidebar({
   role = 'EV_OWNER',
   open = false,
   onClose,
+  profileIncomplete = false,
+  onCompleteProfile,
 }: SidebarProps) {
   const initials = user.name
     .split(/\s+/)
@@ -178,6 +188,21 @@ export function Sidebar({
           ))}
         </nav>
 
+        {profileIncomplete && onCompleteProfile && (
+          <button
+            type="button"
+            className="sidebar-profile-prompt"
+            onClick={() => {
+              onCompleteProfile();
+              onClose?.();
+            }}
+          >
+            <span><CircleAlert size={16} /></span>
+            <span><strong>Finish your profile</strong><small>Complete required details</small></span>
+            <ArrowRight size={14} />
+          </button>
+        )}
+
         <div className="sidebar-context">
           <div className="sidebar-context-top">
             <span className="sidebar-context-dot" />
@@ -190,10 +215,15 @@ export function Sidebar({
         <div className="sidebar-user">
           <div className="sidebar-avatar">{initials || 'V'}</div>
           <div className="sidebar-user-copy">
-            <div className="sidebar-user-name">{user.name}</div>
-            <div className="sidebar-user-email">{user.email}</div>
+            <div className="sidebar-user-name" title={user.name}>{user.name}</div>
+            <div className="sidebar-user-email" title={user.email}>{user.email}</div>
           </div>
-          <button className="icon-button" title="Log out" aria-label="Log out" onClick={onLogout}>
+          <button
+            className="icon-button logout-btn"
+            title="Log out"
+            aria-label="Log out"
+            onClick={onLogout}
+          >
             <LogOut size={17} />
           </button>
         </div>

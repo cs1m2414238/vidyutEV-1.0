@@ -12,6 +12,7 @@ import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.DeleteMapping;
 
 @RestController
 @RequestMapping("/api/account")
@@ -28,5 +29,11 @@ public class UserController {
     @PutMapping
     public ResponseEntity<ApiResponse<UserResponse>> updateCurrentAccount(@RequestBody UpdateUserRequest request) {
         return ResponseEntity.ok(ApiResponse.success(userService.updateUser(currentUser.getCurrentAccountId(), request)));
+    }
+
+    @DeleteMapping
+    public ResponseEntity<ApiResponse<Void>> deleteCurrentAccount() {
+        userService.deleteUser(currentUser.getCurrentAccountId());
+        return ResponseEntity.ok(ApiResponse.success("Account deleted and personal profile data removed", null));
     }
 }

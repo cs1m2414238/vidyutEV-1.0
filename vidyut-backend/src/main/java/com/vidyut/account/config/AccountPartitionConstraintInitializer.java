@@ -27,6 +27,10 @@ public class AccountPartitionConstraintInitializer implements ApplicationRunner 
         }
 
         JdbcTemplate jdbc = new JdbcTemplate(dataSource);
+        // Company accounts can be created with the essential credentials first;
+        // legal identity fields are filled by the profile-completion flow.
+        jdbc.execute("ALTER TABLE companies ALTER COLUMN company_name DROP NOT NULL");
+        jdbc.execute("ALTER TABLE companies ALTER COLUMN registration_number DROP NOT NULL");
         jdbc.execute("""
                 CREATE OR REPLACE FUNCTION enforce_vidyut_account_partition()
                 RETURNS trigger LANGUAGE plpgsql AS $$

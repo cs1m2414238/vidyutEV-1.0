@@ -19,6 +19,8 @@ export default function RootLayout() {
         <StatusBar style="dark" />
         <Stack screenOptions={{ headerShown: false }}>
           <Stack.Screen name="index" />
+          <Stack.Screen name="onboarding" />
+          <Stack.Screen name="complete-profile" options={{ presentation: 'modal' }} />
           <Stack.Screen name="(auth)" />
           <Stack.Screen name="(owner)" />
           <Stack.Screen name="(host)" />
@@ -32,6 +34,12 @@ export default function RootLayout() {
               headerBackTitle: 'Back',
             }}
           />
+          <Stack.Screen name="booking/[id]" options={{ headerShown: true, title: 'Booking details' }} />
+          <Stack.Screen name="booking/new" options={{ headerShown: true, title: 'Book charging slot' }} />
+          <Stack.Screen name="session/[id]" options={{ headerShown: true, title: 'Charging session' }} />
+          <Stack.Screen name="vehicle/index" options={{ headerShown: true, title: 'My vehicles' }} />
+          <Stack.Screen name="wallet-tag" options={{ headerShown: true, title: 'Vehicle charging tag' }} />
+          <Stack.Screen name="trip-planner" options={{ headerShown: true, title: 'Trip planner' }} />
         </Stack>
       </SafeAreaProvider>
     </QueryClientProvider>

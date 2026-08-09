@@ -12,7 +12,7 @@ import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '../../src/constants/colors';
 import { useAuthStore } from '../../src/features/auth/auth.store';
-import { applyForHostApi } from '../../src/features/auth/auth.api';
+import { applyForHostApi, deleteAccountApi } from '../../src/features/auth/auth.api';
 import { AppHeader } from '../../src/components/AppHeader';
 
 export default function ProfileScreen() {
@@ -42,6 +42,14 @@ export default function ProfileScreen() {
     }
   };
 
+  const deleteAccount = () => Alert.alert('Delete account permanently?', 'This disables login immediately and removes personal profile, company and vehicle identifiers. Financial records remain anonymized where legally required.', [
+    { text: 'Keep account', style: 'cancel' },
+    { text: 'Delete account', style: 'destructive', onPress: async () => {
+      try { await deleteAccountApi(); await logout(); router.replace('/(auth)/login'); }
+      catch (error) { Alert.alert('Unable to delete account', error instanceof Error ? error.message : 'Please try again.'); }
+    } },
+  ]);
+
   return (
     <SafeAreaView style={styles.container}>
       <AppHeader title="Profile" subtitle="Account, vehicles and payments" rightIcon="settings-outline" />
@@ -53,7 +61,7 @@ export default function ProfileScreen() {
             <Ionicons name="person" size={40} color={Colors.primary} />
           </View>
           <Text style={styles.userName}>{user?.name || 'EV Owner'}</Text>
-          <Text style={styles.userEmail}>{user?.email || 'owner@vidyut.com'}</Text>
+          <Text numberOfLines={1} ellipsizeMode="middle" style={styles.userEmail}>{user?.email || 'owner@vidyut.com'}</Text>
           <View style={styles.roleTag}>
             <Text style={styles.roleText}>{user?.role || 'EV OWNER'}</Text>
           </View>
@@ -61,6 +69,10 @@ export default function ProfileScreen() {
 
         {/* Menu Items */}
         <View style={styles.menuSection}>
+          {user?.profileCompleted === false ? <TouchableOpacity style={styles.menuItem} onPress={() => router.push('/complete-profile')}>
+            <View style={styles.menuIconWrapper}><Ionicons name="person-add-outline" size={22} color={Colors.warning} /></View>
+            <View style={styles.menuTextContainer}><Text style={styles.menuTitle}>Complete profile</Text><Text style={styles.menuSubtitle}>Add mobile and mandatory workspace details</Text></View><Ionicons name="chevron-forward" size={20} color={Colors.textMuted} />
+          </TouchableOpacity> : null}
           <TouchableOpacity
             style={styles.menuItem}
             onPress={user?.allowedModes.includes('HOST')
@@ -77,7 +89,7 @@ export default function ProfileScreen() {
             <Ionicons name="chevron-forward" size={20} color={Colors.textMuted} />
           </TouchableOpacity>
 
-          <TouchableOpacity style={styles.menuItem} onPress={() => Alert.alert('My Vehicles', 'Tata Nexon EV Max, MG ZS EV')}>
+          <TouchableOpacity style={styles.menuItem} onPress={() => router.push('/vehicle')}>
             <View style={styles.menuIconWrapper}>
               <Ionicons name="car-outline" size={22} color={Colors.primary} />
             </View>
@@ -88,7 +100,7 @@ export default function ProfileScreen() {
             <Ionicons name="chevron-forward" size={20} color={Colors.textMuted} />
           </TouchableOpacity>
 
-          <TouchableOpacity style={styles.menuItem} onPress={() => Alert.alert('Payment Methods', 'UPI, Credit/Debit Cards, Vidyut Wallet')}>
+          <TouchableOpacity style={styles.menuItem} onPress={() => router.push('/(owner)/wallet')}>
             <View style={styles.menuIconWrapper}>
               <Ionicons name="card-outline" size={22} color={Colors.primary} />
             </View>
@@ -107,6 +119,10 @@ export default function ProfileScreen() {
               <Text style={[styles.menuTitle, { color: Colors.error }]}>Log out</Text>
               <Text style={styles.menuSubtitle}>Sign out of your Vidyut account</Text>
             </View>
+          </TouchableOpacity>
+          <TouchableOpacity style={[styles.menuItem, styles.logoutItem]} onPress={deleteAccount}>
+            <View style={[styles.menuIconWrapper, styles.logoutIconWrapper]}><Ionicons name="trash-outline" size={22} color={Colors.error} /></View>
+            <View style={styles.menuTextContainer}><Text style={[styles.menuTitle, { color: Colors.error }]}>Delete account</Text><Text style={styles.menuSubtitle}>Disable login and remove personal identifiers</Text></View>
           </TouchableOpacity>
         </View>
       </ScrollView>
@@ -162,6 +178,7 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: Colors.textSecondary,
     marginTop: 2,
+    maxWidth: '88%',
   },
   roleTag: {
     marginTop: 10,

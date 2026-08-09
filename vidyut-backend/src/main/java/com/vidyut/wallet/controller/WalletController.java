@@ -13,6 +13,9 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
+import com.vidyut.wallet.dto.VehicleWalletResponse;
+import com.vidyut.wallet.dto.VehicleWalletTopUpRequest;
+import com.vidyut.wallet.service.VehicleWalletService;
 
 @RestController
 @RequestMapping("/api/ev/wallet")
@@ -21,6 +24,7 @@ public class WalletController {
 
     private final WalletService walletService;
     private final CurrentUserUtil currentUser;
+    private final VehicleWalletService vehicleWalletService;
 
     @GetMapping
     public ResponseEntity<ApiResponse<WalletResponse>> getWallet() {
@@ -53,5 +57,25 @@ public class WalletController {
             @PathVariable Long vehicleId) {
         return ResponseEntity.ok(ApiResponse.success("Vehicle auto-recharge disabled",
                 walletService.disableAutoRechargeRule(currentUser.getCurrentAccountId(), vehicleId)));
+    }
+
+    @GetMapping("/vehicles")
+    public ResponseEntity<ApiResponse<List<VehicleWalletResponse>>> getVehicleWallets() {
+        return ResponseEntity.ok(ApiResponse.success(
+                vehicleWalletService.getWallets(currentUser.getCurrentAccountId())));
+    }
+
+    @GetMapping("/vehicles/{vehicleId}")
+    public ResponseEntity<ApiResponse<VehicleWalletResponse>> getVehicleWallet(@PathVariable Long vehicleId) {
+        return ResponseEntity.ok(ApiResponse.success(
+                vehicleWalletService.getWallet(currentUser.getCurrentAccountId(), vehicleId)));
+    }
+
+    @PostMapping("/vehicles/{vehicleId}/topup")
+    public ResponseEntity<ApiResponse<VehicleWalletResponse>> topUpVehicleWallet(
+            @PathVariable Long vehicleId,
+            @Valid @RequestBody VehicleWalletTopUpRequest request) {
+        return ResponseEntity.ok(ApiResponse.success("Vehicle wallet top up successful",
+                vehicleWalletService.topUp(currentUser.getCurrentAccountId(), vehicleId, request)));
     }
 }

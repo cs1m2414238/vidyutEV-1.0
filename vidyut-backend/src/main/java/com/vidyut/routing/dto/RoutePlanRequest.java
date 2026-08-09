@@ -19,4 +19,11 @@ public class RoutePlanRequest {
     private String destination;
 
     private double currentBatteryPercent;
+    private Long vehicleId;
+    private Double originLatitude;
+    private Double originLongitude;
+    private Double destinationLatitude;
+    private Double destinationLongitude;
+    private Double reserveBatteryPercent;
+    private Double destinationDistanceKm;
 }
