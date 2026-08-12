@@ -130,6 +130,7 @@ flowchart TD
     MODIFY --> AGENT
 ```
 
+---
 
 #### 4. Property Owner & Charging Company Collaboration
 ```mermaid
