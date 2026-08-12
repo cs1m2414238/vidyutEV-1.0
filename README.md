@@ -60,7 +60,7 @@ graph TD
 ---
 config:
   layout: elk
-  theme: neutral
+  theme: dark
 ---
 flowchart TB
     HOST["Property Owner / Charger Host"] -- List Available Land --> BACKEND["VIDYUT Backend"]
