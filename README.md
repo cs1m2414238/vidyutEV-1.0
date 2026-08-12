@@ -26,10 +26,11 @@
 
 ---
 
-## 🏗️ Architecture
+## 🏗️ Architecture & System Workflows
 
-The Vidyut platform operates as a cohesive monorepo composed of four specialized core services:
+The Vidyut platform operates as a cohesive monorepo. Below are the key architecture, AI intelligence, security, and lifecycle workflows:
 
+### 1. Overall System Architecture
 ```mermaid
 
 
@@ -87,14 +88,56 @@ TRIP --> NOTIFY
 NOTIFY --> USER 
 ```
 
-### 🔄 Land Partner, Charger Security & AI Rerouting Workflow
+---
 
+### 2. AI Agent Decision Flow
 ```mermaid
+flowchart TD
+    PROMPT["User Trip Request"] --> CONTEXT["Collect Context"]
+
+    CONTEXT --> C1["Current Battery SoC"]
+    CONTEXT --> C2["Destination"]
+    CONTEXT --> C3["Reserve Battery"]
+    CONTEXT --> C4["Budget"]
+    CONTEXT --> C5["Arrival Preference"]
+    CONTEXT --> C6["Vehicle Compatibility"]
+
+    C1 --> AGENT["VIDYUT AI Agent"]
+    C2 --> AGENT
+    C3 --> AGENT
+    C4 --> AGENT
+    C5 --> AGENT
+    C6 --> AGENT
+
+    AGENT --> TOOLS["Call External / Internal Tools"]
+
+    TOOLS --> ROUTE["Route Service"]
+    TOOLS --> AVAIL["Charger Availability"]
+    TOOLS --> PRICE["Pricing Service"]
+    TOOLS --> WAIT["Estimated Waiting Time"]
+
+    ROUTE --> REASON["Agent Reasoning"]
+    AVAIL --> REASON
+    PRICE --> REASON
+    WAIT --> REASON
+
+    REASON --> RANK["Rank Candidate Chargers"]
+    RANK --> PLAN["Generate Charging Plan"]
+
+    PLAN --> CONFIRM{"User Confirms?"}
+    CONFIRM -- Yes --> RESERVE["Reserve Charger / Slot"]
+    CONFIRM -- No --> MODIFY["Modify Preferences"]
+    MODIFY --> AGENT
+```
+
 ---
 config:
   layout: elk
   theme: dark
 ---
+
+### 4. Property Owner & Charging Company Collaboration
+```mermaid
 flowchart TB
     HOST["Property Owner / Charger Host"] -- List Available Land --> BACKEND["VIDYUT Backend"]
     BACKEND -- Show Suitable Locations --> COMPANY["Verified Charging Company"]
@@ -107,6 +150,211 @@ flowchart TB
     SENSOR -- Tamper Detected --> BACKEND
     BACKEND --> ALERT["Security Alert"] & OFFLINE["Mark Charger Offline"]
     OFFLINE --> REROUTE["AI Alternative Charger Rerouting"]
+```
+
+---
+
+### 5. Charging Booking & Session Sequence
+```mermaid
+sequenceDiagram
+    actor User
+    participant App
+    participant Backend
+    participant ChargerService
+    participant Database
+    participant Payment
+    participant Notification
+
+    User->>App: Select charging station
+    App->>Backend: Request available slots
+
+    Backend->>ChargerService: Check charger availability
+    ChargerService->>Database: Fetch slots
+    Database-->>ChargerService: Available slots
+    ChargerService-->>Backend: Availability
+
+    Backend-->>App: Display available slots
+
+    User->>App: Confirm booking
+    App->>Backend: Create booking
+
+    Backend->>Payment: Process / reserve payment
+    Payment-->>Backend: Payment confirmed
+
+    Backend->>Database: Save booking
+    Backend->>ChargerService: Reserve charger
+
+    Backend->>Notification: Send booking confirmation
+    Notification-->>User: Booking confirmed
+```
+
+---
+
+### 6. Charger Hardware State Machine
+```mermaid
+stateDiagram-v2
+    [*] --> Available
+
+    Available --> Reserved : User books slot
+    Reserved --> Charging : Session starts
+    Charging --> Available : Charging completed
+
+    Reserved --> Available : Booking cancelled
+    Reserved --> Available : Reservation timeout
+
+    Available --> Offline : Hardware failure
+    Charging --> Offline : Critical fault
+
+    Available --> SecurityLock : Tamper detected
+    Charging --> SecurityLock : Tamper detected
+
+    SecurityLock --> Inspection : Notify operator
+    Inspection --> Available : Issue resolved
+    Inspection --> Offline : Repair required
+
+    Offline --> Maintenance
+    Maintenance --> Available : Restored
+```
+
+---
+
+### 7. Tamper Detection & Security Response Workflow
+```mermaid
+flowchart TD
+    SENSOR["Cable / Security Sensor"] --> CHECK{"Tampering Detected?"}
+
+    CHECK -- No --> MONITOR["Continue Monitoring"]
+    CHECK -- Yes --> EVENT["Send Security Event"]
+
+    EVENT --> BACKEND["VIDYUT Backend"]
+
+    BACKEND --> OFFLINE["Immediately Mark Charger Offline"]
+    BACKEND --> ALERT["Alert Charging Company / Admin"]
+    BACKEND --> LOG["Store Security Incident"]
+
+    OFFLINE --> BOOKINGS["Identify Affected Bookings"]
+    BOOKINGS --> AI["AI Rerouting Engine"]
+    AI --> ALT["Find Alternative Chargers"]
+    ALT --> USER["Notify & Reroute EV User"]
+
+    ALERT --> INSPECT["Physical Inspection"]
+    INSPECT --> VERIFY{"Safe to Restore?"}
+
+    VERIFY -- Yes --> ONLINE["Return Charger Online"]
+    VERIFY -- No --> MAINTENANCE["Maintenance Required"]
+```
+
+---
+
+### 8. Role-Based Access Control (RBAC) Architecture
+```mermaid
+flowchart TB
+    LOGIN["Authentication"]
+
+    LOGIN --> USER["EV User"]
+    LOGIN --> COMPANY["Charging Company"]
+    LOGIN --> HOST["Property Owner"]
+    LOGIN --> ADMIN["Administrator"]
+
+    USER --> U1["Discover Chargers"]
+    USER --> U2["Book Charging"]
+    USER --> U3["Trip Planner"]
+    USER --> U4["Wallet / Payments"]
+    USER --> U5["Charging History"]
+
+    COMPANY --> C1["Manage Chargers"]
+    COMPANY --> C2["Manage Stations"]
+    COMPANY --> C3["View Bookings"]
+    COMPANY --> C4["Revenue Analytics"]
+    COMPANY --> C5["Host Collaboration"]
+
+    HOST --> H1["List Property"]
+    HOST --> H2["Approve Installation"]
+    HOST --> H3["Monitor Revenue"]
+    HOST --> H4["Manage Locations"]
+
+    ADMIN --> A1["Verify Companies"]
+    ADMIN --> A2["Manage Users"]
+    ADMIN --> A3["Security Monitoring"]
+    ADMIN --> A4["Platform Analytics"]
+    ADMIN --> A5["Dispute Management"]
+```
+
+---
+
+### 9. Entity Relationship Diagram (ERD)
+```mermaid
+erDiagram
+    USER ||--o{ VEHICLE : owns
+    USER ||--o{ BOOKING : creates
+    USER ||--o{ PAYMENT : makes
+
+    COMPANY ||--o{ STATION : operates
+    HOST ||--o{ PROPERTY : owns
+
+    PROPERTY ||--o{ STATION : hosts
+
+    STATION ||--o{ CHARGER : contains
+    CHARGER ||--o{ BOOKING : receives
+
+    BOOKING ||--|| PAYMENT : generates
+    VEHICLE ||--o{ BOOKING : used_for
+
+    USER {
+        UUID id
+        string name
+        string email
+    }
+
+    VEHICLE {
+        UUID id
+        string model
+        float batteryCapacity
+    }
+
+    COMPANY {
+        UUID id
+        string name
+        string verificationStatus
+    }
+
+    HOST {
+        UUID id
+        string name
+    }
+
+    PROPERTY {
+        UUID id
+        string address
+        float electricityRate
+    }
+
+    STATION {
+        UUID id
+        string name
+        double latitude
+        double longitude
+    }
+
+    CHARGER {
+        UUID id
+        string connectorType
+        double power
+        string status
+    }
+
+    BOOKING {
+        UUID id
+        datetime startTime
+        datetime endTime
+        string status
+    }
+
+    PAYMENT {
+        UUID id
+        decimal amount
+        string status
+    }
 ```
 
 ---
