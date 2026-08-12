@@ -131,9 +131,28 @@ flowchart TD
 ```
 
 ---
-config:
-  layout: elk
-  theme: neo
+
+#### 3. Dynamic AI Charger Selection & Rerouting
+```mermaid
+flowchart TD
+    START["User Starts Trip"] --> BATTERY["Read Battery Level"]
+    BATTERY --> ROUTE["Analyze Current Route"]
+    ROUTE --> FIND["Find Chargers Along Route"]
+    FIND --> EVALUATE["AI Evaluates Chargers"]
+
+    EVALUATE --> PARAMETERS["Compare:<br/>Availability<br/>Distance<br/>Charging Time<br/>Price<br/>Waiting Time<br/>Battery Reserve"]
+
+    PARAMETERS --> SELECT["Select Optimal Charger"]
+    SELECT --> NAVIGATE["Navigate User to Charger"]
+    NAVIGATE --> CHECK{"Charger Still Available?"}
+
+    CHECK -- Yes --> ARRIVE["Continue to Selected Charger"]
+    CHECK -- No --> REEVALUATE["Re-evaluate Nearby Chargers"]
+    REEVALUATE --> EVALUATE
+
+    ARRIVE --> CHARGE["Begin Charging Session"]
+```
+
 ---
 
 #### 4. Property Owner & Charging Company Collaboration
