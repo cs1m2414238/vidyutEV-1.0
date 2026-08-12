@@ -31,27 +31,60 @@
 The Vidyut platform operates as a cohesive monorepo composed of four specialized core services:
 
 ```mermaid
-graph TD
-    subgraph Clients["📱 Front-End Clients"]
-        WEB["vidyut-web<br/>(React 19 + Vite + Leaflet)"]
-        MOB["vidyut-mobile<br/>(React Native + Expo Router + BLE)"]
-    end
 
-    subgraph Backend["⚙️ Core Backend Engine"]
-        API["vidyut-backend<br/>(Spring Boot 3.3 REST API)"]
-        DB[("PostgreSQL Database<br/>Flyway Migrations")]
-    end
 
-    subgraph AI["🤖 AI Intelligence"]
-        AGENT["vidyut-ai/agent<br/>(Python + Google ADK + Gemini API)"]
-    end
+flowchart TB
 
-    WEB -->|REST API & Mode-Scoped JWT| API
-    MOB -->|REST API & Mode-Scoped JWT| API
-    MOB -.->|BLE Telemetry & SoC Sync| CHARGER["🔌 Physical / Simulated EV Charger"]
-    API <-->|Schema Validation & Auth| DB
-    API <-->|Forwarded JWT & Tool Calling| AGENT
-    AGENT <-->|GenAI Prompts & Functions| GEMINI["☁️ Google Gemini / Vertex AI"]
+USER["EV User / Mobile App"]
+HOST["Property Owner / Host Dashboard"]
+COMPANY["Charging Company Dashboard"]
+ADMIN["VIDYUT Admin"]
+
+API["VIDYUT Backend API<br/>Java Spring Boot"]
+
+AUTH["Authentication & RBAC<br/>JWT"]
+BOOKING["Booking Service"]
+CHARGER["Charger Management Service"]
+TRIP["Trip Planning Service"]
+PAYMENT["Payment / Wallet Service"]
+NOTIFY["Notification Service"]
+
+AI["AI Agent / Gemini"]
+ROUTE["Maps & Routing API"]
+DB[("PostgreSQL Database")]
+
+STATION["EV Charging Station"]
+CONTROLLER["Charger Controller"]
+SENSOR["Tamper / Security Sensor"]
+
+USER --> API
+HOST --> API
+COMPANY --> API
+ADMIN --> API
+
+API --> AUTH
+API --> BOOKING
+API --> CHARGER
+API --> TRIP
+API --> PAYMENT
+API --> NOTIFY
+
+TRIP --> AI
+AI --> ROUTE
+AI --> CHARGER
+
+BOOKING --> DB
+CHARGER --> DB
+AUTH --> DB
+PAYMENT --> DB
+
+CONTROLLER --> API
+STATION --> CONTROLLER
+SENSOR --> CONTROLLER
+
+CHARGER --> NOTIFY
+TRIP --> NOTIFY
+NOTIFY --> USER 
 ```
 
 ### 🔄 Land Partner, Charger Security & AI Rerouting Workflow
