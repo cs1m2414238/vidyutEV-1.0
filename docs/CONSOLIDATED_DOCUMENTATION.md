@@ -130,11 +130,6 @@ flowchart TD
     MODIFY --> AGENT
 ```
 
----
-config:
-  layout: elk
-  theme: neo
----
 
 #### 4. Property Owner & Charging Company Collaboration
 ```mermaid
