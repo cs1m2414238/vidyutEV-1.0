@@ -3,6 +3,7 @@ import { Charger, ChargerSearchFilters } from './charger.types';
 import { mockChargers } from './charger.mock';
 import { CONFIG } from '../../constants/config';
 import { ApiResponse, getApiErrorMessage, isNetworkError, unwrapApiResponse } from '../../services/apiResponse';
+import { getCachedStations, saveCachedStations } from '../offline/offlineCache';
 
 interface BackendConnector {
   type: string;
@@ -36,6 +37,9 @@ interface BackendStation {
   photoUrls?: string;
   distanceKm?: number;
   bookingSlotMinutes?: number;
+  outletPartner?: boolean;
+  outletInstitutionName?: string;
+  outletIdVerificationRequired?: boolean;
 }
 
 function normalizeStation(station: BackendStation): Charger {
@@ -70,14 +74,23 @@ function normalizeStation(station: BackendStation): Charger {
     connectors: station.connectors ?? [],
     distanceKm: station.distanceKm,
     bookingSlotMinutes: station.bookingSlotMinutes,
+    outletPartner: station.outletPartner,
+    outletInstitutionName: station.outletInstitutionName,
+    outletIdVerificationRequired: station.outletIdVerificationRequired,
   };
 }
 
 export async function searchChargers(filters: ChargerSearchFilters): Promise<Charger[]> {
   try {
     const response = await apiClient.get<ApiResponse<BackendStation[]>>('/stations/search', { params: filters });
-    return unwrapApiResponse(response.data).map(normalizeStation);
+    const stations = unwrapApiResponse(response.data).map(normalizeStation);
+    if (!filters.query && !filters.connectorType) await saveCachedStations(stations);
+    return stations;
   } catch (error) {
+    if (isNetworkError(error)) {
+      const cached = await getCachedStations<Charger[]>();
+      if (cached?.data.length) return cached.data;
+    }
     if (CONFIG.USE_MOCK_DATA && isNetworkError(error)) return mockChargers;
     throw new Error(getApiErrorMessage(error, 'Unable to search charging stations.'));
   }
@@ -86,8 +99,14 @@ export async function searchChargers(filters: ChargerSearchFilters): Promise<Cha
 export async function getChargers(): Promise<Charger[]> {
   try {
     const response = await apiClient.get<ApiResponse<BackendStation[]>>('/stations');
-    return unwrapApiResponse(response.data).map(normalizeStation);
+    const stations = unwrapApiResponse(response.data).map(normalizeStation);
+    await saveCachedStations(stations);
+    return stations;
   } catch (error) {
+    if (isNetworkError(error)) {
+      const cached = await getCachedStations<Charger[]>();
+      if (cached?.data.length) return cached.data;
+    }
     if (CONFIG.USE_MOCK_DATA && isNetworkError(error)) return mockChargers;
     throw new Error(getApiErrorMessage(error, 'Unable to load charging stations.'));
   }

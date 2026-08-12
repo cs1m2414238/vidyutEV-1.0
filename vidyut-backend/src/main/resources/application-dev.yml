@@ -16,6 +16,12 @@ jwt:
   expiration: 86400000 # 24 hours
 
 vidyut:
+  admin:
+    bootstrap:
+      enabled: ${VIDYUT_ADMIN_BOOTSTRAP_ENABLED:true}
+      email: ${VIDYUT_ADMIN_EMAIL:admin@vidyut.local}
+      password: ${VIDYUT_ADMIN_PASSWORD:VidyutAdmin123!}
+      name: ${VIDYUT_ADMIN_NAME:Vidyut Super Admin}
   demo-data:
     enabled: ${VIDYUT_DEMO_DATA_ENABLED:true}
   payments:

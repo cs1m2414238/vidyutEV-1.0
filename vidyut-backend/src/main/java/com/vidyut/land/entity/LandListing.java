@@ -29,6 +29,10 @@ public class LandListing {
     @Column(nullable = false)
     private String address;
 
+    private String city;
+    private String state;
+    private String pincode;
+
     private double latitude;
     private double longitude;
 
@@ -38,7 +42,42 @@ public class LandListing {
 
     @Enumerated(EnumType.STRING)
     @Builder.Default
-    private LandListingStatus status = LandListingStatus.APPROVED;
+    private PropertyType propertyType = PropertyType.OTHER;
+
+    @Builder.Default
+    private int availableParkingBays = 1;
+
+    @Enumerated(EnumType.STRING)
+    @Builder.Default
+    private PowerPhase powerPhase = PowerPhase.NOT_SURE;
+
+    @Builder.Default
+    private double availableLoadKw = 0;
+
+    private String operatingHours;
+
+    @Enumerated(EnumType.STRING)
+    @Builder.Default
+    private OwnershipType ownershipType = OwnershipType.OWNED;
+
+    private String preferredConnectorType;
+    private double preferredPowerKw;
+
+    @Column(length = 2000)
+    private String photoUrls;
+
+    @Column(length = 1000)
+    private String ownershipDocumentUrl;
+
+    @Column(length = 800)
+    private String adminReviewNote;
+
+    @Builder.Default
+    private boolean discoverable = false;
+
+    @Enumerated(EnumType.STRING)
+    @Builder.Default
+    private LandListingStatus status = LandListingStatus.PENDING_APPROVAL;
 
     @Builder.Default
     private LocalDateTime createdAt = LocalDateTime.now();

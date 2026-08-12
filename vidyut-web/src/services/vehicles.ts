@@ -1,7 +1,7 @@
 import { apiRequest } from './api';
 
 export type VehicleConnectionStatus = 'CONNECTED' | 'DISCONNECTED' | 'UNKNOWN';
-export type VehicleTelemetrySource = 'BLUETOOTH' | 'MANUAL' | 'CHARGING_SESSION' | 'NOT_AVAILABLE';
+export type VehicleTelemetrySource = 'BLUETOOTH' | 'BLUETOOTH_DEMO' | 'MANUAL' | 'CHARGING_SESSION' | 'NOT_AVAILABLE';
 
 export interface Vehicle {
   id: number;

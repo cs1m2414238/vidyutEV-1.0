@@ -13,6 +13,10 @@ export interface VehicleItem {
   androidAutoSupported?: boolean;
   appleCarPlaySupported?: boolean;
   bluetoothDeviceName?: string;
+  bluetoothDeviceId?: string;
+  bluetoothServiceUuid?: string;
+  btSessionControlEnabled?: boolean;
+  btSimulatorEnabled?: boolean;
   lastChargingStation?: string;
   lastChargingAddress?: string;
   lastChargedAt?: string;

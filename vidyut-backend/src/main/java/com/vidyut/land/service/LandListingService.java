@@ -7,6 +7,7 @@ import java.util.List;
 
 public interface LandListingService {
     LandListingResponse createListing(Long hostUserId, LandListingCreateRequest request);
+    LandListingResponse updateListing(Long hostUserId, Long listingId, LandListingCreateRequest request);
     List<LandListingResponse> getAllListings();
     List<LandListingResponse> getListingsByHostUserId(Long hostUserId);
 }

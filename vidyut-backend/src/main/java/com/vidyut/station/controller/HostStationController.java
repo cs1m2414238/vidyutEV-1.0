@@ -41,7 +41,7 @@ public class HostStationController {
 
     @PutMapping("/{id}")
     public ResponseEntity<ApiResponse<StationResponse>> update(@PathVariable Long id,
-                                                               @RequestBody StationUpdateRequest request) {
+                                                               @Valid @RequestBody StationUpdateRequest request) {
         return ResponseEntity.ok(ApiResponse.success(
                 hostService.updateStation(currentUser.getCurrentAccountId(), id, request)));
     }

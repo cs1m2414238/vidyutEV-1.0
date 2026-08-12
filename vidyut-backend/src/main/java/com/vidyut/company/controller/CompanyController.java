@@ -5,9 +5,11 @@ import com.vidyut.common.util.CurrentUserUtil;
 import com.vidyut.company.dto.CompanyResponse;
 import com.vidyut.company.dto.CompanyProfileUpdateRequest;
 import com.vidyut.company.dto.CompanySettingsRequest;
-import com.vidyut.company.dto.CompanyVerificationRequest;
+import com.vidyut.company.dto.CompanyVerificationResponse;
+import com.vidyut.company.dto.CompanyVerificationSubmission;
 import com.vidyut.company.dto.EmailVerificationRequest;
 import com.vidyut.company.service.CompanyService;
+import com.vidyut.company.service.CompanyVerificationService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -23,6 +25,7 @@ import org.springframework.web.bind.annotation.RestController;
 @RequiredArgsConstructor
 public class CompanyController {
     private final CompanyService companyService;
+    private final CompanyVerificationService verificationService;
     private final CurrentUserUtil currentUser;
 
     @GetMapping("/profile")
@@ -39,10 +42,16 @@ public class CompanyController {
     }
 
     @PostMapping("/verification")
-    public ResponseEntity<ApiResponse<CompanyResponse>> submitVerification(
-            @Valid @RequestBody CompanyVerificationRequest request) {
+    public ResponseEntity<ApiResponse<CompanyVerificationResponse>> submitVerification(
+            @Valid @RequestBody CompanyVerificationSubmission request) {
         return ResponseEntity.ok(ApiResponse.success("Business verification submitted",
-                companyService.submitVerification(currentUser.getCurrentAccountId(), request)));
+                verificationService.submit(currentUser.getCurrentAccountId(), request)));
+    }
+
+    @GetMapping("/verification")
+    public ResponseEntity<ApiResponse<CompanyVerificationResponse>> getVerification() {
+        return ResponseEntity.ok(ApiResponse.success(
+                verificationService.getForAccount(currentUser.getCurrentAccountId())));
     }
 
     @PutMapping("/settings")

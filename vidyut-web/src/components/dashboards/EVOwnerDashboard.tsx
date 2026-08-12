@@ -1,5 +1,4 @@
-import { useState } from 'react';
-import { Search, MapPin, Calendar, Wallet, AlertCircle, Info, Navigation, Sparkles, BatteryCharging, Bluetooth, Route, ChevronRight } from 'lucide-react';
+import { MapPin, Calendar, Wallet, AlertCircle, Info, Navigation, Sparkles, BatteryCharging, Bluetooth, Route, ChevronRight } from 'lucide-react';
 import type { User, Charger } from '../../types';
 import type { Vehicle } from '../../services/vehicles';
 
@@ -28,7 +27,6 @@ export function EVOwnerDashboard({
   vehicle,
   onOpenVehicle,
 }: EVOwnerDashboardProps) {
-  const [searchQuery, setSearchQuery] = useState('');
   const selectedStation = chargers[0] || {
     id: 1,
     name: 'Green Park Station',
@@ -52,28 +50,13 @@ export function EVOwnerDashboard({
 
   return (
     <div className="ev-dashboard-container">
-      {/* Top Welcome Banner & Search Header */}
+      {/* Top Welcome Banner */}
       <div className="dashboard-header-row">
         <div className="welcome-text-group">
           <h1 className="welcome-heading">Good Morning, {user.name || 'Priyanshu'} 👋</h1>
           <p className="welcome-subheading">Where do you want to charge today?</p>
         </div>
 
-        <div className="header-search-bar">
-          <div className="search-input-wrapper">
-            <Search size={18} className="search-icon-left" />
-            <input
-              type="text"
-              placeholder="Search location or charger"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="search-input-field"
-            />
-            <button type="button" className="search-btn-accent" title="Search" onClick={onExploreChargers}>
-              <Search size={18} />
-            </button>
-          </div>
-        </div>
       </div>
 
       <button type="button" className="ev-autopilot-banner" onClick={onOpenAutopilot}>
@@ -240,7 +223,7 @@ export function EVOwnerDashboard({
           <div className="battery-progress-section">
             <div className="battery-label-row">
               <span className="battery-percent">{batteryPercent == null ? 'Battery reading unavailable' : `${batteryPercent}% remaining`}</span>
-              <span className="vehicle-status-source">{vehicle?.telemetrySource === 'BLUETOOTH' ? 'Bluetooth' : vehicle?.telemetrySource === 'CHARGING_SESSION' ? 'Charging session' : vehicle?.telemetrySource === 'MANUAL' ? 'Manual' : 'No source'}</span>
+              <span className="vehicle-status-source">{vehicle?.telemetrySource === 'BLUETOOTH_DEMO' ? 'Bluetooth demo' : vehicle?.telemetrySource === 'BLUETOOTH' ? 'Bluetooth' : vehicle?.telemetrySource === 'CHARGING_SESSION' ? 'Charging session' : vehicle?.telemetrySource === 'MANUAL' ? 'Manual' : 'No source'}</span>
             </div>
             <div className="battery-bar-track">
               <div className={`battery-bar-fill ${batteryPercent == null ? 'unknown' : ''}`} style={{ width: `${batteryPercent ?? 0}%` }} />

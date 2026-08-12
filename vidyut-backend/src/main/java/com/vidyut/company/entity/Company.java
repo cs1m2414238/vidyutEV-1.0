@@ -52,7 +52,7 @@ public class Company {
 
     @Enumerated(EnumType.STRING)
     @Builder.Default
-    private VerificationStatus verificationStatus = VerificationStatus.VERIFIED;
+    private VerificationStatus verificationStatus = VerificationStatus.PENDING;
 
     @Builder.Default
     private boolean emailNotifications = true;

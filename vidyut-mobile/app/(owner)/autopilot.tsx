@@ -1,6 +1,7 @@
 import React, { useCallback, useMemo, useState } from 'react';
 import {
   Alert,
+  Share,
   RefreshControl,
   ScrollView,
   StyleSheet,
@@ -12,26 +13,59 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { AppHeader } from '../../src/components/AppHeader';
-import { LoadingView } from '../../src/components/LoadingView';
+import { SkeletonList } from '../../src/components/SkeletonList';
 import { Colors } from '../../src/constants/colors';
 import {
   completeAutopilotCharging,
+  getAutopilotAlternatives,
+  getAutopilotSummary,
   getCurrentAutopilotTrip,
   launchAutopilotTrip,
+  previewAutopilotTrip,
   sendAutopilotAgentMessage,
+  simulateAutopilotDelay,
   simulateAutopilotFault,
   startAutopilotJourney,
+  swapAutopilotStop,
 } from '../../src/features/autopilot/autopilot.api';
-import { AutopilotTrip } from '../../src/features/autopilot/autopilot.types';
+import {
+  AutopilotAlternative,
+  AutopilotAutonomyMode,
+  AutopilotOptimization,
+  AutopilotPlan,
+  AutopilotTrip,
+} from '../../src/features/autopilot/autopilot.types';
 import { addVehicle, getMyVehicles } from '../../src/features/vehicles/vehicle.api';
 import { VehicleItem } from '../../src/features/vehicles/vehicle.types';
 import { topUpWallet } from '../../src/features/wallet/wallet.api';
 
 const defaultGoal = "Get me from Kanpur to Delhi by 6 PM. Keep charging under ₹900 and don't let my battery fall below 15%.";
 
+type TripPurpose = 'DIRECT' | 'MALL_VISIT' | 'REST_BREAK';
+
+const autonomyOptions: Array<{ value: AutopilotAutonomyMode; label: string; detail: string }> = [
+  { value: 'RECOMMEND_ONLY', label: 'Recommend', detail: 'Plan only; no bookings' },
+  { value: 'ASK_BEFORE_ACTIONS', label: 'Ask first', detail: 'Approve bookings and payments' },
+  { value: 'FULL_AUTOPILOT', label: 'Full auto', detail: 'Act inside your limits' },
+];
+
+const purposeOptions: Array<{ value: TripPurpose; label: string; icon: keyof typeof Ionicons.glyphMap }> = [
+  { value: 'DIRECT', label: 'Direct', icon: 'navigate' },
+  { value: 'MALL_VISIT', label: 'Mall visit', icon: 'bag-handle' },
+  { value: 'REST_BREAK', label: 'Rest break', icon: 'cafe' },
+];
+
+const optimizationOptions: Array<{ value: AutopilotOptimization; label: string }> = [
+  { value: 'TIME', label: 'Fastest' },
+  { value: 'COST', label: 'Lowest cost' },
+  { value: 'BALANCED', label: 'Balanced' },
+];
+
 export default function AutopilotScreen() {
   const router = useRouter();
   const [trip, setTrip] = useState<AutopilotTrip | null>(null);
+  const [preview, setPreview] = useState<AutopilotPlan | null>(null);
+  const [alternatives, setAlternatives] = useState<Record<number, AutopilotAlternative[]>>({});
   const [vehicles, setVehicles] = useState<VehicleItem[]>([]);
   const [vehicleId, setVehicleId] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
@@ -40,12 +74,19 @@ export default function AutopilotScreen() {
   const [goal, setGoal] = useState(defaultGoal);
   const [agentReply, setAgentReply] = useState('');
   const [agentSessionId, setAgentSessionId] = useState<string>();
+  const [agentModel, setAgentModel] = useState('');
+  const [agentTools, setAgentTools] = useState<Array<{ name: string; status: string }>>([]);
   const [origin, setOrigin] = useState('Kanpur');
   const [destination, setDestination] = useState('Delhi');
   const [battery, setBattery] = useState('42');
   const [reserve, setReserve] = useState('15');
   const [budget, setBudget] = useState('900');
   const [deadline, setDeadline] = useState('18:00');
+  const [departure, setDeparture] = useState('Now');
+  const [targetCharge, setTargetCharge] = useState('80');
+  const [autonomyMode, setAutonomyMode] = useState<AutopilotAutonomyMode>('ASK_BEFORE_ACTIONS');
+  const [optimizeFor, setOptimizeFor] = useState<AutopilotOptimization>('TIME');
+  const [tripPurpose, setTripPurpose] = useState<TripPurpose>('DIRECT');
   const [vehicleForm, setVehicleForm] = useState({
     makeAndModel: 'Tata Nexon EV',
     registrationNumber: '',
@@ -80,6 +121,14 @@ export default function AutopilotScreen() {
     [trip],
   );
 
+  const purposeInstruction = ({
+    DIRECT: 'Prioritize a direct journey.',
+    MALL_VISIT: 'Choose a charger close to the destination mall so charging happens during the visit.',
+    REST_BREAK: 'Place a safe charging stop beside a comfortable rest point.',
+  } satisfies Record<TripPurpose, string>)[tripPurpose];
+
+  const enrichedGoal = `${goal.trim()} ${purposeInstruction} Depart ${departure}; charge each stop to ${targetCharge}%.`;
+
   const runTripAction = async (name: string, operation: () => Promise<AutopilotTrip>) => {
     setBusy(name);
     try {
@@ -96,18 +145,67 @@ export default function AutopilotScreen() {
       Alert.alert('Connect an EV', 'Add your EV before starting an autonomous journey.');
       return;
     }
+    if (autonomyMode === 'RECOMMEND_ONLY') {
+      Alert.alert(
+        'Recommendation kept',
+        'Recommend-only mode never creates bookings or payment holds. Switch to Ask first or Full auto when you want Vidyut to act.',
+      );
+      return;
+    }
     await runTripAction('launch', () => launchAutopilotTrip({
       vehicleId,
       origin: origin.trim(),
       destination: destination.trim(),
-      goal: goal.trim(),
+      goal: enrichedGoal,
       arrivalDeadline: deadline,
-      optimizeFor: 'TIME',
+      optimizeFor,
       currentBatteryPercent: Number(battery),
       minimumArrivalBatteryPercent: Number(reserve),
       maximumChargingBudget: Number(budget),
       idempotencyKey: `MOBILE-${Date.now()}`,
+      autonomyMode,
     }));
+    setPreview(null);
+  };
+
+  const previewJourney = async () => {
+    if (!vehicleId) { Alert.alert('Connect an EV', 'Add your EV before planning the journey.'); return; }
+    setBusy('preview');
+    try {
+      setPreview(await previewAutopilotTrip({
+        vehicleId, origin: origin.trim(), destination: destination.trim(),
+        goal: enrichedGoal,
+        arrivalDeadline: deadline, optimizeFor, currentBatteryPercent: Number(battery),
+        minimumArrivalBatteryPercent: Number(reserve), maximumChargingBudget: Number(budget),
+        idempotencyKey: `PREVIEW-${Date.now()}`, autonomyMode,
+      }));
+    } catch (error) { Alert.alert('Plan unavailable', messageFor(error)); }
+    finally { setBusy(''); }
+  };
+
+  const loadAlternatives = async (stopId: number) => {
+    if (!trip) return;
+    setBusy(`alternatives-${stopId}`);
+    try {
+      const nextAlternatives = await getAutopilotAlternatives(trip.id, stopId);
+      setAlternatives((current) => ({ ...current, [stopId]: nextAlternatives }));
+    }
+    catch (error) { Alert.alert('Alternatives unavailable', messageFor(error)); }
+    finally { setBusy(''); }
+  };
+
+  const swapStop = async (stopId: number, stationId: number) => {
+    if (!trip) return;
+    await runTripAction(`swap-${stopId}`, () => swapAutopilotStop(trip.id, stopId, stationId));
+    setAlternatives({});
+  };
+
+  const shareSummary = async () => {
+    if (!trip) return;
+    setBusy('summary');
+    try { const summary = await getAutopilotSummary(trip.id); await Share.share({ message: summary.shareText, title: 'My Vidyut trip' }); }
+    catch (error) { Alert.alert('Summary unavailable', messageFor(error)); }
+    finally { setBusy(''); }
   };
 
   const planWithGemini = async () => {
@@ -117,17 +215,22 @@ export default function AutopilotScreen() {
     }
     setBusy('agent');
     setAgentReply('');
+    setAgentTools([]);
     try {
       const response = await sendAutopilotAgentMessage(
-        `Plan and reserve a real Vidyut Autopilot trip for vehicle ID ${vehicleId}. `
+        `Analyze and propose a Vidyut Autopilot trip for vehicle ID ${vehicleId}. `
           + `Travel from ${origin} to ${destination}, current battery ${battery}%, `
           + `arrive by ${deadline}, keep at least ${reserve}% battery, `
-          + `spend at most ₹${budget}, optimize for TIME. User goal: ${goal}`,
+          + `spend at most ₹${budget}, optimize for ${optimizeFor}. ${purposeInstruction} `
+          + `Use past route outcomes when available. This is read-only planning: do not reserve, cancel, pay, or mutate any trip. `
+          + `User goal: ${goal}`,
         agentSessionId,
       );
       setAgentSessionId(response.sessionId);
       setAgentReply(response.reply);
-      setTrip(await getCurrentAutopilotTrip());
+      setAgentModel(response.model);
+      setAgentTools(response.toolCalls);
+      await previewJourney();
     } catch (error) {
       Alert.alert('Gemini agent unavailable', messageFor(error));
     } finally {
@@ -168,7 +271,7 @@ export default function AutopilotScreen() {
     }
   };
 
-  if (loading) return <LoadingView message="Connecting vehicle, wallet and charging network…" />;
+  if (loading) return <SkeletonList rows={7} />;
 
   return (
     <View style={styles.screen}>
@@ -203,19 +306,46 @@ export default function AutopilotScreen() {
               </ScrollView>
               <Text style={styles.inputLabel}>TELL VIDYUT WHAT MATTERS</Text>
               <TextInput style={styles.goalInput} multiline value={goal} onChangeText={setGoal} placeholderTextColor={Colors.textMuted} />
+              <Text style={styles.choiceLabel}>TRIP PURPOSE</Text>
+              <View style={styles.choiceRow}>
+                {purposeOptions.map((option) => <TouchableOpacity key={option.value} style={[styles.choiceChip, tripPurpose === option.value && styles.choiceChipActive]} onPress={() => setTripPurpose(option.value)}><Ionicons name={option.icon} size={13} color={tripPurpose === option.value ? Colors.white : Colors.primary} /><Text style={[styles.choiceChipText, tripPurpose === option.value && styles.choiceChipTextActive]}>{option.label}</Text></TouchableOpacity>)}
+              </View>
+              <Text style={styles.choiceLabel}>OPTIMIZE FOR</Text>
+              <View style={styles.choiceRow}>
+                {optimizationOptions.map((option) => <TouchableOpacity key={option.value} style={[styles.choiceChip, optimizeFor === option.value && styles.choiceChipActive]} onPress={() => setOptimizeFor(option.value)}><Text style={[styles.choiceChipText, optimizeFor === option.value && styles.choiceChipTextActive]}>{option.label}</Text></TouchableOpacity>)}
+              </View>
               <View style={styles.fieldRow}><View style={styles.flexField}><Field label="From" value={origin} onChangeText={setOrigin} /></View><View style={styles.routeArrow}><Ionicons name="arrow-forward" size={16} color={Colors.textMuted} /></View><View style={styles.flexField}><Field label="To" value={destination} onChangeText={setDestination} /></View></View>
               <View style={styles.constraintGrid}>
                 <CompactField label="Battery" value={battery} suffix="%" onChangeText={setBattery} />
                 <CompactField label="Reserve" value={reserve} suffix="%" onChangeText={setReserve} />
                 <CompactField label="Budget" value={budget} prefix="₹" onChangeText={setBudget} />
                 <CompactField label="Arrive" value={deadline} onChangeText={setDeadline} keyboardType="default" />
+                <CompactField label="Depart" value={departure} onChangeText={setDeparture} keyboardType="default" />
+                <CompactField label="Charge target" value={targetCharge} suffix="%" onChangeText={setTargetCharge} />
               </View>
-              <PrimaryAction label="Plan with Gemini" icon="chatbubble-ellipses" loading={busy === 'agent'} onPress={() => void planWithGemini()} />
-              <TouchableOpacity style={styles.fallbackButton} onPress={() => void launch()} disabled={Boolean(busy)}><Ionicons name="shield-checkmark" size={15} color={Colors.primary} /><Text style={styles.fallbackButtonText}>{busy === 'launch' ? 'Planning…' : 'Use Java fallback'}</Text></TouchableOpacity>
-              {agentReply ? <View style={styles.agentReply}><Ionicons name="sparkles" size={17} color="#6848D9" /><View style={styles.agentReplyCopy}><Text style={styles.agentReplyTitle}>Gemini agent</Text><Text style={styles.agentReplyText}>{agentReply}</Text></View></View> : null}
+              <Text style={styles.choiceLabel}>AUTONOMY MODE</Text>
+              <View style={styles.modeList}>
+                {autonomyOptions.map((option) => <TouchableOpacity key={option.value} style={[styles.modeOption, autonomyMode === option.value && styles.modeOptionActive]} onPress={() => setAutonomyMode(option.value)}><View style={[styles.modeRadio, autonomyMode === option.value && styles.modeRadioActive]}>{autonomyMode === option.value ? <View style={styles.modeRadioDot} /> : null}</View><View style={styles.modeCopy}><Text style={styles.modeTitle}>{option.label}</Text><Text style={styles.modeDetail}>{option.detail}</Text></View>{option.value === 'ASK_BEFORE_ACTIONS' ? <View style={styles.recommendedPill}><Text style={styles.recommendedText}>DEFAULT</Text></View> : null}</TouchableOpacity>)}
+              </View>
+              <View style={styles.memoryNote}><Ionicons name="time" size={15} color={Colors.primary} /><View style={styles.memoryCopy}><Text style={styles.memoryTitle}>Route memory ready</Text><Text style={styles.memoryText}>Past booking, queue and charger outcomes can improve the next plan when the agent has matching history.</Text></View></View>
+              <PrimaryAction label="Preview timing-matched plan" icon="sparkles" loading={busy === 'preview'} onPress={() => void previewJourney()} />
+              <TouchableOpacity style={styles.fallbackButton} onPress={() => void planWithGemini()} disabled={Boolean(busy)}><Ionicons name="chatbubble-ellipses" size={15} color={Colors.primary} /><Text style={styles.fallbackButtonText}>{busy === 'agent' ? 'Analyzing…' : 'Ask Gemini to analyze'}</Text></TouchableOpacity>
+              {agentReply ? <View style={styles.agentReply}><Ionicons name="sparkles" size={17} color="#6848D9" /><View style={styles.agentReplyCopy}><Text style={styles.agentReplyTitle}>Gemini agent{agentModel ? ` · ${agentModel}` : ''}</Text><Text style={styles.agentReplyText}>{agentReply}</Text>{agentTools.length ? <View style={styles.toolProof}><Text style={styles.toolProofLabel}>TOOLS CALLED</Text><View style={styles.toolChips}>{agentTools.map((tool, index) => <View key={`${tool.name}-${index}`} style={styles.toolChip}><Ionicons name={tool.status === 'SUCCESS' ? 'checkmark-circle' : 'ellipse'} size={11} color={tool.status === 'SUCCESS' ? Colors.success : Colors.blue} /><Text style={styles.toolChipText}>{tool.name}</Text></View>)}</View></View> : null}</View></View> : null}
             </>
           )}
         </View>
+
+        {preview ? (
+          <View style={styles.card}>
+            <View style={styles.planHead}><SectionHead step="02" title="Review before booking" subtitle={`${preview.origin} → ${preview.destination}`} /><View style={styles.statusPill}><Text style={styles.statusText}>PREVIEW</Text></View></View>
+            <View style={styles.metricGrid}><Metric icon="map" value={`${preview.totalDistanceKm} km`} label="Distance" /><Metric icon="time" value={formatMinutes(preview.totalDurationMinutes)} label={`Arrive ${preview.estimatedArrivalTime}`} /><Metric icon="cash" value={`₹${preview.estimatedChargingCost.toFixed(0)}`} label={`₹${preview.budgetRemaining.toFixed(0)} left`} /><Metric icon="battery-half" value={`${preview.estimatedArrivalBatteryPercent}%`} label="Arrival reserve" /></View>
+            <Text style={styles.previewLabel}>{preview.compatibleChargersEvaluated} compatible chargers checked live</Text>
+            <View style={styles.previewStops}>{preview.stops.map((stop) => <View key={`${stop.stationId}-${stop.sequenceNumber}`} style={styles.previewStop}><View style={[styles.timingDot, { backgroundColor: timingColor(stop.timingScore) }]} /><View style={styles.previewStopCopy}><Text style={styles.previewStopTitle}>{stop.stationName}</Text><Text style={styles.previewStopMeta}>ETA {stop.estimatedArrivalTime} · slot free {stop.predictedSlotFreeAt} · {stop.chargingMinutes} min · ₹{stop.estimatedCost.toFixed(0)}</Text><Text style={[styles.timingText, { color: timingColor(stop.timingScore) }]}>{stop.timingLabel}</Text></View></View>)}</View>
+            <View style={styles.actionBoundary}><Ionicons name="shield-checkmark" size={16} color={Colors.primary} /><Text style={styles.actionBoundaryText}>{autonomyMode === 'FULL_AUTOPILOT' ? `Confirmation authorizes reservations and rerouting only inside ₹${budget} and ${reserve}% reserve limits.` : autonomyMode === 'ASK_BEFORE_ACTIONS' ? 'No booking or payment happens until you confirm this plan.' : 'Recommend-only mode will not create a booking or payment hold.'}</Text></View>
+            <PrimaryAction label={autonomyMode === 'FULL_AUTOPILOT' ? 'Authorize full Autopilot' : autonomyMode === 'ASK_BEFORE_ACTIONS' ? 'Confirm tentative bookings' : 'Keep recommendation (no booking)'} icon={autonomyMode === 'RECOMMEND_ONLY' ? 'bookmark' : 'checkmark-circle'} loading={busy === 'launch'} onPress={() => void launch()} />
+            <TouchableOpacity style={styles.fallbackButton} onPress={() => setPreview(null)}><Text style={styles.fallbackButtonText}>Edit trip details</Text></TouchableOpacity>
+          </View>
+        ) : null}
 
         {trip ? (
           <>
@@ -234,17 +364,19 @@ export default function AutopilotScreen() {
 
             <View style={styles.card}>
               <SectionHead step="03" title="Charging stops" subtitle="Optimized for total journey impact" />
-              <View style={styles.stopList}>{trip.stops.map((stop) => <View key={stop.id} style={[styles.stopRow, stop.status === 'CANCELLED' && styles.stopCancelled]}><View style={[styles.stopIndex, stop.status === 'CANCELLED' && styles.stopIndexDanger]}>{stop.status === 'CANCELLED' ? <Ionicons name="warning" size={14} color={Colors.error} /> : <Text style={styles.stopIndexText}>{stop.sequenceNumber}</Text>}</View><View style={styles.stopCopy}><View style={styles.stopTitleRow}><Text style={styles.stopTitle}>{stop.stationName}</Text><Text style={styles.stopStatus}>{stop.status}</Text></View><Text style={styles.stopAddress} numberOfLines={1}>{stop.stationAddress}</Text><Text style={styles.stopMeta}>{stop.connectorType} · {stop.powerKw} kW · {stop.estimatedWaitMinutes + stop.chargingMinutes} min · ₹{stop.estimatedCost.toFixed(0)}</Text></View><View style={styles.stopBattery}><Text style={styles.stopBatteryText}>{stop.arrivalBatteryPercent}%</Text><Ionicons name="arrow-forward" size={12} color={Colors.primary} /><Text style={styles.stopBatteryText}>{stop.targetBatteryPercent}%</Text></View></View>)}</View>
+              <View style={styles.stopList}>{trip.stops.map((stop) => <View key={stop.id}><View style={[styles.stopRow, stop.status === 'CANCELLED' && styles.stopCancelled]}><View style={[styles.stopIndex, stop.status === 'CANCELLED' && styles.stopIndexDanger]}>{stop.status === 'CANCELLED' ? <Ionicons name="warning" size={14} color={Colors.error} /> : <Text style={styles.stopIndexText}>{stop.sequenceNumber}</Text>}</View><View style={styles.stopCopy}><View style={styles.stopTitleRow}><Text style={styles.stopTitle}>{stop.stationName}</Text><Text style={styles.stopStatus}>{stop.status}</Text></View><Text style={styles.stopAddress} numberOfLines={1}>{stop.stationAddress}</Text><Text style={styles.stopMeta}>{stop.connectorType} · {stop.powerKw} kW · {stop.estimatedWaitMinutes + stop.chargingMinutes} min · ₹{stop.estimatedCost.toFixed(0)}</Text><View style={styles.stopTimingRow}><Text style={[styles.stopTiming, { color: timingColor(stop.timingScore) }]}>{stop.timingLabel ?? 'Timing monitored'}</Text>{stop.status !== 'CANCELLED' ? <TouchableOpacity onPress={() => void loadAlternatives(stop.id)}><Text style={styles.alternativesLink}>{busy === `alternatives-${stop.id}` ? 'Checking…' : 'Alternatives'}</Text></TouchableOpacity> : null}</View></View><View style={styles.stopBattery}><Text style={styles.stopBatteryText}>{stop.arrivalBatteryPercent}%</Text><Ionicons name="arrow-forward" size={12} color={Colors.primary} /><Text style={styles.stopBatteryText}>{stop.targetBatteryPercent}%</Text></View></View>{(alternatives[stop.id] ?? []).slice(0, 3).map((alternative) => <TouchableOpacity key={alternative.station.id} style={styles.alternativeRow} onPress={() => void swapStop(stop.id, alternative.station.id)}><View style={styles.alternativeCopy}><Text style={styles.alternativeTitle}>{alternative.station.name}</Text><Text style={styles.alternativeMeta}>{alternative.detourKm.toFixed(1)} km detour · {alternative.availableSlots} free · ₹{alternative.estimatedChargingCost.toFixed(0)}</Text></View><Text style={styles.swapText}>{busy === `swap-${stop.id}` ? 'Swapping…' : 'Swap'}</Text></TouchableOpacity>)}</View>)}</View>
             </View>
 
             <View style={styles.card}>
               <SectionHead step="04" title="Demo controls" subtitle="Each control calls the secured backend" />
               <View style={styles.actionList}>
                 {trip.status === 'RESERVED' ? <ActionRow icon="navigate" title="Start monitored journey" subtitle="Activate telemetry and live checks" loading={busy === 'start'} onPress={() => void runTripAction('start', () => startAutopilotJourney(trip.id))} /> : null}
+                {['RESERVED', 'MONITORING'].includes(trip.status) ? <ActionRow icon="time" title="Simulate 25-minute delay" subtitle="Trigger timing-match replan and stop rebooking" danger loading={busy === 'delay'} onPress={() => void runTripAction('delay', () => simulateAutopilotDelay(trip.id, 25))} /> : null}
                 {['RESERVED', 'MONITORING'].includes(trip.status) ? <ActionRow icon="warning" title="Simulate charger fault" subtitle="Cancel, replan and reserve replacement" danger loading={busy === 'fault'} onPress={() => void runTripAction('fault', () => simulateAutopilotFault(trip.id))} /> : null}
                 {['RESERVED', 'MONITORING', 'REROUTED', 'PAYMENT_REQUIRED'].includes(trip.status) ? <ActionRow icon="flash" title="Complete charging + AutoPay" subtitle={activeStop ? `Pay ₹${activeStop.estimatedCost.toFixed(0)} from wallet` : 'Finish active charging'} loading={busy === 'complete'} onPress={() => void runTripAction('complete', () => completeAutopilotCharging(trip.id))} /> : null}
                 {(trip.status === 'PAYMENT_REQUIRED' || trip.walletBalance < (activeStop?.estimatedCost ?? 0)) ? <ActionRow icon="add-circle" title="Top up ₹1,000" subtitle="Simulated UPI payment provider" loading={busy === 'topup'} onPress={() => void fundWallet()} /> : null}
                 <ActionRow icon="wallet" title="Wallet & auto-recharge" subtitle="Manage the linked vehicle payment rule" onPress={() => router.push('/(owner)/wallet')} />
+                <ActionRow icon="share-social" title="Share trip summary" subtitle="Distance, time, charging cost and CO₂ saved" loading={busy === 'summary'} onPress={() => void shareSummary()} />
               </View>
             </View>
 
@@ -299,6 +431,10 @@ function formatMinutes(minutes: number) {
   return hours ? `${hours}h ${minutes % 60}m` : `${minutes}m`;
 }
 
+function timingColor(score?: 'HIGH' | 'MEDIUM' | 'LOW') {
+  return score === 'LOW' ? Colors.error : score === 'MEDIUM' ? '#D97706' : Colors.success;
+}
+
 function statusLabel(status: AutopilotTrip['status']) {
   return ({ RESERVED: 'RESERVED', MONITORING: 'MONITORING', REROUTED: 'REROUTED', PAYMENT_REQUIRED: 'PAYMENT NEEDED', COMPLETED: 'COMPLETE', CANCELLED: 'CANCELLED' })[status];
 }
@@ -316,12 +452,18 @@ const styles = StyleSheet.create({
   heroTitle: { marginTop: 13, color: Colors.white, fontSize: 27, lineHeight: 29, fontWeight: '900', letterSpacing: -.7 }, heroAccent: { color: '#6EE7B7' },
   heroCopy: { marginTop: 10, color: '#A8C9BF', fontSize: 10.5, fontWeight: '600' }, trustRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 17 }, trustChip: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 8, paddingVertical: 6, borderWidth: 1, borderColor: 'rgba(255,255,255,.1)', borderRadius: 9, backgroundColor: 'rgba(255,255,255,.04)' }, trustText: { color: '#D5EDE6', fontSize: 8, fontWeight: '800' },
   card: { padding: 17, borderWidth: 1, borderColor: Colors.borderSoft, borderRadius: 19, backgroundColor: Colors.white }, sectionHead: { flexDirection: 'row', alignItems: 'center', gap: 10 }, step: { width: 32, height: 32, alignItems: 'center', justifyContent: 'center', borderRadius: 10, backgroundColor: Colors.primaryLight }, stepText: { color: Colors.primary, fontSize: 9, fontWeight: '900' }, sectionTitle: { color: Colors.textPrimary, fontSize: 15, fontWeight: '900' }, sectionSubtitle: { marginTop: 2, color: Colors.textSecondary, fontSize: 9.5 },
-  inputLabel: { marginBottom: 6, color: Colors.textSecondary, fontSize: 8, fontWeight: '900', letterSpacing: .65 }, goalInput: { minHeight: 84, marginTop: 5, padding: 12, borderWidth: 1, borderColor: '#CFE8DF', borderRadius: 13, color: Colors.textPrimary, backgroundColor: Colors.primarySoft, fontSize: 11.5, lineHeight: 17, textAlignVertical: 'top' }, field: { marginTop: 12 }, input: { height: 43, paddingHorizontal: 12, borderWidth: 1, borderColor: Colors.border, borderRadius: 11, color: Colors.textPrimary, backgroundColor: Colors.white, fontSize: 11, fontWeight: '700' }, fieldRow: { flexDirection: 'row', alignItems: 'flex-end', gap: 8 }, flexField: { flex: 1 }, routeArrow: { paddingBottom: 13 }, constraintGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 10 }, compactField: { width: '47%', flexGrow: 1 }, compactInput: { height: 42, paddingHorizontal: 10, flexDirection: 'row', alignItems: 'center', borderWidth: 1, borderColor: Colors.border, borderRadius: 11, backgroundColor: Colors.white }, compactTextInput: { flex: 1, color: Colors.textPrimary, fontSize: 11.5, fontWeight: '800' }, affix: { color: Colors.textSecondary, fontSize: 10, fontWeight: '800' }, primaryButton: { height: 45, marginTop: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, borderRadius: 12, backgroundColor: Colors.primary }, primaryButtonText: { color: Colors.white, fontSize: 11, fontWeight: '900' }, fallbackButton: { height: 40, marginTop: 8, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, borderWidth: 1, borderColor: '#B7DFD2', borderRadius: 11, backgroundColor: '#F2FBF7' }, fallbackButtonText: { color: Colors.primary, fontSize: 10, fontWeight: '900' }, agentReply: { marginTop: 12, padding: 12, flexDirection: 'row', alignItems: 'flex-start', gap: 9, borderWidth: 1, borderColor: '#DED5FA', borderRadius: 12, backgroundColor: '#F8F6FF' }, agentReplyCopy: { flex: 1 }, agentReplyTitle: { color: '#4F36A5', fontSize: 9, fontWeight: '900' }, agentReplyText: { marginTop: 3, color: '#635B80', fontSize: 10, lineHeight: 15 },
+  inputLabel: { marginBottom: 6, color: Colors.textSecondary, fontSize: 8, fontWeight: '900', letterSpacing: .65 }, goalInput: { minHeight: 84, marginTop: 5, padding: 12, borderWidth: 1, borderColor: '#CFE8DF', borderRadius: 13, color: Colors.textPrimary, backgroundColor: Colors.primarySoft, fontSize: 11.5, lineHeight: 17, textAlignVertical: 'top' }, field: { marginTop: 12 }, input: { height: 43, paddingHorizontal: 12, borderWidth: 1, borderColor: Colors.border, borderRadius: 11, color: Colors.textPrimary, backgroundColor: Colors.white, fontSize: 11, fontWeight: '700' }, fieldRow: { flexDirection: 'row', alignItems: 'flex-end', gap: 8 }, flexField: { flex: 1 }, routeArrow: { paddingBottom: 13 }, constraintGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 10 }, compactField: { width: '47%', flexGrow: 1 }, compactInput: { height: 42, paddingHorizontal: 10, flexDirection: 'row', alignItems: 'center', borderWidth: 1, borderColor: Colors.border, borderRadius: 11, backgroundColor: Colors.white }, compactTextInput: { flex: 1, color: Colors.textPrimary, fontSize: 11.5, fontWeight: '800' }, affix: { color: Colors.textSecondary, fontSize: 10, fontWeight: '800' },
+  choiceLabel: { marginTop: 13, marginBottom: 7, color: Colors.textSecondary, fontSize: 8, fontWeight: '900', letterSpacing: .65 }, choiceRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 7 }, choiceChip: { minHeight: 34, paddingHorizontal: 10, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, borderWidth: 1, borderColor: Colors.border, borderRadius: 10, backgroundColor: Colors.white, flexGrow: 1 }, choiceChipActive: { borderColor: Colors.primary, backgroundColor: Colors.primary }, choiceChipText: { color: Colors.textSecondary, fontSize: 8.5, fontWeight: '900' }, choiceChipTextActive: { color: Colors.white },
+  modeList: { gap: 7 }, modeOption: { minHeight: 52, padding: 10, flexDirection: 'row', alignItems: 'center', borderWidth: 1, borderColor: Colors.borderSoft, borderRadius: 12, backgroundColor: '#FBFDFC' }, modeOptionActive: { borderColor: '#88CDB6', backgroundColor: Colors.primarySoft }, modeRadio: { width: 18, height: 18, alignItems: 'center', justifyContent: 'center', marginRight: 9, borderWidth: 1.5, borderColor: Colors.textMuted, borderRadius: 9 }, modeRadioActive: { borderColor: Colors.primary }, modeRadioDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: Colors.primary }, modeCopy: { flex: 1 }, modeTitle: { color: Colors.textPrimary, fontSize: 10, fontWeight: '900' }, modeDetail: { marginTop: 2, color: Colors.textSecondary, fontSize: 8 }, recommendedPill: { paddingHorizontal: 6, paddingVertical: 4, borderRadius: 6, backgroundColor: Colors.primaryLight }, recommendedText: { color: Colors.primary, fontSize: 6.5, fontWeight: '900' },
+  memoryNote: { marginTop: 10, padding: 10, flexDirection: 'row', alignItems: 'flex-start', gap: 8, borderRadius: 11, backgroundColor: '#F3FAF7' }, memoryCopy: { flex: 1 }, memoryTitle: { color: Colors.primaryDark, fontSize: 9, fontWeight: '900' }, memoryText: { marginTop: 2, color: Colors.textSecondary, fontSize: 7.5, lineHeight: 11 },
+  primaryButton: { height: 45, marginTop: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, borderRadius: 12, backgroundColor: Colors.primary }, primaryButtonText: { color: Colors.white, fontSize: 11, fontWeight: '900' }, fallbackButton: { height: 40, marginTop: 8, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, borderWidth: 1, borderColor: '#B7DFD2', borderRadius: 11, backgroundColor: '#F2FBF7' }, fallbackButtonText: { color: Colors.primary, fontSize: 10, fontWeight: '900' }, agentReply: { marginTop: 12, padding: 12, flexDirection: 'row', alignItems: 'flex-start', gap: 9, borderWidth: 1, borderColor: '#DED5FA', borderRadius: 12, backgroundColor: '#F8F6FF' }, agentReplyCopy: { flex: 1 }, agentReplyTitle: { color: '#4F36A5', fontSize: 9, fontWeight: '900' }, agentReplyText: { marginTop: 3, color: '#635B80', fontSize: 10, lineHeight: 15 }, toolProof: { marginTop: 10 }, toolProofLabel: { color: '#7C69B2', fontSize: 6.5, fontWeight: '900', letterSpacing: .7 }, toolChips: { marginTop: 5, flexDirection: 'row', flexWrap: 'wrap', gap: 5 }, toolChip: { paddingHorizontal: 7, paddingVertical: 5, flexDirection: 'row', alignItems: 'center', gap: 4, borderRadius: 7, backgroundColor: Colors.white }, toolChipText: { maxWidth: 145, color: '#51456F', fontSize: 7, fontWeight: '800' },
   vehicleSetup: { marginTop: 14, padding: 13, borderWidth: 1, borderStyle: 'dashed', borderColor: '#A8D9C7', borderRadius: 14, backgroundColor: Colors.primarySoft }, vehicleSetupHead: { flexDirection: 'row', alignItems: 'center', gap: 10 }, setupIcon: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center', borderRadius: 12, backgroundColor: Colors.primaryLight }, setupTitle: { color: Colors.textPrimary, fontSize: 12, fontWeight: '900' }, setupCopy: { marginTop: 2, color: Colors.textSecondary, fontSize: 9 }, vehicleChips: { gap: 8, paddingBottom: 5 }, vehicleChip: { minWidth: 145, padding: 10, flexDirection: 'row', alignItems: 'center', gap: 8, borderWidth: 1, borderColor: Colors.border, borderRadius: 11, backgroundColor: Colors.white }, vehicleChipActive: { borderColor: Colors.primary, backgroundColor: Colors.primary }, vehicleChipTitle: { color: Colors.textPrimary, fontSize: 9.5, fontWeight: '900' }, vehicleChipSub: { marginTop: 2, color: Colors.textSecondary, fontSize: 7.5 }, vehicleChipTextActive: { color: Colors.white },
   planHead: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between' }, statusPill: { paddingHorizontal: 8, paddingVertical: 5, borderRadius: 8, backgroundColor: Colors.primaryLight }, statusText: { color: Colors.primary, fontSize: 7.5, fontWeight: '900' }, statusWarning: { backgroundColor: '#FFFAEB' }, statusWarningText: { color: '#B54708' }, statusComplete: { backgroundColor: Colors.primary }, statusCompleteText: { color: Colors.white }, metricGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 7, marginTop: 15 }, metric: { width: '47%', flexGrow: 1, padding: 10, borderRadius: 12, backgroundColor: '#F8FAF9' }, metricIcon: { width: 26, height: 26, alignItems: 'center', justifyContent: 'center', borderRadius: 8, backgroundColor: Colors.primaryLight }, metricValue: { marginTop: 7, color: Colors.textPrimary, fontSize: 12, fontWeight: '900' }, metricLabel: { marginTop: 2, color: Colors.textSecondary, fontSize: 8 },
+  previewLabel: { marginTop: 13, color: Colors.textSecondary, fontSize: 9, fontWeight: '800' }, previewStops: { marginTop: 9, gap: 7 }, previewStop: { padding: 10, flexDirection: 'row', gap: 8, borderRadius: 12, backgroundColor: '#F8FAF9' }, timingDot: { width: 8, height: 8, marginTop: 3, borderRadius: 4 }, previewStopCopy: { flex: 1 }, previewStopTitle: { color: Colors.textPrimary, fontSize: 10, fontWeight: '900' }, previewStopMeta: { marginTop: 3, color: Colors.textSecondary, fontSize: 7.5 }, timingText: { marginTop: 4, fontSize: 8, fontWeight: '900' }, actionBoundary: { marginTop: 12, padding: 10, flexDirection: 'row', alignItems: 'flex-start', gap: 7, borderRadius: 10, backgroundColor: Colors.primarySoft }, actionBoundaryText: { flex: 1, color: Colors.primaryDark, fontSize: 8, lineHeight: 12, fontWeight: '700' },
   routeStrip: { flexDirection: 'row', alignItems: 'flex-start', marginTop: 18 }, routePoint: { width: 68, alignItems: 'center' }, routeDot: { width: 24, height: 24, alignItems: 'center', justifyContent: 'center', borderRadius: 12, backgroundColor: Colors.primary }, routeCharge: { backgroundColor: Colors.primaryDark }, routeLine: { flex: 1, height: 2, marginTop: 11, backgroundColor: '#A7E4CF' }, routeTitle: { width: 74, marginTop: 5, color: Colors.textPrimary, fontSize: 7.5, fontWeight: '900', textAlign: 'center' }, routeSubtitle: { marginTop: 2, color: Colors.textSecondary, fontSize: 6.5, textAlign: 'center' },
   telemetryCard: { padding: 17, borderRadius: 19, backgroundColor: '#0B3027' }, telemetryHead: { flexDirection: 'row', justifyContent: 'space-between' }, telemetryKicker: { color: '#6EE7B7', fontSize: 7.5, fontWeight: '900', letterSpacing: .9 }, telemetryTitle: { marginTop: 5, color: Colors.white, fontSize: 14, fontWeight: '900' }, telemetrySub: { marginTop: 2, color: '#9FC0B7', fontSize: 8.5 }, livePill: { height: 25, paddingHorizontal: 8, flexDirection: 'row', alignItems: 'center', gap: 5, borderRadius: 8, backgroundColor: 'rgba(52,211,153,.12)' }, liveDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: '#34D399' }, liveText: { color: '#6EE7B7', fontSize: 7.5, fontWeight: '900' }, batteryRow: { marginTop: 17, flexDirection: 'row', alignItems: 'center' }, batteryIcon: { width: 47, height: 47, alignItems: 'center', justifyContent: 'center', marginRight: 11, borderRadius: 15, backgroundColor: 'rgba(52,211,153,.11)' }, batteryValue: { color: Colors.white, fontSize: 23, fontWeight: '900' }, batteryRange: { marginTop: 2, color: '#9FC0B7', fontSize: 8 }, walletMetric: { marginLeft: 'auto', alignItems: 'flex-end' }, walletLabel: { color: '#6E9E91', fontSize: 7 }, walletValue: { marginTop: 4, color: Colors.white, fontSize: 14, fontWeight: '900' }, progressTrack: { height: 5, marginTop: 14, overflow: 'hidden', borderRadius: 4, backgroundColor: '#274A41' }, progressFill: { height: '100%', borderRadius: 4, backgroundColor: '#34D399' }, paymentNote: { marginTop: 11, padding: 9, flexDirection: 'row', alignItems: 'flex-start', gap: 7, borderRadius: 10, backgroundColor: 'rgba(255,255,255,.055)' }, paymentWarning: { backgroundColor: 'rgba(247,144,9,.12)' }, paymentText: { flex: 1, color: '#C5DDD6', fontSize: 8.5, lineHeight: 12 },
   stopList: { marginTop: 13, gap: 8 }, stopRow: { padding: 10, flexDirection: 'row', alignItems: 'center', borderWidth: 1, borderColor: Colors.borderSoft, borderRadius: 12, backgroundColor: '#FCFDFD' }, stopCancelled: { opacity: .55, backgroundColor: '#FFF8F7' }, stopIndex: { width: 29, height: 29, alignItems: 'center', justifyContent: 'center', marginRight: 9, borderRadius: 9, backgroundColor: Colors.primaryLight }, stopIndexDanger: { backgroundColor: Colors.errorLight }, stopIndexText: { color: Colors.primary, fontSize: 9, fontWeight: '900' }, stopCopy: { flex: 1, minWidth: 0 }, stopTitleRow: { flexDirection: 'row', alignItems: 'center', gap: 5 }, stopTitle: { flexShrink: 1, color: Colors.textPrimary, fontSize: 10, fontWeight: '900' }, stopStatus: { paddingHorizontal: 5, paddingVertical: 2, overflow: 'hidden', borderRadius: 5, color: Colors.primary, backgroundColor: Colors.primaryLight, fontSize: 6, fontWeight: '900' }, stopAddress: { marginTop: 2, color: Colors.textSecondary, fontSize: 7.5 }, stopMeta: { marginTop: 5, color: Colors.textSecondary, fontSize: 7.5, fontWeight: '700' }, stopBattery: { alignItems: 'center', gap: 2, marginLeft: 7 }, stopBatteryText: { color: Colors.textPrimary, fontSize: 8, fontWeight: '900' },
+  stopTimingRow: { marginTop: 5, flexDirection: 'row', justifyContent: 'space-between', gap: 7 }, stopTiming: { flex: 1, fontSize: 7.5, fontWeight: '900' }, alternativesLink: { color: Colors.primary, fontSize: 7.5, fontWeight: '900' }, alternativeRow: { marginTop: 5, marginLeft: 38, padding: 9, flexDirection: 'row', alignItems: 'center', gap: 8, borderRadius: 10, backgroundColor: Colors.primarySoft, borderWidth: 1, borderColor: '#CFE8DF' }, alternativeCopy: { flex: 1 }, alternativeTitle: { color: Colors.textPrimary, fontSize: 9, fontWeight: '900' }, alternativeMeta: { marginTop: 2, color: Colors.textSecondary, fontSize: 7 }, swapText: { color: Colors.primary, fontSize: 8, fontWeight: '900' },
   actionList: { marginTop: 12, gap: 7 }, actionRow: { minHeight: 56, padding: 9, flexDirection: 'row', alignItems: 'center', borderWidth: 1, borderColor: Colors.borderSoft, borderRadius: 12, backgroundColor: '#FBFDFC' }, actionIcon: { width: 33, height: 33, alignItems: 'center', justifyContent: 'center', marginRight: 9, borderRadius: 10, backgroundColor: Colors.primaryLight }, actionIconDanger: { backgroundColor: Colors.errorLight }, actionCopy: { flex: 1 }, actionTitle: { color: Colors.textPrimary, fontSize: 9.5, fontWeight: '900' }, actionSubtitle: { marginTop: 2, color: Colors.textSecondary, fontSize: 7.5 },
   timeline: { marginTop: 14 }, timelineItem: { paddingBottom: 13, flexDirection: 'row' }, timelineIcon: { width: 25, height: 25, alignItems: 'center', justifyContent: 'center', marginRight: 9, borderRadius: 8, backgroundColor: Colors.primaryLight }, timelineWarning: { backgroundColor: Colors.errorLight }, timelineInfo: { backgroundColor: Colors.blueLight }, timelineCopy: { flex: 1 }, timelineTitleRow: { flexDirection: 'row', justifyContent: 'space-between', gap: 7 }, timelineTitle: { color: Colors.textPrimary, fontSize: 9.5, fontWeight: '900' }, timelineTime: { color: Colors.textMuted, fontSize: 7 }, timelineDetail: { marginTop: 3, color: Colors.textSecondary, fontSize: 8, lineHeight: 11 },
   emptyCard: { padding: 28, alignItems: 'center', borderWidth: 1, borderColor: Colors.borderSoft, borderRadius: 19, backgroundColor: Colors.white }, emptyIcon: { width: 64, height: 64, alignItems: 'center', justifyContent: 'center', borderRadius: 20, backgroundColor: Colors.primaryLight }, emptyTitle: { marginTop: 13, color: Colors.textPrimary, fontSize: 15, fontWeight: '900' }, emptyText: { marginTop: 6, color: Colors.textSecondary, fontSize: 10, lineHeight: 15, textAlign: 'center' },

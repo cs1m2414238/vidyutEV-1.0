@@ -157,7 +157,10 @@ public class UserServiceImpl implements UserService {
     }
 
     private boolean hasText(String value) { return value != null && !value.isBlank(); }
-    private boolean validPhone(String value) { return value != null && value.matches("^[0-9]{10}$"); }
+    private boolean validPhone(String value) {
+        if (value == null) return false;
+        return value.replaceAll("\\D", "").matches("^(?:91)?[0-9]{10}$");
+    }
 
     private AccessMode defaultMode(Account account) {
         if (account.allows(AccessMode.EV_USER)) return AccessMode.EV_USER;

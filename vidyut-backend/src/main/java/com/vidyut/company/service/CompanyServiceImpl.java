@@ -10,6 +10,7 @@ import com.vidyut.company.entity.VerificationStatus;
 import com.vidyut.company.repository.CompanyRepository;
 import com.vidyut.account.repository.AccountRepository;
 import com.vidyut.common.exception.BadRequestException;
+import com.vidyut.email.service.EmailService;
 import com.vidyut.notification.entity.NotificationType;
 import com.vidyut.notification.service.NotificationService;
 import lombok.RequiredArgsConstructor;
@@ -29,6 +30,7 @@ public class CompanyServiceImpl implements CompanyService {
     private final CompanyRepository companyRepository;
     private final AccountRepository accountRepository;
     private final NotificationService notificationService;
+    private final EmailService emailService;
 
     @Override
     public CompanyResponse getCompanyByAccountId(Long accountId) {
@@ -79,8 +81,15 @@ public class CompanyServiceImpl implements CompanyService {
         company.setEmailVerificationCodeHash(hash(code));
         company.setEmailVerificationExpiresAt(LocalDateTime.now().plusMinutes(15));
         companyRepository.save(company);
+
+        emailService.sendVerificationCode(
+                company.getAccount().getEmail(),
+                "Company",
+                code);
+
         notificationService.sendNotification(accountId, "Company email verification",
-                "Your verification code is " + code + ". It expires in 15 minutes.", NotificationType.SYSTEM_ALERT);
+                "A verification code was sent to your email. It expires in 15 minutes.",
+                NotificationType.SYSTEM_ALERT);
         return "Verification code sent to " + company.getAccount().getEmail();
     }
 

@@ -10,6 +10,8 @@ interface MapViewProps {
   onSelect: (charger: Charger) => void;
   filter: 'all' | 'available' | 'fast';
   onFilterChange: (filter: 'all' | 'available' | 'fast') => void;
+  searchQuery?: string;
+  center?: [number, number];
 }
 
 // Custom Green & Busy marker icons using SVG data URI
@@ -47,10 +49,13 @@ export const MapView: React.FC<MapViewProps> = ({
   onSelect,
   filter,
   onFilterChange,
+  searchQuery = '',
+  center = [26.8467, 80.9462],
 }) => {
-  const lucknowPos: [number, number] = [26.8467, 80.9462];
+  const normalizedQuery = searchQuery.trim().toLocaleLowerCase();
 
   const filteredChargers = chargers.filter((c) => {
+    if (normalizedQuery && !`${c.name} ${c.address}`.toLocaleLowerCase().includes(normalizedQuery)) return false;
     if (filter === 'available') return c.available;
     if (filter === 'fast') return c.powerKw >= 11;
     return true;
@@ -98,7 +103,8 @@ export const MapView: React.FC<MapViewProps> = ({
       {/* Interactive Map */}
       <div style={styles.mapContainer}>
         <MapContainer
-          center={lucknowPos}
+          key={`${center[0]}-${center[1]}`}
+          center={center}
           zoom={13}
           scrollWheelZoom={true}
           style={{ height: '100%', width: '100%', borderRadius: 16 }}

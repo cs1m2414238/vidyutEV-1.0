@@ -26,6 +26,9 @@ export interface Charger {
   connectors: Array<{ type: string; powerKw: number; available: boolean; status?: string }>;
   distanceKm?: number;
   bookingSlotMinutes?: number;
+  outletPartner?: boolean;
+  outletInstitutionName?: string;
+  outletIdVerificationRequired?: boolean;
 }
 
 export interface ChargerSearchFilters {

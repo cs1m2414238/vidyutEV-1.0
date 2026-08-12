@@ -32,4 +32,11 @@ public class LandListingController {
         return ResponseEntity.ok(ApiResponse.success(
                 landListingService.getListingsByHostUserId(currentUser.getCurrentAccountId())));
     }
+
+    @PutMapping("/{id}")
+    public ResponseEntity<ApiResponse<LandListingResponse>> updateListing(
+            @PathVariable Long id, @Valid @RequestBody LandListingCreateRequest request) {
+        return ResponseEntity.ok(ApiResponse.success("Property updated successfully",
+                landListingService.updateListing(currentUser.getCurrentAccountId(), id, request)));
+    }
 }

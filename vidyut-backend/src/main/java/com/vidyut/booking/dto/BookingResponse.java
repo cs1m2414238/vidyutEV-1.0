@@ -26,6 +26,9 @@ public class BookingResponse {
     private int durationMinutes;
     private double totalAmount;
     private double kwhDelivered;
+    private Long outletId;
+    private String outletTierName;
+    private Double appliedRatePerKwh;
     private double cancellationFee;
     private double refundAmount;
     private BookingStatus status;

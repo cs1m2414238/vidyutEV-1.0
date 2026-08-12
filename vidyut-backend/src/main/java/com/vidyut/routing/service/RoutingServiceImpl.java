@@ -1,5 +1,9 @@
 package com.vidyut.routing.service;
 
+import com.vidyut.autopilot.entity.RouteExperience;
+import com.vidyut.autopilot.entity.RouteExperienceOutcome;
+import com.vidyut.autopilot.entity.TripPurpose;
+import com.vidyut.autopilot.repository.RouteExperienceRepository;
 import com.vidyut.routing.dto.*;
 import com.vidyut.station.dto.StationResponse;
 import com.vidyut.station.entity.*;
@@ -28,6 +32,7 @@ public class RoutingServiceImpl implements RoutingService {
     private final VehicleRepository vehicleRepository;
     private final BookingRepository bookingRepository;
     private final BookingService bookingService;
+    private final RouteExperienceRepository experienceRepository;
 
     private static final Map<String, double[]> KNOWN_LOCATIONS = Map.of(
             "lucknow", new double[]{26.8467, 80.9462},
@@ -53,16 +58,27 @@ public class RoutingServiceImpl implements RoutingService {
         double fullRange = estimateFullRange(vehicle, batteryPercent);
         double usableRange = round(fullRange * Math.max(0, batteryPercent - reserve) / 100.0);
         boolean withinRange = totalDistance <= usableRange;
+        TripPurpose purpose = resolvePurpose(request.getTripPurpose(), request.getDestination());
+        List<RouteExperience> routeMemory = experienceRepository
+                .findTop30ByOriginKeyAndDestinationKeyOrderByCreatedAtDesc(routeKey(request.getOrigin()), routeKey(request.getDestination()));
+        Map<Long, List<RouteExperience>> memoryByStation = routeMemory.stream()
+                .filter(experience -> experience.getStationId() != null)
+                .collect(java.util.stream.Collectors.groupingBy(RouteExperience::getStationId));
 
         List<RouteStationResponse> candidates = rankStations(stationService.getAllStations(), vehicle, origin,
-                destination, usableRange);
-        List<RouteStationResponse> recommended = withinRange ? List.of()
+                destination, usableRange, purpose, memoryByStation);
+        boolean purposeStopUseful = purpose == TripPurpose.MALL_VISIT || purpose == TripPurpose.REST_STOP
+                || purpose == TripPurpose.DESTINATION_CHARGING;
+        List<RouteStationResponse> recommended = withinRange && !purposeStopUseful ? List.of()
                 : candidates.stream().limit(requiredStops(totalDistance, Math.max(usableRange, 50))).toList();
         double arrival = Math.max(reserve, batteryPercent - (totalDistance / Math.max(fullRange, 1) * 100));
 
         return RoutePlanResponse.builder()
                 .origin(request.getOrigin())
                 .destination(request.getDestination())
+                .tripPurpose(purpose.name())
+                .purposeSummary(purposeSummary(purpose, request.getDestination()))
+                .pastExperiencesUsed(routeMemory.size())
                 .totalDistanceKm(totalDistance)
                 .totalDurationMinutes((int) Math.ceil(totalDistance / 55.0 * 60)
                         + recommended.stream().mapToInt(RouteStationResponse::getRecommendedChargeMinutes).sum())
@@ -81,7 +97,7 @@ public class RoutingServiceImpl implements RoutingService {
         Vehicle vehicle = resolveVehicle(userId, vehicleId);
         double[] origin = {current.getLatitude(), current.getLongitude()};
         return rankStations(stationService.getAllStations().stream().filter(s -> !s.getId().equals(stationId)).toList(),
-                vehicle, origin, origin, Double.MAX_VALUE).stream().limit(5).toList();
+                vehicle, origin, origin, Double.MAX_VALUE, TripPurpose.GENERAL, Map.of()).stream().limit(5).toList();
     }
 
     @Override
@@ -102,7 +118,18 @@ public class RoutingServiceImpl implements RoutingService {
         if (current.getStatus() == BookingStatus.IN_PROGRESS || current.getStatus() == BookingStatus.COMPLETED) {
             throw new BadRequestException("An active or completed charging session cannot be diverted");
         }
-        StationResponse alternative = stationService.getStationById(alternativeStationId);
+        List<RouteStationResponse> compatibleAlternatives = alternatives(
+                userId, current.getStationId(), current.getVehicleId());
+        RouteStationResponse selectedRoute = compatibleAlternatives.stream()
+                .filter(candidate -> candidate.getStation().getId().equals(alternativeStationId))
+                .findFirst().orElseThrow(() -> new BadRequestException(
+                        "The selected station is not a compatible live diversion"));
+        double bestDetour = compatibleAlternatives.stream().mapToDouble(RouteStationResponse::getDetourKm)
+                .min().orElse(selectedRoute.getDetourKm());
+        if (selectedRoute.getDetourKm() > Math.max(5, bestDetour * 1.15)) {
+            throw new BadRequestException("Choose an alternative within 115% of the best available detour");
+        }
+        StationResponse alternative = selectedRoute.getStation();
         if (alternative.getStatus() != StationStatus.ACTIVE || alternative.getAvailableSlots() == 0) {
             throw new BadRequestException("The selected alternative is not available");
         }
@@ -112,10 +139,8 @@ public class RoutingServiceImpl implements RoutingService {
                 throw new BadRequestException("The alternative station does not support this vehicle connector");
             }
         }
-        current.setStatus(BookingStatus.CANCELLED);
-        current.setCancellationFee(0);
-        current.setRefundAmount(0);
-        bookingRepository.save(current);
+        bookingService.cancelBookingWithoutFee(current.getId(), userId,
+                "The booked station became unavailable; your reservation is being moved.");
         LocalDateTime replacementStart = current.getStartTime() != null && current.getStartTime().isAfter(LocalDateTime.now())
                 ? current.getStartTime() : LocalDateTime.now().plusMinutes(5);
         BookingResponse replacement = bookingService.createBooking(BookingCreateRequest.builder()
@@ -127,7 +152,8 @@ public class RoutingServiceImpl implements RoutingService {
     }
 
     private List<RouteStationResponse> rankStations(List<StationResponse> stations, Vehicle vehicle, double[] origin,
-                                                    double[] destination, double reachableRange) {
+                                                    double[] destination, double reachableRange, TripPurpose purpose,
+                                                    Map<Long, List<RouteExperience>> memoryByStation) {
         return stations.stream()
                 .filter(station -> station.getStatus() == StationStatus.ACTIVE && !station.isEmergencyDisabled())
                 .filter(station -> station.getAvailableSlots() > 0)
@@ -137,16 +163,29 @@ public class RoutingServiceImpl implements RoutingService {
                     double detour = pointToRouteDetour(origin, destination, station);
                     double power = station.getConnectors().stream().filter(c -> c.getStatus() == ChargerStatus.ONLINE)
                             .mapToDouble(ChargingConnector::getPowerKw).max().orElse(7.4);
+                    List<RouteExperience> stationMemory = memoryByStation.getOrDefault(station.getId(), List.of());
+                    long issues = stationMemory.stream().filter(item -> item.getOutcome() != RouteExperienceOutcome.SUCCESS).count();
+                    long successes = stationMemory.size() - issues;
+                    boolean restFriendly = isRestFriendly(station.getAmenities());
+                    double destinationDistance = distance(station.getLatitude(), station.getLongitude(), destination[0], destination[1]);
+                    String purposeReason = switch (purpose) {
+                        case MALL_VISIT, DESTINATION_CHARGING -> round(destinationDistance) + " km from destination";
+                        case REST_STOP -> restFriendly ? "Rest and food amenities available" : "Best reachable route stop";
+                        case COMMUTE -> "Low-delay commute option";
+                        default -> station.getAvailableSlots() + " compatible connector(s)";
+                    };
+                    String memoryReason = stationMemory.isEmpty() ? "" : "; route memory: " + successes
+                            + " success, " + issues + " issue signal(s)";
                     return RouteStationResponse.builder().station(station).distanceFromOriginKm(round(fromOrigin))
                             .detourKm(round(detour)).etaMinutes((int) Math.ceil(fromOrigin / 45.0 * 60))
                             .availableSlots(station.getAvailableSlots()).connectorMatched(true)
                             .recommendedChargeMinutes((int) Math.max(15, Math.ceil(20 / power * 60)))
                             .estimatedChargingCost(round(20 * station.getPricePerKwh()))
-                            .reason(station.getAvailableSlots() + " compatible connector(s), " + round(detour) + " km detour")
+                            .reason(purposeReason + ", " + round(detour) + " km detour" + memoryReason)
                             .build();
                 })
                 .filter(stop -> stop.getDistanceFromOriginKm() <= reachableRange || reachableRange == Double.MAX_VALUE)
-                .sorted(Comparator.comparingDouble(RouteStationResponse::getDetourKm)
+                .sorted(Comparator.comparingDouble((RouteStationResponse stop) -> purposeScore(stop, purpose, destination, memoryByStation))
                         .thenComparing(Comparator.comparingInt(RouteStationResponse::getAvailableSlots).reversed())
                         .thenComparingDouble(stop -> stop.getStation().getPricePerKwh()))
                 .toList();
@@ -199,6 +238,56 @@ public class RoutingServiceImpl implements RoutingService {
 
     private int requiredStops(double distance, double usableRange) {
         return Math.max(1, Math.min(3, (int) Math.ceil(distance / usableRange) - 1));
+    }
+
+    private TripPurpose resolvePurpose(String explicitPurpose, String destination) {
+        if (explicitPurpose != null && !explicitPurpose.isBlank()) {
+            try { return TripPurpose.valueOf(explicitPurpose.trim().toUpperCase(Locale.ROOT)); }
+            catch (IllegalArgumentException ignored) { /* Infer below. */ }
+        }
+        String intent = destination == null ? "" : destination.toLowerCase(Locale.ROOT);
+        if (intent.matches(".*(mall|shopping|market|cinema).*")) return TripPurpose.MALL_VISIT;
+        if (intent.matches(".*(rest|food|cafe|hotel|washroom).*")) return TripPurpose.REST_STOP;
+        if (intent.matches(".*(office|work|college|school).*")) return TripPurpose.COMMUTE;
+        return TripPurpose.GENERAL;
+    }
+
+    private String purposeSummary(TripPurpose purpose, String destination) {
+        return switch (purpose) {
+            case MALL_VISIT -> "A charger close to " + destination + " is preferred so shopping and charging happen together.";
+            case REST_STOP -> "An on-route charger with food, restroom, lounge or hotel amenities is preferred.";
+            case COMMUTE -> "Low queue and repeat reliability are prioritized for the daily commute.";
+            case DESTINATION_CHARGING -> "The final charging option is kept close to " + destination + ".";
+            case GENERAL -> "Stops balance range safety, detour, queue, compatibility and price.";
+        };
+    }
+
+    private double purposeScore(RouteStationResponse stop, TripPurpose purpose, double[] destination,
+            Map<Long, List<RouteExperience>> memoryByStation) {
+        StationResponse station = stop.getStation();
+        List<RouteExperience> memories = memoryByStation.getOrDefault(station.getId(), List.of());
+        long failures = memories.stream().filter(item -> item.getOutcome() != RouteExperienceOutcome.SUCCESS).count();
+        long successes = memories.size() - failures;
+        double memoryPenalty = failures * 55 - successes * 4;
+        double purposePenalty = switch (purpose) {
+            case MALL_VISIT, DESTINATION_CHARGING -> distance(station.getLatitude(), station.getLongitude(), destination[0], destination[1]) * 2;
+            case REST_STOP -> isRestFriendly(station.getAmenities()) ? 0 : 120;
+            case COMMUTE -> station.getQueueCount() * 9.0 + station.getOccupancyPercent() * 0.2;
+            default -> 0;
+        };
+        return stop.getDetourKm() + purposePenalty + memoryPenalty;
+    }
+
+    private boolean isRestFriendly(String amenities) {
+        return amenities != null && amenities.toLowerCase(Locale.ROOT)
+                .matches(".*(restroom|restaurant|food|cafe|lounge|hotel|washroom).*" );
+    }
+
+    private String routeKey(String value) {
+        String normalized = value == null ? "" : value.toLowerCase(Locale.ROOT)
+                .replaceAll("[^a-z0-9 ]", " ").replaceAll(" +", " ").trim();
+        for (String city : KNOWN_LOCATIONS.keySet()) if (normalized.contains(city)) return city;
+        return normalized.isBlank() ? "unknown" : normalized.substring(0, Math.min(120, normalized.length()));
     }
 
     private double distance(double lat1, double lon1, double lat2, double lon2) {

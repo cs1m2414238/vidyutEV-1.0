@@ -15,6 +15,10 @@ import com.vidyut.station.entity.StationAvailability;
 import com.vidyut.station.entity.StationStatus;
 import com.vidyut.station.repository.ChargingStationRepository;
 import com.vidyut.vehicle.repository.VehicleRepository;
+import com.vidyut.outlet.service.OutletAccessService;
+import com.vidyut.outlet.service.OutletRateDecision;
+import com.vidyut.notification.entity.NotificationType;
+import com.vidyut.notification.service.NotificationService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -34,6 +38,9 @@ public class BookingServiceImpl implements BookingService {
     private final BookingRepository bookingRepository;
     private final ChargingStationRepository stationRepository;
     private final VehicleRepository vehicleRepository;
+    private final OutletAccessService outletAccessService;
+    private final NotificationService notificationService;
+    private final WaitlistService waitlistService;
 
     @Override
     @Transactional
@@ -68,7 +75,8 @@ public class BookingServiceImpl implements BookingService {
                 .max()
                 .orElseThrow(() -> new BadRequestException("This station has no available charging connector"));
         double estKwh = round(powerKw * durationMinutes / 60.0);
-        double totalAmount = round(estKwh * station.getPricePerKwh());
+        OutletRateDecision rate = outletAccessService.resolveRate(userId, station.getId(), station.getPricePerKwh());
+        double totalAmount = round(estKwh * rate.ratePerKwh());
 
         if (request.getVehicleId() != null) {
             vehicleRepository.findByIdAndUserId(request.getVehicleId(), userId)
@@ -100,10 +108,16 @@ public class BookingServiceImpl implements BookingService {
                 .durationMinutes(durationMinutes)
                 .totalAmount(totalAmount)
                 .kwhDelivered(estKwh)
+                .outletId(rate.outletId())
+                .outletTierName(rate.tierName())
+                .appliedRatePerKwh(rate.ratePerKwh())
                 .status(BookingStatus.CONFIRMED)
                 .build();
-
-        return mapToResponse(bookingRepository.save(booking));
+        Booking saved = bookingRepository.save(booking);
+        notificationService.sendNotification(userId, "Booking confirmed",
+                "Your slot at " + station.getName() + " on " + startTime + " is confirmed.",
+                NotificationType.BOOKING_CONFIRMED, "vidyut://booking/" + saved.getId());
+        return mapToResponse(saved);
     }
 
     @Override
@@ -150,11 +164,14 @@ public class BookingServiceImpl implements BookingService {
     }
 
     @Override
+    @Transactional
     public BookingResponse cancelBooking(Long id) {
         Booking booking = bookingRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Booking not found with id: " + id));
         booking.setStatus(BookingStatus.CANCELLED);
-        return mapToResponse(bookingRepository.save(booking));
+        Booking saved = bookingRepository.save(booking);
+        waitlistService.promoteNext(saved.getStationId());
+        return mapToResponse(saved);
     }
 
     @Override
@@ -170,7 +187,31 @@ public class BookingServiceImpl implements BookingService {
         // Bookings are estimated but not prepaid; there is no captured amount to refund here.
         booking.setRefundAmount(0);
         booking.setStatus(BookingStatus.CANCELLED);
-        return mapToResponse(bookingRepository.save(booking));
+        Booking saved = bookingRepository.save(booking);
+        waitlistService.promoteNext(saved.getStationId());
+        notificationService.sendNotification(userId, "Booking cancelled",
+                "Booking at " + saved.getStationName() + " was cancelled. Fee: ₹" + saved.getCancellationFee() + ".",
+                NotificationType.BOOKING_CANCELLED, "vidyut://booking/" + saved.getId());
+        return mapToResponse(saved);
+    }
+
+    @Override
+    @Transactional
+    public BookingResponse cancelBookingWithoutFee(Long id, Long userId, String reason) {
+        Booking booking = bookingRepository.findByIdAndUserId(id, userId)
+                .orElseThrow(() -> new ResourceNotFoundException("Booking not found for this account"));
+        if (booking.getStatus() == BookingStatus.IN_PROGRESS || booking.getStatus() == BookingStatus.COMPLETED) {
+            throw new BadRequestException("An active or completed booking cannot be transferred");
+        }
+        booking.setCancellationFee(0);
+        booking.setRefundAmount(0);
+        booking.setStatus(BookingStatus.CANCELLED);
+        Booking saved = bookingRepository.save(booking);
+        waitlistService.promoteNext(saved.getStationId());
+        notificationService.sendNotification(userId, "Booking transferred",
+                reason == null ? "Your previous booking was released without a fee." : reason,
+                NotificationType.STATION_FULL_DIVERSION, "vidyut://booking/" + id);
+        return mapToResponse(saved);
     }
 
     @Override
@@ -253,6 +294,9 @@ public class BookingServiceImpl implements BookingService {
                         : Math.max(1, booking.getDurationHours()) * 60)
                 .totalAmount(booking.getTotalAmount())
                 .kwhDelivered(booking.getKwhDelivered())
+                .outletId(booking.getOutletId())
+                .outletTierName(booking.getOutletTierName())
+                .appliedRatePerKwh(booking.getAppliedRatePerKwh())
                 .cancellationFee(booking.getCancellationFee())
                 .refundAmount(booking.getRefundAmount())
                 .status(booking.getStatus())

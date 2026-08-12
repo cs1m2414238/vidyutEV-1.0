@@ -80,6 +80,17 @@ public class ChargingStation {
     private String couponCode;
     private Double couponDiscountPercent;
 
+    @Builder.Default
+    private boolean outletPartner = false;
+
+    private String outletInstitutionName;
+
+    @Column(length = 1000)
+    private String outletEmailDomains;
+
+    @Builder.Default
+    private boolean outletIdVerificationRequired = false;
+
     @Enumerated(EnumType.STRING)
     @Builder.Default
     private StationStatus status = StationStatus.ACTIVE;
@@ -89,6 +100,11 @@ public class ChargingStation {
     private StationAvailability availability = StationAvailability.AVAILABLE;
 
     private Long hostUserId;
+
+    private Long supplierCompanyId;
+
+    @Column(unique = true)
+    private Long sourceInstallationRequestId;
 
     @OneToMany(mappedBy = "station", cascade = CascadeType.ALL, orphanRemoval = true)
     @Builder.Default

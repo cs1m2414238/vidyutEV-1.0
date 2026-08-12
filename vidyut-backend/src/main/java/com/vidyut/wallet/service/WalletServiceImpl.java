@@ -15,6 +15,8 @@ import com.vidyut.wallet.entity.WalletTransaction;
 import com.vidyut.wallet.repository.EvWalletRepository;
 import com.vidyut.wallet.repository.VehicleAutoRechargeRuleRepository;
 import com.vidyut.wallet.repository.WalletTransactionRepository;
+import com.vidyut.notification.entity.NotificationType;
+import com.vidyut.notification.service.NotificationService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -27,11 +29,13 @@ import java.util.List;
 public class WalletServiceImpl implements WalletService {
 
     private static final double DEFAULT_WALLET_BALANCE = 0.0;
+    private static final double LOW_BALANCE_THRESHOLD = 200.0;
 
     private final EvWalletRepository walletRepository;
     private final WalletTransactionRepository transactionRepository;
     private final VehicleAutoRechargeRuleRepository autoRechargeRuleRepository;
     private final VehicleRepository vehicleRepository;
+    private final NotificationService notificationService;
 
     @Override
     @Transactional
@@ -101,6 +105,11 @@ public class WalletServiceImpl implements WalletService {
                 .type(TransactionType.CHARGING_PAYMENT)
                 .description(description)
                 .build());
+        if (wallet.getBalance() < LOW_BALANCE_THRESHOLD) {
+            notificationService.sendNotification(userId, "Wallet balance is low",
+                    "₹" + wallet.getBalance() + " remains. Top up before your next charge.",
+                    NotificationType.WALLET_LOW_BALANCE, "vidyut://wallet");
+        }
     }
 
     @Override
@@ -169,6 +178,9 @@ public class WalletServiceImpl implements WalletService {
                 .description("Auto-recharge for " + rule.getVehicle().getMakeAndModel()
                         + " via " + rule.getPaymentMethod())
                 .build());
+        notificationService.sendNotification(wallet.getUserId(), "Wallet auto-recharged",
+                "₹" + rule.getRechargeAmount() + " was added for " + rule.getVehicle().getMakeAndModel() + ".",
+                NotificationType.AUTO_RECHARGE, "vidyut://wallet");
     }
 
     private AutoRechargeRuleResponse mapRule(VehicleAutoRechargeRule rule) {

@@ -19,6 +19,9 @@ export interface BookingItem {
   kwhDelivered?: number;
   cancellationFee?: number;
   refundAmount?: number;
+  outletId?: number;
+  outletTierName?: string;
+  appliedRatePerKwh?: number;
   status: 'PENDING' | 'CONFIRMED' | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELLED' | 'EXPIRED';
   createdAt: string;
 }

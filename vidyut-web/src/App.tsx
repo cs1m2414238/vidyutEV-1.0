@@ -1,7 +1,8 @@
-import { useState, useEffect } from 'react';
+import { useCallback, useState, useEffect } from 'react';
 import { ArrowRight, Building2, CarFront, CircleAlert, HousePlug, UserRound } from 'lucide-react';
 import { Sidebar } from './components/Sidebar';
 import { TopBar } from './components/TopBar';
+import type { TopBarLocation } from './components/TopBar';
 import { MapView } from './components/MapView';
 import { ChargerDetailModal } from './components/ChargerDetailModal';
 import { BookingsView } from './components/BookingsView';
@@ -13,6 +14,7 @@ import { CompanyWorkspace } from './components/CompanyWorkspace';
 import { HostWorkspace } from './components/HostWorkspace';
 import { AutopilotView } from './components/AutopilotView';
 import { TripPlannerView } from './components/TripPlannerView';
+import { OwnerNotificationsView } from './components/OwnerNotificationsView';
 import { ModeSelection } from './components/ModeSelection';
 import { mockUser, mockChargers } from './data/mockData';
 import type { Charger, User } from './types';
@@ -21,6 +23,7 @@ import SplashScreen from './components/SplashScreen';
 import LandingPage from './components/LandingPage';
 import VidyutRegisterPage from './components/RegisterPage';
 import { CompleteProfileModal } from './components/CompleteProfileModal';
+import { AdminPortal } from './components/AdminPortal';
 import {
   clearAuthSession,
   loadAuthSession,
@@ -32,6 +35,8 @@ import { createBooking, getUnreadBookingCount } from './services/bookings';
 import { getStations, stationToCharger } from './services/stations';
 import { getVehicles } from './services/vehicles';
 import type { Vehicle } from './services/vehicles';
+import { getEvNotifications } from './services/notifications';
+import type { EvNotification } from './services/notifications';
 import { EVOwnerDashboard } from './components/dashboards/EVOwnerDashboard';
 import './components/dashboards/Dashboards.css';
 import './components/DashboardShell.css';
@@ -65,7 +70,7 @@ function userFromAuth(auth: AuthData, fallback: User = mockUser): User {
 function isProfileIncomplete(user: User, activeMode: AccessMode): boolean {
   if (activeMode === 'ADMIN') return false;
   if (user.profileCompleted === false) return true;
-  if (!/^\d{10}$/.test((user.phone || '').replace(/\D/g, ''))) return true;
+  if (!/^(?:91)?\d{10}$/.test((user.phone || '').replace(/\D/g, ''))) return true;
   if (activeMode === 'COMPANY' && (!user.companyName?.trim() || !user.registrationNumber?.trim())) return true;
   return false;
 }
@@ -95,7 +100,7 @@ function parseStateFromHash(hash: string): { view: AppView; tab: string } {
   return { view: 'landing', tab: 'dashboard' };
 }
 
-export function App() {
+function MainApplication() {
   const [restoredSession] = useState<AuthData | null>(() => loadAuthSession());
   const [currentView, setCurrentView] = useState<AppView>(() => {
     if (window.location.hash) {
@@ -130,6 +135,24 @@ export function App() {
   const [showProfileModal, setShowProfileModal] = useState(false);
   const [profileModalDismissed, setProfileModalDismissed] = useState(false);
   const [primaryVehicle, setPrimaryVehicle] = useState<Vehicle | null>(null);
+  const [ownerNotifications, setOwnerNotifications] = useState<EvNotification[]>([]);
+  const [ownerNotificationsLoading, setOwnerNotificationsLoading] = useState(false);
+  const [ownerNotificationsError, setOwnerNotificationsError] = useState('');
+  const [chargerSearchQuery, setChargerSearchQuery] = useState('');
+  const [chargerMapCenter, setChargerMapCenter] = useState<[number, number]>([26.8467, 80.9462]);
+
+  const refreshOwnerNotifications = useCallback(async () => {
+    if (!authToken) return;
+    setOwnerNotificationsLoading(true);
+    setOwnerNotificationsError('');
+    try {
+      setOwnerNotifications(await getEvNotifications(authToken));
+    } catch (error) {
+      setOwnerNotificationsError(error instanceof Error ? error.message : 'Unable to load notifications.');
+    } finally {
+      setOwnerNotificationsLoading(false);
+    }
+  }, [authToken]);
 
   // Sync state with browser URL history stack
   const navigateToState = (newView: AppView, newTab: string = activeTab, replace: boolean = false) => {
@@ -172,6 +195,8 @@ export function App() {
     if (!isLoggedIn || activeMode !== 'EV_USER' || !authToken) return undefined;
     let ignore = false;
 
+    void refreshOwnerNotifications();
+
     void Promise.allSettled([
       getStations(),
       getUnreadBookingCount(authToken),
@@ -196,7 +221,7 @@ export function App() {
     return () => {
       ignore = true;
     };
-  }, [isLoggedIn, activeMode, authToken]);
+  }, [isLoggedIn, activeMode, authToken, refreshOwnerNotifications]);
 
   const applyAuthenticatedSession = (auth: AuthData, promptForMode: boolean) => {
     const modes = auth.user.allowedModes?.length ? auth.user.allowedModes : [auth.user.defaultMode || auth.activeMode];
@@ -273,6 +298,9 @@ export function App() {
     setBookingRefreshKey(0);
     setChargers(mockChargers);
     setPrimaryVehicle(null);
+    setOwnerNotifications([]);
+    setOwnerNotificationsError('');
+    setChargerSearchQuery('');
     setSidebarOpen(false);
     navigateToState('landing', 'dashboard', true);
   };
@@ -334,9 +362,10 @@ export function App() {
   const showOwnerVehicleDetail = selectedVehicleId != null && Number.isInteger(selectedVehicleId) && selectedVehicleId > 0;
   const showOwnerAutopilot = activeDashboardRole === 'EV_OWNER' && activeTab === 'autopilot';
   const showOwnerTripPlanner = activeDashboardRole === 'EV_OWNER' && activeTab === 'trip';
+  const showOwnerNotifications = activeDashboardRole === 'EV_OWNER' && activeTab === 'notifications';
   const showCompanyWorkspace = activeDashboardRole === 'COMPANY_ADMIN';
   const showHostWorkspace = activeDashboardRole === 'LANDOWNER';
-  const showModeFeature = activeTab !== 'dashboard' && activeTab !== 'find' && !showOwnerBookings && !showOwnerWallet && !showOwnerVehicles && !showOwnerVehicleDetail && !showOwnerAutopilot && !showOwnerTripPlanner && !showCompanyWorkspace && !showHostWorkspace;
+  const showModeFeature = activeTab !== 'dashboard' && activeTab !== 'find' && !showOwnerBookings && !showOwnerWallet && !showOwnerVehicles && !showOwnerVehicleDetail && !showOwnerAutopilot && !showOwnerTripPlanner && !showOwnerNotifications && !showCompanyWorkspace && !showHostWorkspace;
   const profileIncomplete = isProfileIncomplete(user, activeMode);
 
   return (
@@ -358,7 +387,27 @@ export function App() {
       />
 
       <main className="app-main">
-        <TopBar notificationCount={activeDashboardRole === 'COMPANY_ADMIN' ? companyCounts.notifications : activeDashboardRole === 'LANDOWNER' ? hostCounts.notifications : 3} onOpenMenu={() => setSidebarOpen(true)} />
+        <TopBar
+          notificationCount={activeDashboardRole === 'COMPANY_ADMIN'
+            ? companyCounts.notifications
+            : activeDashboardRole === 'LANDOWNER'
+              ? hostCounts.notifications
+              : ownerNotifications.filter((notification) => !notification.read).length}
+          onOpenMenu={() => setSidebarOpen(true)}
+          onSearch={(query) => {
+            setChargerSearchQuery(query);
+            navigateToState(
+              'dashboard',
+              activeDashboardRole === 'EV_OWNER' ? 'find' : activeDashboardRole === 'LANDOWNER' ? 'chargers' : 'stations',
+            );
+          }}
+          onLocationChange={(location: TopBarLocation) => {
+            setChargerMapCenter([location.latitude, location.longitude]);
+            setChargerSearchQuery('');
+            if (activeDashboardRole === 'EV_OWNER') navigateToState('dashboard', 'find');
+          }}
+          onOpenNotifications={() => navigateToState('dashboard', 'notifications')}
+        />
 
         <div className="mode-bar">
           <span className="mode-label">{allowedModes.length > 1 ? 'Current workspace' : 'Account workspace'}</span>
@@ -459,6 +508,15 @@ export function App() {
 
           {showOwnerTripPlanner && <TripPlannerView token={authToken} />}
 
+          {showOwnerNotifications && (
+            <OwnerNotificationsView
+              notifications={ownerNotifications}
+              loading={ownerNotificationsLoading}
+              error={ownerNotificationsError}
+              onRefresh={() => void refreshOwnerNotifications()}
+            />
+          )}
+
           {activeTab === 'find' && activeDashboardRole === 'EV_OWNER' && (
             <div style={{ height: 'calc(100dvh - 180px)', minHeight: 520 }}>
               <MapView
@@ -467,6 +525,8 @@ export function App() {
                 onSelect={handleSelectCharger}
                 filter={mapFilter}
                 onFilterChange={setMapFilter}
+                searchQuery={chargerSearchQuery}
+                center={chargerMapCenter}
               />
             </div>
           )}
@@ -504,6 +564,16 @@ export function App() {
       )}
     </div>
   );
+}
+
+export function App() {
+  const [adminRoute, setAdminRoute] = useState(() => window.location.hash.startsWith('#/admin'));
+  useEffect(() => {
+    const sync = () => setAdminRoute(window.location.hash.startsWith('#/admin'));
+    window.addEventListener('hashchange', sync);
+    return () => window.removeEventListener('hashchange', sync);
+  }, []);
+  return adminRoute ? <AdminPortal /> : <MainApplication />;
 }
 
 export default App;

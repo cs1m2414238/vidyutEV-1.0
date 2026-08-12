@@ -85,7 +85,14 @@ public class AutopilotDemoDataInitializer implements ApplicationRunner {
                 new DemoStation("VoltPoint Mathura", "Yamuna Expressway, Mathura", "Mathura", 27.4924, 77.6737, 13.4, 4.6, 0, 31, 180, "VY-MTR"),
                 new DemoStation("Yamuna Energy Plaza", "Jewar Toll Plaza, Gautam Budh Nagar", "Greater Noida", 28.1580, 77.5540, 12.9, 4.8, 1, 42, 180, "VY-JWR"),
                 new DemoStation("Vidyut Greater Noida", "Knowledge Park II, Greater Noida", "Greater Noida", 28.4744, 77.5040, 15.0, 4.9, 0, 28, 240, "VY-GNO"),
-                new DemoStation("Delhi Arrival Hub", "Sarai Kale Khan, New Delhi", "Delhi", 28.5890, 77.2500, 16.2, 4.7, 2, 61, 150, "VY-DEL")
+                new DemoStation("Delhi Arrival Hub", "Sarai Kale Khan, New Delhi", "Delhi", 28.5890, 77.2500, 16.2, 4.7, 2, 61, 150, "VY-DEL"),
+                new DemoStation("Vidyut Jaipur NH48", "Ajmer Road, Jaipur", "Jaipur", 26.8870, 75.7050, 13.8, 4.8, 1, 36, 180, "VY-JAI"),
+                new DemoStation("Vidyut Kishangarh Corridor", "NH48, Kishangarh", "Kishangarh", 26.5906, 74.8564, 12.9, 4.7, 0, 24, 180, "VY-KSG"),
+                new DemoStation("Vidyut Udaipur Gateway", "NH48, Udaipur", "Udaipur", 24.6500, 73.7100, 14.0, 4.9, 1, 40, 240, "VY-UDR"),
+                new DemoStation("Vidyut Ahmedabad Ring", "SG Highway, Ahmedabad", "Ahmedabad", 23.0700, 72.5000, 13.5, 4.8, 2, 52, 240, "VY-AMD"),
+                new DemoStation("Vidyut Vadodara Express", "NE1 Junction, Vadodara", "Vadodara", 22.3072, 73.1812, 12.7, 4.6, 0, 30, 180, "VY-BDQ"),
+                new DemoStation("Vidyut Surat NH48", "Kadodara, Surat", "Surat", 21.2200, 72.9600, 13.2, 4.8, 1, 45, 240, "VY-STV"),
+                new DemoStation("Vidyut Mumbai Arrival", "Thane, Mumbai Metropolitan Region", "Mumbai", 19.2183, 72.9781, 16.0, 4.9, 2, 60, 240, "VY-BOM")
         );
     }
 

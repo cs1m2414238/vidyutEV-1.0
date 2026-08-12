@@ -16,6 +16,7 @@ import java.util.Optional;
 public interface ChargingStationRepository extends JpaRepository<ChargingStation, Long> {
     List<ChargingStation> findByCityContainingIgnoreCase(String city);
     List<ChargingStation> findByHostUserId(Long hostUserId);
+    List<ChargingStation> findBySupplierCompanyId(Long supplierCompanyId);
     Optional<ChargingStation> findByIdAndHostUserId(Long id, Long hostUserId);
 
     @Lock(LockModeType.PESSIMISTIC_WRITE)

@@ -3,7 +3,10 @@ package com.vidyut.session.controller;
 import com.vidyut.common.response.ApiResponse;
 import com.vidyut.common.util.CurrentUserUtil;
 import com.vidyut.session.dto.ChargingSessionResponse;
+import com.vidyut.session.dto.SessionControlRequest;
+import com.vidyut.session.dto.SessionSocUpdateRequest;
 import com.vidyut.session.service.ChargingSessionService;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -43,5 +46,20 @@ public class ChargingSessionController {
     public ResponseEntity<ApiResponse<ChargingSessionResponse>> pay(@PathVariable Long id) {
         return ResponseEntity.ok(ApiResponse.success("Session paid",
                 sessionService.pay(currentUser.getCurrentAccountId(), id)));
+    }
+
+    @PatchMapping("/{id}/soc")
+    public ResponseEntity<ApiResponse<ChargingSessionResponse>> updateSoc(
+            @PathVariable Long id, @Valid @RequestBody SessionSocUpdateRequest request) {
+        return ResponseEntity.ok(ApiResponse.success("Battery status updated",
+                sessionService.updateSoc(currentUser.getCurrentAccountId(), id,
+                        request.getBatteryPercent(), request.isSimulated())));
+    }
+
+    @PostMapping("/{id}/control")
+    public ResponseEntity<ApiResponse<ChargingSessionResponse>> control(
+            @PathVariable Long id, @Valid @RequestBody SessionControlRequest request) {
+        return ResponseEntity.ok(ApiResponse.success("Bluetooth session command applied",
+                sessionService.control(currentUser.getCurrentAccountId(), id, request.getAction())));
     }
 }

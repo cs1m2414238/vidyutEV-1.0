@@ -4,13 +4,14 @@ import { useRouter } from 'expo-router';
 import { useQuery } from '@tanstack/react-query';
 import { Ionicons } from '@expo/vector-icons';
 import { ChargerCard } from '../../src/components/ChargerCard';
-import { LoadingView } from '../../src/components/LoadingView';
+import { SkeletonList } from '../../src/components/SkeletonList';
 import { AppHeader } from '../../src/components/AppHeader';
 import { Colors } from '../../src/constants/colors';
 import { getChargers } from '../../src/features/chargers/charger.api';
 import { useAuthStore } from '../../src/features/auth/auth.store';
 import { getActiveSessions } from '../../src/features/sessions/session.api';
 import { getVehicleWallets } from '../../src/features/wallet/wallet.api';
+import { getUnreadNotificationCount } from '../../src/features/notifications/notification.api';
 
 export default function DiscoverScreen() {
   const router = useRouter();
@@ -20,6 +21,7 @@ export default function DiscoverScreen() {
   const { data: chargers = [], isLoading, refetch, isRefetching } = useQuery({ queryKey: ['chargers'], queryFn: getChargers });
   const { data: activeSessions = [] } = useQuery({ queryKey: ['active-sessions'], queryFn: getActiveSessions, refetchInterval: 10000 });
   const { data: vehicleWallets = [] } = useQuery({ queryKey: ['vehicle-wallets'], queryFn: getVehicleWallets });
+  const { data: notificationCount = 0 } = useQuery({ queryKey: ['notification-count'], queryFn: getUnreadNotificationCount, refetchInterval: 15000 });
   const activeSession = activeSessions[0];
   const lowWallet = vehicleWallets.find((wallet) => wallet.lowBalance);
 
@@ -28,15 +30,15 @@ export default function DiscoverScreen() {
     return matches && (!availableOnly || charger.available);
   });
 
-  if (isLoading) return <LoadingView message="Finding chargers near you…" />;
+  if (isLoading) return <SkeletonList rows={7} />;
 
   return (
     <View style={styles.screen}>
-      <AppHeader showBrand notificationCount={3} />
+      <AppHeader showBrand notificationCount={notificationCount} />
       <FlatList
         data={filtered}
         keyExtractor={(item) => item.id.toString()}
-        renderItem={({ item }) => <ChargerCard charger={item} onTap={() => router.push(`/charger/${item.id}`)} />}
+        renderItem={({ item }) => <ChargerCard charger={item} onTap={() => router.push(item.outletPartner ? `/outlet/${item.id}` : `/charger/${item.id}`)} />}
         refreshControl={<RefreshControl refreshing={isRefetching} onRefresh={refetch} colors={[Colors.primary]} tintColor={Colors.primary} />}
         contentContainerStyle={styles.list}
         ListHeaderComponent={

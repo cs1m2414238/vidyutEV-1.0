@@ -44,6 +44,9 @@ public class StationResponse {
     private Double corporatePricePerKwh;
     private String couponCode;
     private Double couponDiscountPercent;
+    private boolean outletPartner;
+    private String outletInstitutionName;
+    private boolean outletIdVerificationRequired;
     private StationStatus status;
     private StationAvailability availability;
     private Long hostUserId;

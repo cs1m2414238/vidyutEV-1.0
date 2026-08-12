@@ -15,3 +15,7 @@ export async function divertBooking(bookingId: number, alternativeStationId: num
   try { await apiClient.post(`/routing/divert/${bookingId}`, { alternativeStationId }); }
   catch (error) { throw new Error(getApiErrorMessage(error, 'Unable to divert the booking.')); }
 }
+export async function getRouteAlternatives(stationId: number | string, vehicleId?: number): Promise<RoutePlan['recommendedChargingStops']> {
+  try { const response = await apiClient.get<ApiResponse<RoutePlan['recommendedChargingStops']>>('/routing/alternatives', { params: { stationId, vehicleId } }); return unwrapApiResponse(response.data); }
+  catch (error) { throw new Error(getApiErrorMessage(error, 'Unable to load route alternatives.')); }
+}

@@ -76,6 +76,9 @@ public class AuthService {
         }
 
         Account account = findByEmail(email);
+        if (account.getAccountType() == AccountType.ADMIN) {
+            throw new ForbiddenException("Administrator accounts must use the separate Vidyut Admin Portal");
+        }
         return buildAuthResponse(account, defaultMode(account));
     }
 
@@ -179,7 +182,7 @@ public class AuthService {
             profile.setFullName(fullName);
             profile.setPhone(phone);
             evUserProfileRepository.save(profile);
-            if (!walletRepository.existsById(account.getId())) {
+            if (walletRepository.findByUserId(account.getId()).isEmpty()) {
                 walletRepository.save(EvWallet.builder().userId(account.getId()).balance(0.0).build());
             }
         } else if (mode == AccessMode.HOST) {

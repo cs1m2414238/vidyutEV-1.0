@@ -1,6 +1,9 @@
 package com.vidyut.land.dto;
 
 import com.vidyut.land.entity.LandListingStatus;
+import com.vidyut.land.entity.OwnershipType;
+import com.vidyut.land.entity.PowerPhase;
+import com.vidyut.land.entity.PropertyType;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -17,11 +20,26 @@ public class LandListingResponse {
     private Long hostUserId;
     private String title;
     private String address;
+    private String city;
+    private String state;
+    private String pincode;
     private double latitude;
     private double longitude;
     private String connectorType;
     private double powerKw;
     private double pricePerKwh;
+    private PropertyType propertyType;
+    private int availableParkingBays;
+    private PowerPhase powerPhase;
+    private double availableLoadKw;
+    private String operatingHours;
+    private OwnershipType ownershipType;
+    private String preferredConnectorType;
+    private double preferredPowerKw;
+    private String photoUrls;
+    private String ownershipDocumentUrl;
+    private String adminReviewNote;
+    private boolean discoverable;
     private LandListingStatus status;
     private LocalDateTime createdAt;
 }

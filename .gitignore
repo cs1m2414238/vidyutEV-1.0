@@ -1,25 +1,28 @@
 # IDE & Tooling Directories
-.codex/
+.codex*
 .vscode/
 .idea/
 *.iml
 *.ipr
 *.iws
 
-# Build Artifacts & Binaries
+# Build Artifacts, Temp & Binaries
 **/target/
 **/node_modules/
 **/dist/
 **/build/
+**/builds/
 **/.vite/
 **/out/
 **/.venv/
 **/__pycache__/
 **/.pytest_cache/
 **/*.egg-info/
-tmp/pdfs/
+**/tmp/
+tmp/
 .npm
 *.log
+*.err
 *.py[cod]
 .coverage
 

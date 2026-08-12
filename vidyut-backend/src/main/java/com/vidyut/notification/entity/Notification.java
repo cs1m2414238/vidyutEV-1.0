@@ -26,10 +26,17 @@ public class Notification {
     private String title;
     private String message;
 
+    @Column(length = 500)
+    private String deepLink;
+
     @Enumerated(EnumType.STRING)
     private NotificationType type;
 
     private boolean isRead;
+
+    @Builder.Default
+    @Column(nullable = false)
+    private boolean critical = false;
 
     @Builder.Default
     private LocalDateTime timestamp = LocalDateTime.now();

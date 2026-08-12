@@ -25,6 +25,7 @@ public class ChargingSessionResponse {
     private int startBatteryPercent;
     private int currentBatteryPercent;
     private int targetBatteryPercent;
+    private String telemetrySource;
     private LocalDateTime startedAt;
     private LocalDateTime estimatedCompletionAt;
     private LocalDateTime completedAt;

@@ -53,6 +53,9 @@ public class AutopilotStop {
     private int chargingMinutes;
     private double estimatedCost;
 
+    @Column(length = 1000)
+    private String selectionReason;
+
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 20)
     private AutopilotStopStatus status;

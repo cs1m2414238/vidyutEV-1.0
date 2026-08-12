@@ -11,10 +11,14 @@ import com.vidyut.company.dto.*;
 import com.vidyut.company.entity.Company;
 import com.vidyut.company.entity.CompanyActivityLog;
 import com.vidyut.company.entity.CompanyEmployee;
-import com.vidyut.company.entity.VerificationStatus;
+import com.vidyut.company.entity.CompanyMaintenanceTicket;
+import com.vidyut.company.entity.MaintenanceTicketStatus;
 import com.vidyut.company.repository.CompanyEmployeeRepository;
 import com.vidyut.company.repository.CompanyActivityLogRepository;
+import com.vidyut.company.repository.CompanyMaintenanceTicketRepository;
 import com.vidyut.company.repository.CompanyRepository;
+import com.vidyut.land.entity.LandListingStatus;
+import com.vidyut.land.repository.LandListingRepository;
 import com.vidyut.payment.entity.Payment;
 import com.vidyut.payment.entity.PaymentStatus;
 import com.vidyut.payment.entity.Payout;
@@ -48,12 +52,15 @@ public class CompanyOperationsService {
     private final CompanyRepository companyRepository;
     private final CompanyEmployeeRepository employeeRepository;
     private final CompanyActivityLogRepository activityLogRepository;
+    private final CompanyMaintenanceTicketRepository maintenanceTicketRepository;
     private final ChargingStationRepository stationRepository;
     private final ChargingConnectorRepository connectorRepository;
     private final ChargingStationService stationService;
     private final BookingRepository bookingRepository;
     private final PaymentRepository paymentRepository;
     private final PayoutRepository payoutRepository;
+    private final LandListingRepository landListingRepository;
+    private final CompanyVerificationService verificationService;
 
     public List<StationResponse> getStations(Long accountId) {
         requireCompany(accountId);
@@ -220,6 +227,125 @@ public class CompanyOperationsService {
         );
     }
 
+    public CompanyNetworkResponse network(Long accountId) {
+        Company company = requireCompany(accountId);
+        List<ChargingStation> stations = managedStations(company, accountId);
+        List<ChargingConnector> chargers = stations.stream()
+                .flatMap(station -> station.getConnectors().stream())
+                .toList();
+        List<ManagedStationResponse> stationResponses = stations.stream().map(station -> {
+            List<ChargingConnector> stationChargers = station.getConnectors();
+            return new ManagedStationResponse(station.getId(), station.getName(), station.getCity(), station.getAddress(),
+                    station.getHostUserId(), relationship(station, accountId), station.getStatus(), stationChargers.size(),
+                    (int) stationChargers.stream().filter(charger -> charger.getStatus() == ChargerStatus.ONLINE).count(),
+                    (int) stationChargers.stream().filter(this::needsAttention).count());
+        }).toList();
+        List<ManagedChargerResponse> chargerResponses = chargers.stream()
+                .sorted(Comparator.comparingInt(ChargingConnector::getHealthScore))
+                .map(charger -> managedChargerResponse(charger, relationship(charger.getStation(), accountId)))
+                .toList();
+        int openTickets = (int) maintenanceTicketRepository.findByCompanyIdOrderByUpdatedAtDesc(company.getId()).stream()
+                .filter(ticket -> ticket.getStatus() == MaintenanceTicketStatus.OPEN
+                        || ticket.getStatus() == MaintenanceTicketStatus.IN_PROGRESS)
+                .count();
+        return new CompanyNetworkResponse(stations.size(), chargers.size(),
+                (int) chargers.stream().filter(charger -> charger.getStatus() == ChargerStatus.ONLINE).count(),
+                (int) chargers.stream().filter(charger -> charger.getStatus() == ChargerStatus.CHARGING).count(),
+                (int) chargers.stream().filter(this::needsAttention).count(), openTickets,
+                stationResponses, chargerResponses);
+    }
+
+    public List<MaintenanceTicketResponse> maintenanceTickets(Long accountId) {
+        Company company = requireCompany(accountId);
+        return maintenanceTicketRepository.findByCompanyIdOrderByUpdatedAtDesc(company.getId()).stream()
+                .map(this::maintenanceTicketResponse)
+                .toList();
+    }
+
+    @Transactional
+    public MaintenanceTicketResponse createMaintenanceTicket(Long accountId, MaintenanceTicketCreateRequest request) {
+        Company company = requireVerifiedCompany(accountId);
+        ChargingConnector charger = managedCharger(company, accountId, request.chargerId());
+        if (maintenanceTicketRepository.existsByCompanyIdAndChargerIdAndStatusIn(company.getId(), charger.getId(),
+                List.of(MaintenanceTicketStatus.OPEN, MaintenanceTicketStatus.IN_PROGRESS))) {
+            throw new DuplicateResourceException("An active maintenance ticket already exists for " + charger.getChargerCode());
+        }
+        CompanyMaintenanceTicket ticket = maintenanceTicketRepository.save(CompanyMaintenanceTicket.builder()
+                .companyId(company.getId())
+                .chargerId(charger.getId())
+                .chargerCode(charger.getChargerCode())
+                .stationId(charger.getStation().getId())
+                .stationName(charger.getStation().getName())
+                .city(charger.getStation().getCity())
+                .priority(request.priority())
+                .status(MaintenanceTicketStatus.OPEN)
+                .issue(request.issue().trim())
+                .assignedTo(clean(request.assignedTo()))
+                .build());
+        recordActivity(company, accountId, "CREATE", "MAINTENANCE_TICKET", ticket.getId(),
+                "Opened " + ticket.getPriority() + " maintenance ticket for " + charger.getChargerCode());
+        return maintenanceTicketResponse(ticket);
+    }
+
+    @Transactional
+    public MaintenanceTicketResponse updateMaintenanceTicket(Long accountId, Long id,
+                                                               MaintenanceTicketUpdateRequest request) {
+        Company company = requireVerifiedCompany(accountId);
+        CompanyMaintenanceTicket ticket = maintenanceTicketRepository.findByIdAndCompanyId(id, company.getId())
+                .orElseThrow(() -> new ResourceNotFoundException("Maintenance ticket not found for this company"));
+        ticket.setStatus(request.status());
+        if (request.priority() != null) ticket.setPriority(request.priority());
+        ticket.setAssignedTo(clean(request.assignedTo()));
+        ticket.setResolutionNote(clean(request.resolutionNote()));
+        ticket.setUpdatedAt(LocalDateTime.now());
+        if (request.status() == MaintenanceTicketStatus.RESOLVED) {
+            ticket.setResolvedAt(LocalDateTime.now());
+            if (request.restoreChargerOnline()) {
+                ChargingConnector charger = managedCharger(company, accountId, ticket.getChargerId());
+                charger.setStatus(ChargerStatus.ONLINE);
+                charger.setMaintenanceMode(false);
+                charger.setAvailable(true);
+                charger.setFaultCode(null);
+                charger.setHealthScore(Math.max(80, charger.getHealthScore()));
+                charger.setLastHeartbeat(LocalDateTime.now());
+                connectorRepository.save(charger);
+            }
+        } else {
+            ticket.setResolvedAt(null);
+        }
+        CompanyMaintenanceTicket saved = maintenanceTicketRepository.save(ticket);
+        recordActivity(company, accountId, "STATUS_CHANGE", "MAINTENANCE_TICKET", saved.getId(),
+                "Moved maintenance ticket for " + saved.getChargerCode() + " to " + saved.getStatus());
+        return maintenanceTicketResponse(saved);
+    }
+
+    public CompanySettlementResponse settlements(Long accountId) {
+        requireCompany(accountId);
+        List<Booking> bookings = ownedBookings(accountId);
+        Map<Long, Booking> bookingById = bookings.stream()
+                .collect(Collectors.toMap(Booking::getId, Function.identity(), (left, right) -> left));
+        List<Payment> payments = paymentsForBookings(bookings);
+        double collected = payments.stream().filter(payment -> payment.getStatus() == PaymentStatus.SUCCESS)
+                .mapToDouble(Payment::getAmount).sum();
+        double pending = payments.stream().filter(payment -> payment.getStatus() == PaymentStatus.PENDING)
+                .mapToDouble(Payment::getAmount).sum();
+        double refunded = payments.stream().filter(payment -> payment.getStatus() == PaymentStatus.REFUNDED)
+                .mapToDouble(Payment::getAmount).sum();
+        List<CompanySettlementTransactionResponse> transactions = payments.stream()
+                .sorted(Comparator.comparing(Payment::getTimestamp,
+                        Comparator.nullsLast(Comparator.reverseOrder())))
+                .limit(100)
+                .map(payment -> {
+                    Booking booking = bookingById.get(payment.getBookingId());
+                    return new CompanySettlementTransactionResponse(payment.getId(), payment.getBookingId(),
+                            booking == null ? "Station payment" : booking.getStationName(), payment.getAmount(),
+                            payment.getStatus(), payment.getGatewayTransactionId(), payment.getTimestamp());
+                }).toList();
+        return new CompanySettlementResponse(round(collected), round(pending), round(refunded),
+                round(collected - refunded),
+                payments.stream().filter(payment -> payment.getStatus() == PaymentStatus.SUCCESS).count(), transactions);
+    }
+
     public List<CompanyEmployee> getEmployees(Long accountId) {
         return employeeRepository.findByCompanyIdOrderByCreatedAtDesc(requireCompany(accountId).getId());
     }
@@ -259,32 +385,123 @@ public class CompanyOperationsService {
     }
 
     public Map<String, Object> askAssistant(Long accountId, String rawQuestion) {
+        Company company = requireCompany(accountId);
         Map<String, Object> analytics = analytics(accountId);
         Map<?, ?> summary = (Map<?, ?>) analytics.get("summary");
         String question = rawQuestion.toLowerCase(Locale.ROOT);
+        List<ChargingStation> suppliedStations = stationRepository.findBySupplierCompanyId(company.getId());
+        List<ChargingConnector> suppliedChargers = suppliedStations.stream()
+                .flatMap(station -> station.getConnectors().stream()).toList();
+        long nationalFaults = suppliedChargers.stream().filter(charger -> charger.getStatus() == ChargerStatus.FAULT
+                || charger.getStatus() == ChargerStatus.OFFLINE || charger.getHealthScore() < 70).count();
+        List<Map<String, Object>> siteRecommendations = expansionSites();
         String answer;
         if (question.contains("revenue")) {
             answer = "Today's network revenue is ₹" + analytics.get("dailyRevenue") + ". Monthly revenue is ₹" + analytics.get("monthlyRevenue") + ".";
-        } else if (question.contains("maintenance") || question.contains("fault")) {
-            answer = summary.get("faults") + " chargers need attention. Prioritize the lowest health scores before peak demand.";
+        } else if (question.contains("maintenance") || question.contains("fault") || question.contains("failure")
+                || question.contains("offline") || question.contains("nation")) {
+            answer = nationalFaults + " chargers need attention across the nationwide company-supplied Host network. "
+                    + "Prioritize offline or sub-70 health units before peak demand; your own workspace currently reports " + summary.get("faults") + " fault(s).";
         } else if (question.contains("demand") || question.contains("peak")) {
             answer = "Peak demand is expected around " + analytics.get("peakUsageHour") + ". Keep fast chargers online and reduce maintenance overlap.";
         } else if (question.contains("price")) {
             answer = "Use peak pricing only at high-occupancy stations. Protect student and corporate discounts with station-specific rules.";
-        } else if (question.contains("expand") || question.contains("area")) {
-            answer = "Expansion should favor cities with high queue counts and utilization. Review the top-performing station list before acquiring a site.";
+        } else if (question.contains("expand") || question.contains("area") || question.contains("location")
+                || question.contains("plant") || question.contains("land") || question.contains("commute")
+                || question.contains("route") || question.contains("install")) {
+            answer = siteRecommendations.isEmpty()
+                    ? "No Host land is published yet. Vidyut will rank nationwide listings as soon as Hosts make them discoverable."
+                    : "Vidyut ranked " + siteRecommendations.size() + " nationwide Host site(s) by grid readiness, parking capacity and distance from existing active stations. Start with "
+                    + siteRecommendations.get(0).get("title") + " in " + siteRecommendations.get(0).get("location") + ".";
         } else if (question.contains("energy")) {
             answer = "The network has delivered " + summary.get("energyDeliveredKwh") + " kWh across recorded sessions.";
         } else {
             answer = "Your network has " + summary.get("totalStations") + " stations, " + summary.get("totalChargers") + " chargers and " + summary.get("utilizationRate") + "% live utilization.";
         }
         return linkedMap("question", rawQuestion, "answer", answer, "generatedAt", LocalDateTime.now(),
-                "recommendations", List.of("Resolve critical faults", "Protect the peak-hour charger pool", "Review dynamic pricing weekly"));
+                "suppliedStations", suppliedStations.size(), "nationalFaults", nationalFaults,
+                "siteRecommendations", siteRecommendations,
+                "recommendations", List.of("Review nationwide Host opportunities", "Resolve supplied-network faults", "Validate top sites with a grid and traffic survey"));
+    }
+
+    private List<Map<String, Object>> expansionSites() {
+        List<ChargingStation> activeStations = stationRepository.findAll().stream()
+                .filter(station -> station.getStatus() == StationStatus.ACTIVE).toList();
+        return landListingRepository.findByDiscoverableTrueAndStatusIn(List.of(LandListingStatus.APPROVED, LandListingStatus.ACTIVE))
+                .stream().map(site -> {
+                    double nearestKm = activeStations.stream()
+                            .mapToDouble(station -> distanceKm(site.getLatitude(), site.getLongitude(), station.getLatitude(), station.getLongitude()))
+                            .min().orElse(100);
+                    double score = Math.min(100, site.getAvailableParkingBays() * 6.0
+                            + Math.min(45, site.getAvailableLoadKw() * 0.7) + Math.min(35, nearestKm * 0.7));
+                    String location = java.util.stream.Stream.of(site.getCity(), site.getState()).filter(Objects::nonNull)
+                            .filter(value -> !value.isBlank()).collect(Collectors.joining(", "));
+                    return linkedMap("propertyId", site.getId(), "title", site.getTitle(),
+                            "location", location.isBlank() ? site.getAddress() : location,
+                            "parkingBays", site.getAvailableParkingBays(), "availableLoadKw", site.getAvailableLoadKw(),
+                            "nearestActiveStationKm", round(nearestKm), "expansionScore", round(score),
+                            "reason", site.getAvailableLoadKw() >= 60
+                                    ? "Strong grid headroom with a nationwide Host ready to discuss installation"
+                                    : "Underserved Host location; confirm transformer capacity during site survey");
+                }).sorted(Comparator.comparingDouble((Map<String, Object> site) -> ((Number) site.get("expansionScore")).doubleValue()).reversed())
+                .limit(5).toList();
+    }
+
+    private double distanceKm(double lat1, double lon1, double lat2, double lon2) {
+        if ((lat1 == 0 && lon1 == 0) || (lat2 == 0 && lon2 == 0)) return 50;
+        double dLat = Math.toRadians(lat2 - lat1);
+        double dLon = Math.toRadians(lon2 - lon1);
+        double a = Math.sin(dLat / 2) * Math.sin(dLat / 2)
+                + Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2))
+                * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+        return 6371.0 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
     }
 
     public List<Payout> payouts(Long accountId) {
         requireCompany(accountId);
         return payoutRepository.findByHostUserId(accountId);
+    }
+
+    private List<ChargingStation> managedStations(Company company, Long accountId) {
+        Map<Long, ChargingStation> managed = new LinkedHashMap<>();
+        stationRepository.findByHostUserId(accountId).forEach(station -> managed.put(station.getId(), station));
+        stationRepository.findBySupplierCompanyId(company.getId()).forEach(station -> managed.put(station.getId(), station));
+        return new ArrayList<>(managed.values());
+    }
+
+    private ChargingConnector managedCharger(Company company, Long accountId, Long chargerId) {
+        ChargingConnector charger = connectorRepository.findById(chargerId)
+                .orElseThrow(() -> new ResourceNotFoundException("Charger not found"));
+        ChargingStation station = charger.getStation();
+        if (!Objects.equals(station.getHostUserId(), accountId)
+                && !Objects.equals(station.getSupplierCompanyId(), company.getId())) {
+            throw new ResourceNotFoundException("Charger not found for this company network");
+        }
+        return charger;
+    }
+
+    private boolean needsAttention(ChargingConnector charger) {
+        return charger.getStatus() == ChargerStatus.FAULT || charger.getStatus() == ChargerStatus.OFFLINE
+                || charger.getHealthScore() < 70 || charger.isMaintenanceMode();
+    }
+
+    private String relationship(ChargingStation station, Long accountId) {
+        return Objects.equals(station.getHostUserId(), accountId) ? "COMPANY_OPERATED" : "HOST_OPERATED_SUPPLIED";
+    }
+
+    private ManagedChargerResponse managedChargerResponse(ChargingConnector charger, String relationship) {
+        ChargingStation station = charger.getStation();
+        return new ManagedChargerResponse(charger.getId(), station.getId(), station.getName(), station.getCity(),
+                charger.getChargerCode(), charger.getType().name(), charger.getPowerKw(), charger.getStatus(),
+                charger.isAvailable(), charger.isMaintenanceMode(), charger.getHealthScore(), charger.getFaultCode(),
+                charger.getLastHeartbeat(), relationship);
+    }
+
+    private MaintenanceTicketResponse maintenanceTicketResponse(CompanyMaintenanceTicket ticket) {
+        return new MaintenanceTicketResponse(ticket.getId(), ticket.getChargerId(), ticket.getChargerCode(),
+                ticket.getStationId(), ticket.getStationName(), ticket.getCity(), ticket.getPriority(), ticket.getStatus(),
+                ticket.getIssue(), ticket.getAssignedTo(), ticket.getResolutionNote(), ticket.getCreatedAt(),
+                ticket.getUpdatedAt(), ticket.getResolvedAt());
     }
 
     public byte[] exportReport(Long accountId, String reportType, String format) {
@@ -339,14 +556,7 @@ public class CompanyOperationsService {
     }
 
     private Company requireVerifiedCompany(Long accountId) {
-        Company company = requireCompany(accountId);
-        if (!company.getAccount().isEmailVerified()) {
-            throw new ForbiddenException("Company email must be verified before managing operations");
-        }
-        if (company.getVerificationStatus() != VerificationStatus.VERIFIED) {
-            throw new ForbiddenException("Business verification must be approved before managing company operations");
-        }
-        return company;
+        return verificationService.requireMarketplaceVerified(accountId);
     }
 
     private ChargingStation ownedStation(Long accountId, Long stationId) {
@@ -415,6 +625,10 @@ public class CompanyOperationsService {
     }
 
     private double round(double value) { return Math.round(value * 100.0) / 100.0; }
+
+    private String clean(String value) {
+        return value == null || value.trim().isEmpty() ? null : value.trim();
+    }
 
     @SuppressWarnings("unchecked")
     private <T> Map<String, T> linkedMap(Object... pairs) {

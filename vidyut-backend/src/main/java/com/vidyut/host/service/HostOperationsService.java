@@ -1,11 +1,13 @@
 package com.vidyut.host.service;
 
 import com.vidyut.account.entity.*;
+import com.vidyut.email.service.EmailService;
 import com.vidyut.account.repository.AccountRepository;
 import com.vidyut.account.repository.EvUserProfileRepository;
 import com.vidyut.account.repository.HostProfileRepository;
 import com.vidyut.booking.entity.*;
 import com.vidyut.booking.repository.BookingRepository;
+import com.vidyut.booking.service.WaitlistService;
 import com.vidyut.common.exception.*;
 import com.vidyut.host.dto.*;
 import com.vidyut.host.entity.HostReview;
@@ -42,18 +44,22 @@ public class HostOperationsService {
     private final ChargingConnectorRepository connectorRepository;
     private final ChargingStationService stationService;
     private final BookingRepository bookingRepository;
+    private final WaitlistService waitlistService;
     private final PaymentRepository paymentRepository;
     private final PayoutRepository payoutRepository;
     private final HostReviewRepository reviewRepository;
     private final NotificationService notificationService;
+    private final EmailService emailService;
 
-    public HostProfileResponse profile(Long accountId) { return mapProfile(requireHost(accountId)); }
+    public HostProfileResponse profile(Long accountId) {
+        return mapProfile(requireHost(accountId));
+    }
 
     @Transactional
     public HostProfileResponse updateProfile(Long accountId, HostProfileUpdateRequest request) {
         HostProfile profile = requireHost(accountId);
         profile.setDisplayName(request.getDisplayName().trim());
-        profile.setPhone(request.getPhone());
+        profile.setPhone(normalizePhone(request.getPhone()));
         profile.setAddress(request.getAddress());
         profile.setBio(request.getBio());
         return mapProfile(hostProfileRepository.save(profile));
@@ -108,20 +114,40 @@ public class HostOperationsService {
     @Transactional
     public String requestEmailCode(Long accountId) {
         HostProfile profile = requireHost(accountId);
-        if (profile.getAccount().isEmailVerified()) return "Email is already verified";
-        String code = String.format("%06d", new SecureRandom().nextInt(1_000_000));
+        if (profile.getAccount().isEmailVerified()) {
+            return "Email is already verified";
+        }
+
+        String code = String.format(
+                "%06d",
+                new SecureRandom().nextInt(1_000_000));
+
         profile.setEmailVerificationCodeHash(hash(code));
-        profile.setEmailVerificationExpiresAt(LocalDateTime.now().plusMinutes(15));
+        profile.setEmailVerificationExpiresAt(
+                LocalDateTime.now().plusMinutes(15));
+
         hostProfileRepository.save(profile);
-        notificationService.sendNotification(accountId, "Host email verification",
-                "Your verification code is " + code + ". It expires in 15 minutes.", NotificationType.SYSTEM_ALERT);
-        return "Verification code sent";
+
+        emailService.sendVerificationCode(
+                profile.getAccount().getEmail(),
+                "Host",
+                code);
+
+        notificationService.sendNotification(
+                accountId,
+                "Host email verification",
+                "A verification code was sent to your email. It expires in 15 minutes.",
+                NotificationType.SYSTEM_ALERT);
+
+        return "Verification code sent to "
+                + profile.getAccount().getEmail();
     }
 
     @Transactional
     public HostProfileResponse confirmEmailCode(Long accountId, String code) {
         HostProfile profile = requireHost(accountId);
-        if (profile.getAccount().isEmailVerified()) return mapProfile(profile);
+        if (profile.getAccount().isEmailVerified())
+            return mapProfile(profile);
         if (profile.getEmailVerificationExpiresAt() == null
                 || profile.getEmailVerificationExpiresAt().isBefore(LocalDateTime.now())
                 || !hash(code).equals(profile.getEmailVerificationCodeHash())) {
@@ -164,7 +190,8 @@ public class HostOperationsService {
     public StationResponse updateAvailability(Long accountId, Long stationId, HostAvailabilityRequest request) {
         requireOperationalHost(accountId);
         ChargingStation station = ownedStation(accountId, stationId);
-        station.setAvailability(request.isEmergencyDisabled() ? StationAvailability.UNAVAILABLE : request.getAvailability());
+        station.setAvailability(
+                request.isEmergencyDisabled() ? StationAvailability.UNAVAILABLE : request.getAvailability());
         station.setEmergencyDisabled(request.isEmergencyDisabled());
         station.setAutoAvailability(request.isAutoAvailability());
         station.setWeeklySchedule(request.getWeeklySchedule());
@@ -187,12 +214,15 @@ public class HostOperationsService {
         connector.setHealthScore(request.getHealthScore());
         connector.setFaultCode(request.getFaultCode());
         connector.setLastHeartbeat(LocalDateTime.now());
-        if (request.getStatus() == ChargerStatus.CHARGING && connector.getSessionStartedAt() == null) connector.setSessionStartedAt(LocalDateTime.now());
-        if (request.getStatus() != ChargerStatus.CHARGING) connector.setSessionStartedAt(null);
+        if (request.getStatus() == ChargerStatus.CHARGING && connector.getSessionStartedAt() == null)
+            connector.setSessionStartedAt(LocalDateTime.now());
+        if (request.getStatus() != ChargerStatus.CHARGING)
+            connector.setSessionStartedAt(null);
         connectorRepository.save(connector);
         if (request.getStatus() == ChargerStatus.FAULT) {
             notificationService.sendNotification(accountId, "Charger fault detected",
-                    connector.getChargerCode() + " reported " + Objects.toString(request.getFaultCode(), "a fault"), NotificationType.FAULT_ALERT);
+                    connector.getChargerCode() + " reported " + Objects.toString(request.getFaultCode(), "a fault"),
+                    NotificationType.FAULT_ALERT);
         }
         return mapConnector(connector);
     }
@@ -206,8 +236,13 @@ public class HostOperationsService {
     public HostBookingResponse updateBooking(Long accountId, Long bookingId, BookingStatus status) {
         requireOperationalHost(accountId);
         Booking booking = ownedBooking(accountId, bookingId);
+        if (status == booking.getStatus()) return mapBooking(booking);
+        if (!isAllowedHostTransition(booking.getStatus(), status)) {
+            throw new BadRequestException("Booking cannot move from " + booking.getStatus() + " to " + status);
+        }
         booking.setStatus(status);
         bookingRepository.save(booking);
+        if (status == BookingStatus.CANCELLED) waitlistService.promoteNext(booking.getStationId());
         NotificationType type = switch (status) {
             case CANCELLED -> NotificationType.BOOKING_CANCELLED;
             case IN_PROGRESS -> NotificationType.CHARGING_STARTED;
@@ -218,7 +253,8 @@ public class HostOperationsService {
                 booking.getStationName() + " · " + booking.getStartTime(), type);
         if (status == BookingStatus.COMPLETED) {
             notificationService.sendNotification(accountId, "Payment received",
-                    "₹" + round(booking.getTotalAmount()) + " earned from booking #" + booking.getId(), NotificationType.PAYMENT_RECEIVED);
+                    "₹" + round(booking.getTotalAmount()) + " earned from booking #" + booking.getId(),
+                    NotificationType.PAYMENT_RECEIVED);
         }
         return mapBooking(booking);
     }
@@ -240,15 +276,25 @@ public class HostOperationsService {
         List<ChargingConnector> connectors = connectorRepository.findByStation_HostUserId(accountId);
         List<Booking> bookings = bookingsFor(stations);
         Map<String, Object> earnings = earnings(accountId);
-        long upcoming = bookings.stream().filter(b -> b.getStatus() == BookingStatus.PENDING || b.getStatus() == BookingStatus.CONFIRMED).count();
+        long upcoming = bookings.stream()
+                .filter(b -> b.getStatus() == BookingStatus.PENDING || b.getStatus() == BookingStatus.CONFIRMED)
+                .count();
         long active = bookings.stream().filter(b -> b.getStatus() == BookingStatus.IN_PROGRESS).count();
         double energy = bookings.stream().mapToDouble(Booking::getKwhDelivered).sum();
-        double uptime = connectors.isEmpty() ? 0 : round(connectors.stream().filter(c -> c.getStatus() == ChargerStatus.ONLINE || c.getStatus() == ChargerStatus.CHARGING).count() * 100.0 / connectors.size());
+        double uptime = connectors.isEmpty() ? 0
+                : round(connectors.stream()
+                        .filter(c -> c.getStatus() == ChargerStatus.ONLINE || c.getStatus() == ChargerStatus.CHARGING)
+                        .count() * 100.0 / connectors.size());
         return linkedMap("displayName", profile.getDisplayName(), "verified", profile.isVerified(),
-                "totalChargers", connectors.size(), "onlineChargers", connectors.stream().filter(c -> c.getStatus() == ChargerStatus.ONLINE).count(),
-                "activeSessions", active, "upcomingBookings", upcoming, "energyDeliveredKwh", round(energy), "uptimePercent", uptime,
-                "todayEarnings", earnings.get("daily"), "monthlyEarnings", earnings.get("monthly"), "pendingPayout", earnings.get("pendingPayout"),
-                "reputationScore", profile.getReputationScore(), "alerts", monitoring(accountId).stream().filter(item -> "FAULT".equals(item.get("status")) || ((Number)item.get("healthScore")).intValue() < 70).toList());
+                "totalChargers", connectors.size(), "onlineChargers",
+                connectors.stream().filter(c -> c.getStatus() == ChargerStatus.ONLINE).count(),
+                "activeSessions", active, "upcomingBookings", upcoming, "energyDeliveredKwh", round(energy),
+                "uptimePercent", uptime,
+                "todayEarnings", earnings.get("daily"), "monthlyEarnings", earnings.get("monthly"), "pendingPayout",
+                earnings.get("pendingPayout"),
+                "reputationScore", profile.getReputationScore(), "alerts",
+                monitoring(accountId).stream().filter(item -> "FAULT".equals(item.get("status"))
+                        || ((Number) item.get("healthScore")).intValue() < 70).toList());
     }
 
     public Map<String, Object> earnings(Long accountId) {
@@ -262,22 +308,32 @@ public class HostOperationsService {
         List<Payout> payouts = payoutRepository.findByHostUserId(accountId);
         double withdrawn = payouts.stream().mapToDouble(Payout::getAmount).sum();
         double available = Math.max(0, total - withdrawn);
-        double pending = payouts.stream().filter(p -> "PENDING".equalsIgnoreCase(p.getStatus())).mapToDouble(Payout::getAmount).sum();
+        double pending = payouts.stream().filter(p -> "PENDING".equalsIgnoreCase(p.getStatus()))
+                .mapToDouble(Payout::getAmount).sum();
         int year = LocalDate.now().getMonthValue() >= 4 ? LocalDate.now().getYear() : LocalDate.now().getYear() - 1;
-        return linkedMap("daily", round(daily), "weekly", round(weekly), "monthly", round(monthly), "lifetime", round(total),
-                "availableBalance", round(available), "pendingPayout", round(pending), "taxWithheld", round(total * .01),
+        return linkedMap("daily", round(daily), "weekly", round(weekly), "monthly", round(monthly), "lifetime",
+                round(total),
+                "availableBalance", round(available), "pendingPayout", round(pending), "taxWithheld",
+                round(total * .01),
                 "financialYear", year + "-" + String.valueOf(year + 1).substring(2), "payouts", payouts,
-                "transactions", completed.stream().map(b -> linkedMap("bookingId", b.getId(), "station", b.getStationName(), "amount", b.getTotalAmount(), "timestamp", b.getStartTime(), "status", "EARNED")).toList());
+                "transactions",
+                completed.stream().map(b -> linkedMap("bookingId", b.getId(), "station", b.getStationName(), "amount",
+                        b.getTotalAmount(), "timestamp", b.getStartTime(), "status", "EARNED")).toList());
     }
 
     @Transactional
     public Payout withdraw(Long accountId, double amount) {
         HostProfile profile = requireOperationalHost(accountId);
-        if (!profile.isBankVerified()) throw new ForbiddenException("Verify a bank account before withdrawing earnings");
+        if (!profile.isBankVerified())
+            throw new ForbiddenException("Verify a bank account before withdrawing earnings");
         double available = ((Number) earnings(accountId).get("availableBalance")).doubleValue();
-        if (amount > available) throw new BadRequestException("Withdrawal exceeds available balance");
-        Payout payout = payoutRepository.save(Payout.builder().hostUserId(accountId).amount(round(amount)).status("PENDING").build());
-        notificationService.sendNotification(accountId, "Withdrawal requested", "₹" + round(amount) + " will be processed to bank account ending " + profile.getBankAccountLast4(), NotificationType.SYSTEM_ALERT);
+        if (amount > available)
+            throw new BadRequestException("Withdrawal exceeds available balance");
+        Payout payout = payoutRepository
+                .save(Payout.builder().hostUserId(accountId).amount(round(amount)).status("PENDING").build());
+        notificationService.sendNotification(accountId, "Withdrawal requested",
+                "₹" + round(amount) + " will be processed to bank account ending " + profile.getBankAccountLast4(),
+                NotificationType.SYSTEM_ALERT);
         return payout;
     }
 
@@ -312,27 +368,72 @@ public class HostOperationsService {
         Map<String, Object> dashboard = dashboard(accountId);
         Map<String, Object> earnings = earnings(accountId);
         List<Booking> bookings = ownedBookings(accountId);
+        List<ChargingStation> stations = stationRepository.findByHostUserId(accountId);
+        List<ChargingConnector> connectors = connectorRepository.findByStation_HostUserId(accountId);
         Map<Integer, Long> hours = new HashMap<>();
-        bookings.stream().filter(b -> b.getStartTime() != null).forEach(b -> hours.merge(b.getStartTime().getHour(), 1L, Long::sum));
+        bookings.stream().filter(b -> b.getStartTime() != null)
+                .forEach(b -> hours.merge(b.getStartTime().getHour(), 1L, Long::sum));
         int peak = hours.entrySet().stream().max(Map.Entry.comparingByValue()).map(Map.Entry::getKey).orElse(18);
         String q = rawQuestion.toLowerCase(Locale.ROOT);
         String answer;
+        long unhealthy = connectors.stream().filter(connector -> connector.getStatus() == ChargerStatus.FAULT
+                || connector.getStatus() == ChargerStatus.OFFLINE || connector.getHealthScore() < 70).count();
+        Set<String> amenities = stations.stream().map(ChargingStation::getAmenities).filter(Objects::nonNull)
+                .flatMap(value -> Arrays.stream(value.toLowerCase(Locale.ROOT).split("[,;|]")))
+                .map(String::trim).filter(value -> !value.isBlank()).collect(java.util.stream.Collectors.toSet());
+        List<String> missingFacilities = new ArrayList<>();
+        if (amenities.stream().noneMatch(value -> value.contains("light")))
+            missingFacilities.add("lighting");
+        if (amenities.stream().noneMatch(value -> value.contains("shade") || value.contains("cover")))
+            missingFacilities.add("weather cover");
+        if (amenities.stream().noneMatch(value -> value.contains("restroom") || value.contains("toilet")))
+            missingFacilities.add("restroom access");
+        if (amenities.stream().noneMatch(value -> value.contains("seat") || value.contains("waiting")))
+            missingFacilities.add("safe seating");
+        if (amenities.stream().noneMatch(value -> value.contains("cctv") || value.contains("security")))
+            missingFacilities.add("CCTV/security");
         if (q.contains("earning") || q.contains("revenue") || q.contains("increase")) {
-            answer = "Open availability around " + String.format("%02d:00", peak) + "–" + String.format("%02d:00", Math.min(23, peak + 4)) + ", review weekday pricing by ₹1/kWh, and protect high-uptime slots. Current monthly earnings are ₹" + earnings.get("monthly") + ".";
+            answer = "Open availability around " + String.format("%02d:00", peak) + "–"
+                    + String.format("%02d:00", Math.min(23, peak + 4))
+                    + ", review weekday pricing by ₹1/kWh, and protect high-uptime slots. Current monthly earnings are ₹"
+                    + earnings.get("monthly") + ".";
         } else if (q.contains("price")) {
             answer = "Compare utilization before changing price. A ₹1/kWh weekday adjustment is a safe first experiment for a private charger.";
-        } else if (q.contains("fault") || q.contains("health")) {
-            answer = dashboard.get("alerts") + " charger alerts need attention. Emergency-disable any unsafe connector before accepting bookings.";
-        } else if (q.contains("peak") || q.contains("demand") || q.contains("availability")) {
-            answer = "Recorded demand peaks near " + String.format("%02d:00", peak) + ". Keep at least four hours open around that window.";
+        } else if (q.contains("maintenance") || q.contains("service") || q.contains("repair")
+                || q.contains("fault") || q.contains("health")) {
+            answer = unhealthy == 0
+                    ? "No charger currently needs urgent maintenance. Schedule a preventive inspection outside the "
+                            + String.format("%02d:00", peak)
+                            + " peak window and verify cables, earthing and connector temperature."
+                    : unhealthy
+                            + " charger(s) need attention. Isolate unsafe connectors now and schedule maintenance before "
+                            + String.format("%02d:00", peak) + ", your recorded demand peak.";
+        } else if (q.contains("facility") || q.contains("amenity") || q.contains("upgrade")
+                || q.contains("restroom") || q.contains("lighting") || q.contains("wifi")) {
+            answer = missingFacilities.isEmpty()
+                    ? "Your listed facilities cover the essential driver needs. Next, improve signage, cleanliness and accessibility, then compare ratings after 30 days."
+                    : "Prioritize "
+                            + String.join(", ", missingFacilities.subList(0, Math.min(3, missingFacilities.size())))
+                            + ". These upgrades make waiting safer and help drivers choose your charger for planned rest stops.";
+        } else if (q.contains("peak") || q.contains("demand") || q.contains("availability")
+                || q.contains("traffic") || q.contains("open") || q.contains("stay")) {
+            answer = "Recorded demand peaks near " + String.format("%02d:00", peak) + ". Keep the charger open from "
+                    + String.format("%02d:00", Math.max(0, peak - 2)) + " to "
+                    + String.format("%02d:00", Math.min(23, peak + 3))
+                    + ", and avoid maintenance during that high-traffic window.";
         } else if (q.contains("forecast")) {
             double forecast = ((Number) earnings.get("monthly")).doubleValue() * 1.18;
-            answer = "With improved peak-hour availability, the current scenario forecast is ₹" + round(forecast) + " for the next comparable period (+18% scenario).";
+            answer = "With improved peak-hour availability, the current scenario forecast is ₹" + round(forecast)
+                    + " for the next comparable period (+18% scenario).";
         } else {
-            answer = "You have " + dashboard.get("totalChargers") + " chargers, " + dashboard.get("upcomingBookings") + " upcoming bookings and " + dashboard.get("uptimePercent") + "% uptime.";
+            answer = "You have " + dashboard.get("totalChargers") + " chargers, " + dashboard.get("upcomingBookings")
+                    + " upcoming bookings and " + dashboard.get("uptimePercent") + "% uptime.";
         }
         return linkedMap("question", rawQuestion, "answer", answer, "peakHour", String.format("%02d:00", peak),
-                "recommendations", List.of("Keep 6 PM–10 PM available", "Review weekday price by ₹1/kWh", "Resolve low-health alerts before peak demand"), "generatedAt", LocalDateTime.now());
+                "unhealthyChargers", unhealthy, "facilityUpgrades", missingFacilities,
+                "recommendations", List.of("Protect the recorded peak-hour window",
+                        "Schedule preventive maintenance off-peak", "Upgrade driver waiting facilities"),
+                "generatedAt", LocalDateTime.now());
     }
 
     public byte[] exportReport(Long accountId, String reportType, String format) {
@@ -347,36 +448,46 @@ public class HostOperationsService {
     private HostProfile requireHost(Long accountId) {
         HostProfile profile = hostProfileRepository.findById(accountId)
                 .orElseThrow(() -> new ForbiddenException("Host workspace is not available for this account"));
-        if (!profile.getAccount().isEnabled()) throw new ForbiddenException("Host account is disabled");
+        if (!profile.getAccount().isEnabled())
+            throw new ForbiddenException("Host account is disabled");
         return profile;
     }
 
     private HostProfile requireOperationalHost(Long accountId) {
         HostProfile profile = requireHost(accountId);
-        if (!profile.getAccount().isEmailVerified()) throw new ForbiddenException("Verify your email before managing chargers");
-        if (!profile.isVerified() || profile.getVerificationStatus() != HostVerificationStatus.VERIFIED) throw new ForbiddenException("Host KYC must be approved before managing chargers");
+        if (!profile.getAccount().isEmailVerified())
+            throw new ForbiddenException("Verify your email before managing chargers");
+        if (!profile.isVerified() || profile.getVerificationStatus() != HostVerificationStatus.VERIFIED)
+            throw new ForbiddenException("Host KYC must be approved before managing chargers");
         return profile;
     }
 
     private ChargingStation ownedStation(Long accountId, Long stationId) {
-        return stationRepository.findByIdAndHostUserId(stationId, accountId).orElseThrow(() -> new ResourceNotFoundException("Charger location not found for this host"));
+        return stationRepository.findByIdAndHostUserId(stationId, accountId)
+                .orElseThrow(() -> new ResourceNotFoundException("Charger location not found for this host"));
     }
 
     private ChargingConnector ownedConnector(Long accountId, Long connectorId) {
-        return connectorRepository.findByIdAndStation_HostUserId(connectorId, accountId).orElseThrow(() -> new ResourceNotFoundException("Connector not found for this host"));
+        return connectorRepository.findByIdAndStation_HostUserId(connectorId, accountId)
+                .orElseThrow(() -> new ResourceNotFoundException("Connector not found for this host"));
     }
 
     private Booking ownedBooking(Long accountId, Long bookingId) {
-        Booking booking = bookingRepository.findById(bookingId).orElseThrow(() -> new ResourceNotFoundException("Booking not found"));
+        Booking booking = bookingRepository.findById(bookingId)
+                .orElseThrow(() -> new ResourceNotFoundException("Booking not found"));
         ownedStation(accountId, booking.getStationId());
         return booking;
     }
 
     private HostReview ownedReview(Long accountId, Long reviewId) {
-        return reviewRepository.findByIdAndHostAccountId(reviewId, accountId).orElseThrow(() -> new ResourceNotFoundException("Review not found for this host"));
+        return reviewRepository.findByIdAndHostAccountId(reviewId, accountId)
+                .orElseThrow(() -> new ResourceNotFoundException("Review not found for this host"));
     }
 
-    private List<Booking> ownedBookings(Long accountId) { return bookingsFor(stationRepository.findByHostUserId(accountId)); }
+    private List<Booking> ownedBookings(Long accountId) {
+        return bookingsFor(stationRepository.findByHostUserId(accountId));
+    }
+
     private List<Booking> bookingsFor(List<ChargingStation> stations) {
         List<Long> ids = stations.stream().map(ChargingStation::getId).toList();
         return ids.isEmpty() ? List.of() : bookingRepository.findByStationIdInOrderByStartTimeDesc(ids);
@@ -384,81 +495,162 @@ public class HostOperationsService {
 
     private HostBookingResponse mapBooking(Booking booking) {
         Account customer = accountRepository.findById(booking.getUserId()).orElse(null);
-        String name = evUserProfileRepository.findById(booking.getUserId()).map(EvUserProfile::getFullName).orElse("EV customer");
-        return HostBookingResponse.builder().id(booking.getId()).stationId(booking.getStationId()).stationName(booking.getStationName())
-                .customerAccountId(booking.getUserId()).customerName(name).customerEmail(customer == null ? null : customer.getEmail())
-                .startTime(booking.getStartTime()).durationHours(booking.getDurationHours()).totalAmount(booking.getTotalAmount())
+        String name = evUserProfileRepository.findById(booking.getUserId()).map(EvUserProfile::getFullName)
+                .orElse("EV customer");
+        return HostBookingResponse.builder().id(booking.getId()).stationId(booking.getStationId())
+                .stationName(booking.getStationName())
+                .customerAccountId(booking.getUserId()).customerName(name)
+                .customerEmail(customer == null ? null : customer.getEmail())
+                .startTime(booking.getStartTime()).durationHours(booking.getDurationHours())
+                .totalAmount(booking.getTotalAmount())
                 .kwhDelivered(booking.getKwhDelivered()).status(booking.getStatus()).build();
     }
 
     private Map<String, Object> mapConnector(ChargingConnector connector) {
-        long duration = connector.getSessionStartedAt() == null ? 0 : Duration.between(connector.getSessionStartedAt(), LocalDateTime.now()).toMinutes();
-        return linkedMap("id", connector.getId(), "stationId", connector.getStation().getId(), "stationName", connector.getStation().getName(),
-                "chargerCode", connector.getChargerCode(), "connectorType", connector.getType(), "powerKw", connector.getPowerKw(),
-                "status", connector.getStatus(), "available", connector.isAvailable(), "currentPowerKw", connector.getCurrentPowerKw(),
-                "sessionEnergyKwh", connector.getSessionEnergyKwh(), "sessionDurationMinutes", duration, "healthScore", connector.getHealthScore(),
+        long duration = connector.getSessionStartedAt() == null ? 0
+                : Duration.between(connector.getSessionStartedAt(), LocalDateTime.now()).toMinutes();
+        return linkedMap("id", connector.getId(), "stationId", connector.getStation().getId(), "stationName",
+                connector.getStation().getName(),
+                "chargerCode", connector.getChargerCode(), "connectorType", connector.getType(), "powerKw",
+                connector.getPowerKw(),
+                "status", connector.getStatus(), "available", connector.isAvailable(), "currentPowerKw",
+                connector.getCurrentPowerKw(),
+                "sessionEnergyKwh", connector.getSessionEnergyKwh(), "sessionDurationMinutes", duration, "healthScore",
+                connector.getHealthScore(),
                 "faultCode", connector.getFaultCode(), "lastHeartbeat", connector.getLastHeartbeat());
     }
 
     private HostProfileResponse mapProfile(HostProfile profile) {
         return HostProfileResponse.builder().accountId(profile.getAccountId()).email(profile.getAccount().getEmail())
-                .emailVerified(profile.getAccount().isEmailVerified()).displayName(profile.getDisplayName()).phone(profile.getPhone())
+                .emailVerified(profile.getAccount().isEmailVerified()).displayName(profile.getDisplayName())
+                .phone(profile.getPhone())
                 .address(profile.getAddress()).bio(profile.getBio()).verificationStatus(profile.getVerificationStatus())
-                .kycDocumentUrl(profile.getKycDocumentUrl()).identityType(profile.getIdentityType()).identityLast4(profile.getIdentityLast4())
-                .verificationRequestedAt(profile.getVerificationRequestedAt()).bankAccountHolder(profile.getBankAccountHolder())
-                .bankName(profile.getBankName()).bankAccountLast4(profile.getBankAccountLast4()).ifscCode(profile.getIfscCode())
-                .payoutUpi(profile.getPayoutUpi()).bankVerified(profile.isBankVerified()).emailNotifications(profile.isEmailNotifications())
-                .pushNotifications(profile.isPushNotifications()).autoAvailability(profile.isAutoAvailability()).reputationScore(profile.getReputationScore()).build();
+                .kycDocumentUrl(profile.getKycDocumentUrl()).identityType(profile.getIdentityType())
+                .identityLast4(profile.getIdentityLast4())
+                .verificationRequestedAt(profile.getVerificationRequestedAt())
+                .bankAccountHolder(profile.getBankAccountHolder())
+                .bankName(profile.getBankName()).bankAccountLast4(profile.getBankAccountLast4())
+                .ifscCode(profile.getIfscCode())
+                .payoutUpi(profile.getPayoutUpi()).bankVerified(profile.isBankVerified())
+                .emailNotifications(profile.isEmailNotifications())
+                .pushNotifications(profile.isPushNotifications()).autoAvailability(profile.isAutoAvailability())
+                .reputationScore(profile.getReputationScore()).build();
     }
 
     private double revenueSince(List<Booking> bookings, LocalDate date) {
-        return round(bookings.stream().filter(b -> b.getStartTime() != null && !b.getStartTime().toLocalDate().isBefore(date)).mapToDouble(Booking::getTotalAmount).sum());
+        return round(bookings.stream()
+                .filter(b -> b.getStartTime() != null && !b.getStartTime().toLocalDate().isBefore(date))
+                .mapToDouble(Booking::getTotalAmount).sum());
     }
 
     private String hash(String value) {
-        try { return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8))); }
-        catch (Exception exception) { throw new IllegalStateException("Unable to secure verification code", exception); }
+        try {
+            return HexFormat.of()
+                    .formatHex(MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8)));
+        } catch (Exception exception) {
+            throw new IllegalStateException("Unable to secure verification code", exception);
+        }
     }
 
-    private double round(double value) { return Math.round(value * 100.0) / 100.0; }
+    private boolean isAllowedHostTransition(BookingStatus current, BookingStatus next) {
+        if (current == null || next == null) return false;
+        return switch (current) {
+            case PENDING -> next == BookingStatus.CONFIRMED || next == BookingStatus.CANCELLED;
+            case CONFIRMED -> next == BookingStatus.IN_PROGRESS || next == BookingStatus.CANCELLED;
+            case IN_PROGRESS -> next == BookingStatus.COMPLETED;
+            case COMPLETED, CANCELLED, EXPIRED -> false;
+        };
+    }
+
+    private String normalizePhone(String phone) {
+        if (phone == null || phone.isBlank()) return null;
+        String digits = phone.replaceAll("\\D", "");
+        return digits.length() == 12 && digits.startsWith("91") ? digits.substring(2) : digits;
+    }
+
+    private double round(double value) {
+        return Math.round(value * 100.0) / 100.0;
+    }
+
     private LinkedHashMap<String, Object> linkedMap(Object... values) {
         LinkedHashMap<String, Object> map = new LinkedHashMap<>();
-        for (int index = 0; index < values.length; index += 2) map.put(String.valueOf(values[index]), values[index + 1]);
+        for (int index = 0; index < values.length; index += 2)
+            map.put(String.valueOf(values[index]), values[index + 1]);
         return map;
     }
 
     private byte[] pdf(List<List<String>> rows) {
         try {
             StringBuilder text = new StringBuilder("BT /F1 11 Tf 40 800 Td ");
-            for (List<String> row : rows) text.append('(').append(escapePdf(String.join(": ", row))).append(") Tj 0 -17 Td ");
+            for (List<String> row : rows)
+                text.append('(').append(escapePdf(String.join(": ", row))).append(") Tj 0 -17 Td ");
             text.append("ET");
             byte[] stream = text.toString().getBytes(StandardCharsets.ISO_8859_1);
-            List<String> objects = List.of("<< /Type /Catalog /Pages 2 0 R >>", "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+            List<String> objects = List.of("<< /Type /Catalog /Pages 2 0 R >>",
+                    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
                     "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 842] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>",
-                    "<< /Length " + stream.length + " >>\nstream\n" + new String(stream, StandardCharsets.ISO_8859_1) + "\nendstream",
+                    "<< /Length " + stream.length + " >>\nstream\n" + new String(stream, StandardCharsets.ISO_8859_1)
+                            + "\nendstream",
                     "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>");
-            ByteArrayOutputStream out = new ByteArrayOutputStream(); out.write("%PDF-1.4\n".getBytes(StandardCharsets.ISO_8859_1));
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            out.write("%PDF-1.4\n".getBytes(StandardCharsets.ISO_8859_1));
             List<Integer> offsets = new ArrayList<>();
-            for (int i = 0; i < objects.size(); i++) { offsets.add(out.size()); out.write(((i + 1) + " 0 obj\n" + objects.get(i) + "\nendobj\n").getBytes(StandardCharsets.ISO_8859_1)); }
-            int xref = out.size(); out.write(("xref\n0 " + (objects.size() + 1) + "\n0000000000 65535 f \n").getBytes(StandardCharsets.ISO_8859_1));
-            for (int offset : offsets) out.write(String.format("%010d 00000 n \n", offset).getBytes(StandardCharsets.ISO_8859_1));
-            out.write(("trailer << /Size " + (objects.size() + 1) + " /Root 1 0 R >>\nstartxref\n" + xref + "\n%%EOF").getBytes(StandardCharsets.ISO_8859_1)); return out.toByteArray();
-        } catch (Exception exception) { throw new IllegalStateException("Unable to create PDF", exception); }
+            for (int i = 0; i < objects.size(); i++) {
+                offsets.add(out.size());
+                out.write(((i + 1) + " 0 obj\n" + objects.get(i) + "\nendobj\n").getBytes(StandardCharsets.ISO_8859_1));
+            }
+            int xref = out.size();
+            out.write(("xref\n0 " + (objects.size() + 1) + "\n0000000000 65535 f \n")
+                    .getBytes(StandardCharsets.ISO_8859_1));
+            for (int offset : offsets)
+                out.write(String.format("%010d 00000 n \n", offset).getBytes(StandardCharsets.ISO_8859_1));
+            out.write(("trailer << /Size " + (objects.size() + 1) + " /Root 1 0 R >>\nstartxref\n" + xref + "\n%%EOF")
+                    .getBytes(StandardCharsets.ISO_8859_1));
+            return out.toByteArray();
+        } catch (Exception exception) {
+            throw new IllegalStateException("Unable to create PDF", exception);
+        }
     }
 
     private byte[] xlsx(List<List<String>> rows) {
         try (ByteArrayOutputStream out = new ByteArrayOutputStream(); ZipOutputStream zip = new ZipOutputStream(out)) {
-            zipEntry(zip, "[Content_Types].xml", "<?xml version=\"1.0\"?><Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"><Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/><Default Extension=\"xml\" ContentType=\"application/xml\"/><Override PartName=\"/xl/workbook.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/><Override PartName=\"/xl/worksheets/sheet1.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/></Types>");
-            zipEntry(zip, "_rels/.rels", "<?xml version=\"1.0\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"xl/workbook.xml\"/></Relationships>");
-            zipEntry(zip, "xl/workbook.xml", "<?xml version=\"1.0\"?><workbook xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><sheets><sheet name=\"Host Report\" sheetId=\"1\" r:id=\"rId1\"/></sheets></workbook>");
-            zipEntry(zip, "xl/_rels/workbook.xml.rels", "<?xml version=\"1.0\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet1.xml\"/></Relationships>");
-            StringBuilder sheet = new StringBuilder("<?xml version=\"1.0\"?><worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"><sheetData>");
-            for (int r = 0; r < rows.size(); r++) { sheet.append("<row r=\"").append(r + 1).append("\">"); for (int c = 0; c < rows.get(r).size(); c++) sheet.append("<c r=\"").append((char)('A' + c)).append(r + 1).append("\" t=\"inlineStr\"><is><t>").append(xml(rows.get(r).get(c))).append("</t></is></c>"); sheet.append("</row>"); }
-            sheet.append("</sheetData></worksheet>"); zipEntry(zip, "xl/worksheets/sheet1.xml", sheet.toString()); zip.finish(); return out.toByteArray();
-        } catch (Exception exception) { throw new IllegalStateException("Unable to create Excel report", exception); }
+            zipEntry(zip, "[Content_Types].xml",
+                    "<?xml version=\"1.0\"?><Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\"><Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/><Default Extension=\"xml\" ContentType=\"application/xml\"/><Override PartName=\"/xl/workbook.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/><Override PartName=\"/xl/worksheets/sheet1.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/></Types>");
+            zipEntry(zip, "_rels/.rels",
+                    "<?xml version=\"1.0\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"xl/workbook.xml\"/></Relationships>");
+            zipEntry(zip, "xl/workbook.xml",
+                    "<?xml version=\"1.0\"?><workbook xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\"><sheets><sheet name=\"Host Report\" sheetId=\"1\" r:id=\"rId1\"/></sheets></workbook>");
+            zipEntry(zip, "xl/_rels/workbook.xml.rels",
+                    "<?xml version=\"1.0\"?><Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet1.xml\"/></Relationships>");
+            StringBuilder sheet = new StringBuilder(
+                    "<?xml version=\"1.0\"?><worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"><sheetData>");
+            for (int r = 0; r < rows.size(); r++) {
+                sheet.append("<row r=\"").append(r + 1).append("\">");
+                for (int c = 0; c < rows.get(r).size(); c++)
+                    sheet.append("<c r=\"").append((char) ('A' + c)).append(r + 1).append("\" t=\"inlineStr\"><is><t>")
+                            .append(xml(rows.get(r).get(c))).append("</t></is></c>");
+                sheet.append("</row>");
+            }
+            sheet.append("</sheetData></worksheet>");
+            zipEntry(zip, "xl/worksheets/sheet1.xml", sheet.toString());
+            zip.finish();
+            return out.toByteArray();
+        } catch (Exception exception) {
+            throw new IllegalStateException("Unable to create Excel report", exception);
+        }
     }
 
-    private void zipEntry(ZipOutputStream zip, String name, String value) throws Exception { zip.putNextEntry(new ZipEntry(name)); zip.write(value.getBytes(StandardCharsets.UTF_8)); zip.closeEntry(); }
-    private String escapePdf(String value) { return value.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)").replace("₹", "INR "); }
-    private String xml(String value) { return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;"); }
+    private void zipEntry(ZipOutputStream zip, String name, String value) throws Exception {
+        zip.putNextEntry(new ZipEntry(name));
+        zip.write(value.getBytes(StandardCharsets.UTF_8));
+        zip.closeEntry();
+    }
+
+    private String escapePdf(String value) {
+        return value.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)").replace("₹", "INR ");
+    }
+
+    private String xml(String value) {
+        return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;");
+    }
 }

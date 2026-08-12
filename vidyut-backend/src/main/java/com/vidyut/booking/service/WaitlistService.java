@@ -7,4 +7,5 @@ public interface WaitlistService {
     WaitlistResponse join(Long userId, WaitlistRequest request);
     List<WaitlistResponse> list(Long userId);
     WaitlistResponse cancel(Long userId, Long id);
+    void promoteNext(Long stationId);
 }

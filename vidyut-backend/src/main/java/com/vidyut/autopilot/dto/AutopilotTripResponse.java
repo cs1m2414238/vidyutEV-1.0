@@ -21,6 +21,9 @@ public class AutopilotTripResponse {
     private String destination;
     private String arrivalDeadline;
     private String optimizeFor;
+    private String tripPurpose;
+    private String memorySummary;
+    private String autonomyMode;
     private double minimumArrivalBatteryPercent;
     private double maximumChargingBudget;
     private double totalDistanceKm;

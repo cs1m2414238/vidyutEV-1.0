@@ -7,6 +7,8 @@ import com.vidyut.common.exception.ResourceNotFoundException;
 import com.vidyut.station.entity.ChargingStation;
 import com.vidyut.station.repository.ChargingStationRepository;
 import com.vidyut.vehicle.repository.VehicleRepository;
+import com.vidyut.notification.entity.NotificationType;
+import com.vidyut.notification.service.NotificationService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -18,6 +20,7 @@ public class WaitlistServiceImpl implements WaitlistService {
     private final WaitlistEntryRepository repository;
     private final ChargingStationRepository stationRepository;
     private final VehicleRepository vehicleRepository;
+    private final NotificationService notificationService;
 
     @Override @Transactional
     public WaitlistResponse join(Long userId, WaitlistRequest request) {
@@ -43,6 +46,21 @@ public class WaitlistServiceImpl implements WaitlistService {
                 .orElseThrow(() -> new ResourceNotFoundException("Waitlist entry not found"));
         entry.setStatus("CANCELLED");
         return map(repository.save(entry), stationRepository.findById(entry.getStationId()).orElse(null));
+    }
+
+    @Override
+    @Transactional
+    public void promoteNext(Long stationId) {
+        List<WaitlistEntry> queue = repository.findByStationIdAndStatusOrderByCreatedAtAsc(stationId, "WAITING");
+        if (queue.isEmpty()) return;
+        WaitlistEntry entry = queue.get(0);
+        entry.setStatus("AVAILABLE");
+        repository.save(entry);
+        String stationName = stationRepository.findById(stationId).map(ChargingStation::getName)
+                .orElse("your selected station");
+        notificationService.sendNotification(entry.getUserId(), "A charging slot is available",
+                "A slot opened at " + stationName + ". Book it before another driver takes it.",
+                NotificationType.WAITLIST_AVAILABLE, "vidyut://station/" + stationId);
     }
 
     private WaitlistResponse map(WaitlistEntry entry, ChargingStation station) {

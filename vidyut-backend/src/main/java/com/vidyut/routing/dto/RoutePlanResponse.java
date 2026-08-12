@@ -14,6 +14,9 @@ import java.util.List;
 public class RoutePlanResponse {
     private String origin;
     private String destination;
+    private String tripPurpose;
+    private String purposeSummary;
+    private int pastExperiencesUsed;
     private double totalDistanceKm;
     private int totalDurationMinutes;
     private List<RouteStationResponse> recommendedChargingStops;

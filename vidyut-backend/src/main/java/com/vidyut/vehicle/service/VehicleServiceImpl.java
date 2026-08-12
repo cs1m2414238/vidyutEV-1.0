@@ -70,6 +70,10 @@ public class VehicleServiceImpl implements VehicleService {
         if (request.getAndroidAutoSupported() != null) vehicle.setAndroidAutoSupported(request.getAndroidAutoSupported());
         if (request.getAppleCarPlaySupported() != null) vehicle.setAppleCarPlaySupported(request.getAppleCarPlaySupported());
         if (request.getBluetoothDeviceName() != null) vehicle.setBluetoothDeviceName(clean(request.getBluetoothDeviceName()));
+        if (request.getBluetoothDeviceId() != null) vehicle.setBluetoothDeviceId(clean(request.getBluetoothDeviceId()));
+        if (request.getBluetoothServiceUuid() != null) vehicle.setBluetoothServiceUuid(clean(request.getBluetoothServiceUuid()));
+        if (request.getBtSessionControlEnabled() != null) vehicle.setBtSessionControlEnabled(request.getBtSessionControlEnabled());
+        if (request.getBtSimulatorEnabled() != null) vehicle.setBtSimulatorEnabled(request.getBtSimulatorEnabled());
         if (request.getLastChargingStation() != null) vehicle.setLastChargingStation(clean(request.getLastChargingStation()));
         if (request.getLastChargingAddress() != null) vehicle.setLastChargingAddress(clean(request.getLastChargingAddress()));
         if (request.getLastChargedAt() != null) vehicle.setLastChargedAt(request.getLastChargedAt());
@@ -122,6 +126,10 @@ public class VehicleServiceImpl implements VehicleService {
                 .androidAutoSupported(v.getAndroidAutoSupported())
                 .appleCarPlaySupported(v.getAppleCarPlaySupported())
                 .bluetoothDeviceName(v.getBluetoothDeviceName())
+                .bluetoothDeviceId(v.getBluetoothDeviceId())
+                .bluetoothServiceUuid(v.getBluetoothServiceUuid())
+                .btSessionControlEnabled(v.isBtSessionControlEnabled())
+                .btSimulatorEnabled(v.isBtSimulatorEnabled())
                 .lastChargingStation(v.getLastChargingStation())
                 .lastChargingAddress(v.getLastChargingAddress())
                 .lastChargedAt(v.getLastChargedAt())

@@ -58,6 +58,18 @@ public class AutopilotTrip {
     @Column(nullable = false, length = 30)
     private String optimizeFor;
 
+    @Enumerated(EnumType.STRING)
+    @Builder.Default
+    @Column(nullable = false, length = 30)
+    private TripPurpose tripPurpose = TripPurpose.GENERAL;
+
+    @Column(length = 1000)
+    private String memorySummary;
+
+    @Builder.Default
+    @Column(nullable = false, length = 30, columnDefinition = "varchar(30) default 'ASK_BEFORE_ACTIONS'")
+    private String autonomyMode = "ASK_BEFORE_ACTIONS";
+
     private double startingBatteryPercent;
     private double currentBatteryPercent;
     private double minimumArrivalBatteryPercent;

@@ -31,6 +31,9 @@ public class Booking {
     @Builder.Default
     private boolean seen = false;
 
+    @Builder.Default
+    private boolean reminderSent = false;
+
     private Long vehicleId;
 
     @Column(name = "idempotency_key", length = 80)
@@ -49,6 +52,10 @@ public class Booking {
 
     private double totalAmount;
     private double kwhDelivered;
+
+    private Long outletId;
+    private String outletTierName;
+    private Double appliedRatePerKwh;
 
     @Builder.Default
     private double cancellationFee = 0;

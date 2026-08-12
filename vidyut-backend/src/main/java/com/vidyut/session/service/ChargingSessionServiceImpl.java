@@ -10,8 +10,11 @@ import com.vidyut.session.repository.ChargingSessionRepository;
 import com.vidyut.station.entity.*;
 import com.vidyut.station.repository.ChargingStationRepository;
 import com.vidyut.vehicle.entity.Vehicle;
+import com.vidyut.vehicle.entity.VehicleTelemetrySource;
 import com.vidyut.vehicle.repository.VehicleRepository;
 import com.vidyut.wallet.service.VehicleWalletService;
+import com.vidyut.notification.entity.NotificationType;
+import com.vidyut.notification.service.NotificationService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -28,6 +31,7 @@ public class ChargingSessionServiceImpl implements ChargingSessionService {
     private final ChargingStationRepository stationRepository;
     private final VehicleRepository vehicleRepository;
     private final VehicleWalletService vehicleWalletService;
+    private final NotificationService notificationService;
 
     @Override
     @Transactional
@@ -58,7 +62,11 @@ public class ChargingSessionServiceImpl implements ChargingSessionService {
         booking.setStatus(BookingStatus.IN_PROGRESS);
         bookingRepository.save(booking);
         updateVehicleCharging(session, station, true);
-        return map(sessionRepository.save(session));
+        ChargingSession saved = sessionRepository.save(session);
+        notificationService.sendNotification(userId, "Charging started",
+                "Charging started at " + station.getName() + ". Live battery and cost are now available.",
+                NotificationType.CHARGING_STARTED, "vidyut://session/" + saved.getId());
+        return map(saved);
     }
 
     @Override
@@ -96,6 +104,65 @@ public class ChargingSessionServiceImpl implements ChargingSessionService {
                 "Charging session #" + session.getId());
         session.setPaymentStatus("PAID");
         session.setUpdatedAt(LocalDateTime.now());
+        ChargingSession saved = sessionRepository.save(session);
+        notificationService.sendNotification(userId, "Charging payment complete",
+                "₹" + saved.getCost() + " was paid from the vehicle wallet.",
+                NotificationType.PAYMENT_RECEIVED, "vidyut://session/" + saved.getId());
+        return map(saved);
+    }
+
+    @Override
+    @Transactional
+    public ChargingSessionResponse updateSoc(Long userId, Long sessionId, int batteryPercent, boolean simulated) {
+        ChargingSession session = ownedSession(userId, sessionId);
+        if (session.getStatus() == ChargingSessionStatus.COMPLETED) return map(session);
+        session.setCurrentBatteryPercent(Math.max(session.getStartBatteryPercent(), batteryPercent));
+        session.setUpdatedAt(LocalDateTime.now());
+        if (session.getVehicleId() != null) {
+            vehicleRepository.findByIdAndUserId(session.getVehicleId(), userId).ifPresent(vehicle -> {
+                vehicle.setBatteryPercent(session.getCurrentBatteryPercent());
+                vehicle.setCharging(true);
+                vehicle.setTelemetrySource(simulated
+                        ? VehicleTelemetrySource.BLUETOOTH_DEMO : VehicleTelemetrySource.BLUETOOTH);
+                vehicle.setTelemetryUpdatedAt(LocalDateTime.now());
+                vehicleRepository.save(vehicle);
+                double capacity = parseCapacity(vehicle.getBatteryCapacity());
+                double remainingKwh = capacity * Math.max(0,
+                        session.getTargetBatteryPercent() - session.getCurrentBatteryPercent()) / 100.0;
+                long remainingMinutes = Math.max(1,
+                        (long) Math.ceil(remainingKwh / Math.max(1, session.getPowerKw()) * 60));
+                session.setEstimatedCompletionAt(LocalDateTime.now().plusMinutes(remainingMinutes));
+            });
+        }
+        if (session.getCurrentBatteryPercent() >= session.getTargetBatteryPercent()) {
+            complete(session);
+        } else {
+            sessionRepository.save(session);
+        }
+        return map(session);
+    }
+
+    @Override
+    @Transactional
+    public ChargingSessionResponse control(Long userId, Long sessionId, String action) {
+        ChargingSession session = ownedSession(userId, sessionId);
+        String normalized = action == null ? "" : action.trim().toUpperCase();
+        if ("STOP".equals(normalized)) return stop(userId, sessionId);
+        if (!"START".equals(normalized)) throw new BadRequestException("Bluetooth action must be START or STOP");
+        if (session.getStatus() == ChargingSessionStatus.COMPLETED) {
+            throw new BadRequestException("A completed session cannot be restarted");
+        }
+        session.setUpdatedAt(LocalDateTime.now());
+        if (session.getVehicleId() != null) {
+            vehicleRepository.findByIdAndUserId(session.getVehicleId(), userId).ifPresent(vehicle -> {
+                if (!vehicle.isBtSessionControlEnabled()) {
+                    throw new BadRequestException("Bluetooth session control is disabled for this vehicle");
+                }
+                vehicle.setCharging(true);
+                vehicle.setTelemetryUpdatedAt(LocalDateTime.now());
+                vehicleRepository.save(vehicle);
+            });
+        }
         return map(sessionRepository.save(session));
     }
 
@@ -107,7 +174,9 @@ public class ChargingSessionServiceImpl implements ChargingSessionService {
         double maxEnergy = Math.max(booking.getKwhDelivered(), 0.1);
         session.setEnergyKwh(Math.min(energy, maxEnergy));
         ChargingStation station = stationRepository.findById(session.getStationId()).orElseThrow();
-        session.setCost(round(session.getEnergyKwh() * station.getPricePerKwh()));
+        double rate = booking.getAppliedRatePerKwh() == null
+                ? station.getPricePerKwh() : booking.getAppliedRatePerKwh();
+        session.setCost(round(session.getEnergyKwh() * rate));
         if (session.getVehicleId() != null) {
             vehicleRepository.findByIdAndUserId(session.getVehicleId(), session.getUserId()).ifPresent(vehicle -> {
                 double capacity = parseCapacity(vehicle.getBatteryCapacity());
@@ -136,6 +205,14 @@ public class ChargingSessionServiceImpl implements ChargingSessionService {
         bookingRepository.save(booking);
         ChargingStation station = stationRepository.findById(session.getStationId()).orElseThrow();
         updateVehicleCharging(session, station, false);
+        NotificationType type = session.getVehicleId() != null && vehicleRepository.findById(session.getVehicleId())
+                .map(vehicle -> vehicle.getTelemetrySource() == VehicleTelemetrySource.BLUETOOTH
+                        || vehicle.getTelemetrySource() == VehicleTelemetrySource.BLUETOOTH_DEMO)
+                .orElse(false) ? NotificationType.BT_CHARGE_COMPLETED : NotificationType.CHARGING_COMPLETED;
+        notificationService.sendNotification(session.getUserId(), "Charging complete",
+                "Session complete at " + station.getName() + ": " + session.getEnergyKwh()
+                        + " kWh delivered for ₹" + session.getCost() + ".",
+                type, "vidyut://session/" + session.getId());
     }
 
     private void updateVehicleCharging(ChargingSession session, ChargingStation station, boolean charging) {
@@ -176,6 +253,9 @@ public class ChargingSessionServiceImpl implements ChargingSessionService {
                 .startBatteryPercent(session.getStartBatteryPercent())
                 .currentBatteryPercent(session.getCurrentBatteryPercent())
                 .targetBatteryPercent(session.getTargetBatteryPercent()).startedAt(session.getStartedAt())
+                .telemetrySource(session.getVehicleId() == null ? VehicleTelemetrySource.NOT_AVAILABLE.name()
+                        : vehicleRepository.findById(session.getVehicleId())
+                        .map(Vehicle::getTelemetrySource).orElse(VehicleTelemetrySource.NOT_AVAILABLE).name())
                 .estimatedCompletionAt(session.getEstimatedCompletionAt()).completedAt(session.getCompletedAt())
                 .updatedAt(session.getUpdatedAt()).build();
     }

@@ -49,6 +49,11 @@ public class HostOperationsController {
     @PatchMapping("/reviews/{reviewId}/report") public ResponseEntity<ApiResponse<HostReview>> report(@PathVariable Long reviewId, @Valid @RequestBody HostReviewActionRequest request) { return ok(hostService.reportReview(id(), reviewId, request.getMessage())); }
     @PostMapping("/ai/ask") public ResponseEntity<ApiResponse<Map<String, Object>>> assistant(@Valid @RequestBody HostAiRequest request) { return ok(hostService.assistant(id(), request.getQuestion())); }
     @GetMapping("/notifications") public ResponseEntity<ApiResponse<List<Notification>>> notifications() { return ok(notificationService.getNotificationsForUser(id())); }
+    @PatchMapping("/notifications/{notificationId}/read") public ResponseEntity<ApiResponse<Notification>> markNotificationRead(@PathVariable Long notificationId) { return ok(notificationService.markRead(id(), notificationId)); }
+    @PatchMapping("/notifications/read-all") public ResponseEntity<ApiResponse<Void>> markAllNotificationsRead() {
+        notificationService.markAllRead(id());
+        return ResponseEntity.ok(ApiResponse.success("Notifications marked as read", null));
+    }
 
     @GetMapping("/reports/export")
     public ResponseEntity<byte[]> report(@RequestParam(defaultValue = "EARNINGS") String type, @RequestParam(defaultValue = "PDF") String format) {

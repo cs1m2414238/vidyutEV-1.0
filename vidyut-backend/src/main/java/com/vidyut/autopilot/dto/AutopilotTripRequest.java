@@ -28,10 +28,15 @@ public class AutopilotTripRequest {
     @Size(max = 1200, message = "Goal must be 1200 characters or fewer")
     private String goal;
 
+    private String tripPurpose;
+
     private String arrivalDeadline;
 
     @Builder.Default
     private String optimizeFor = "TIME";
+
+    @Builder.Default
+    private String autonomyMode = "ASK_BEFORE_ACTIONS";
 
     @DecimalMin(value = "1", message = "Battery must be at least 1%")
     @DecimalMax(value = "100", message = "Battery cannot exceed 100%")

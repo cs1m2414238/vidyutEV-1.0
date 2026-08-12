@@ -19,6 +19,9 @@ interface BackendBooking {
   kwhDelivered?: number;
   cancellationFee?: number;
   refundAmount?: number;
+  outletId?: number;
+  outletTierName?: string;
+  appliedRatePerKwh?: number;
 }
 
 function normalizeBooking(booking: BackendBooking): BookingItem {
@@ -37,6 +40,9 @@ function normalizeBooking(booking: BackendBooking): BookingItem {
     kwhDelivered: booking.kwhDelivered,
     cancellationFee: booking.cancellationFee,
     refundAmount: booking.refundAmount,
+    outletId: booking.outletId,
+    outletTierName: booking.outletTierName,
+    appliedRatePerKwh: booking.appliedRatePerKwh,
   };
 }
 
@@ -79,6 +85,9 @@ export async function createBooking(
     });
     return normalizeBooking(unwrapApiResponse(response.data));
   } catch (error) {
+    if (isNetworkError(error)) {
+      throw new Error('No connection — reconnect before booking so your slot cannot be double-booked.');
+    }
     if (!(CONFIG.USE_MOCK_DATA && isNetworkError(error))) {
       throw new Error(getApiErrorMessage(error, 'Unable to create the booking.'));
     }

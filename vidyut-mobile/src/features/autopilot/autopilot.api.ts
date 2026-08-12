@@ -1,6 +1,11 @@
 import { apiClient } from '../../services/apiClient';
 import { ApiResponse, getApiErrorMessage, unwrapApiResponse } from '../../services/apiResponse';
-import { AutopilotTrip, LaunchAutopilotTripRequest } from './autopilot.types';
+import { AutopilotAlternative, AutopilotPlan, AutopilotTrip, AutopilotTripSummary, LaunchAutopilotTripRequest } from './autopilot.types';
+
+export async function previewAutopilotTrip(request: LaunchAutopilotTripRequest): Promise<AutopilotPlan> {
+  try { const response = await apiClient.post<ApiResponse<AutopilotPlan>>('/agent/plan', request); return unwrapApiResponse(response.data); }
+  catch (error) { throw new Error(getApiErrorMessage(error, 'Unable to preview this journey.')); }
+}
 
 export async function getCurrentAutopilotTrip(): Promise<AutopilotTrip | null> {
   try {
@@ -78,4 +83,24 @@ export async function sendAutopilotAgentMessage(
   } catch (error) {
     throw new Error(getApiErrorMessage(error, 'The Gemini agent is unavailable. Start the Python service and check its API key.'));
   }
+}
+
+export async function getAutopilotAlternatives(tripId: number, stopId: number): Promise<AutopilotAlternative[]> {
+  try { const response = await apiClient.get<ApiResponse<AutopilotAlternative[]>>(`/agent/plans/${tripId}/legs/${stopId}/alternatives`); return unwrapApiResponse(response.data); }
+  catch (error) { throw new Error(getApiErrorMessage(error, 'Unable to load timing-matched alternatives.')); }
+}
+
+export async function swapAutopilotStop(tripId: number, stopId: number, stationId: number): Promise<AutopilotTrip> {
+  try { const response = await apiClient.post<ApiResponse<AutopilotTrip>>(`/agent/plans/${tripId}/legs/${stopId}/swap`, { stationId }); return unwrapApiResponse(response.data); }
+  catch (error) { throw new Error(getApiErrorMessage(error, 'Unable to swap this charging stop.')); }
+}
+
+export async function simulateAutopilotDelay(tripId: number, delayMinutes = 25): Promise<AutopilotTrip> {
+  try { const response = await apiClient.post<ApiResponse<AutopilotTrip>>(`/agent/plans/${tripId}/simulate-delay`, { delayMinutes }); return unwrapApiResponse(response.data); }
+  catch (error) { throw new Error(getApiErrorMessage(error, 'Unable to simulate the route delay.')); }
+}
+
+export async function getAutopilotSummary(tripId: number): Promise<AutopilotTripSummary> {
+  try { const response = await apiClient.get<ApiResponse<AutopilotTripSummary>>(`/agent/trips/${tripId}/summary`); return unwrapApiResponse(response.data); }
+  catch (error) { throw new Error(getApiErrorMessage(error, 'Unable to build the trip summary.')); }
 }

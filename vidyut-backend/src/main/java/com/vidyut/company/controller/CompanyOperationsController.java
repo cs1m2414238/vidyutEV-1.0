@@ -42,6 +42,30 @@ public class CompanyOperationsController {
         return ResponseEntity.ok(ApiResponse.success(operationsService.analytics(accountId())));
     }
 
+    @GetMapping("/network")
+    public ResponseEntity<ApiResponse<CompanyNetworkResponse>> network() {
+        return ResponseEntity.ok(ApiResponse.success(operationsService.network(accountId())));
+    }
+
+    @GetMapping("/maintenance-tickets")
+    public ResponseEntity<ApiResponse<List<MaintenanceTicketResponse>>> maintenanceTickets() {
+        return ResponseEntity.ok(ApiResponse.success(operationsService.maintenanceTickets(accountId())));
+    }
+
+    @PostMapping("/maintenance-tickets")
+    public ResponseEntity<ApiResponse<MaintenanceTicketResponse>> createMaintenanceTicket(
+            @Valid @RequestBody MaintenanceTicketCreateRequest request) {
+        return ResponseEntity.ok(ApiResponse.success("Maintenance work order created",
+                operationsService.createMaintenanceTicket(accountId(), request)));
+    }
+
+    @PatchMapping("/maintenance-tickets/{id}")
+    public ResponseEntity<ApiResponse<MaintenanceTicketResponse>> updateMaintenanceTicket(@PathVariable Long id,
+            @Valid @RequestBody MaintenanceTicketUpdateRequest request) {
+        return ResponseEntity.ok(ApiResponse.success("Maintenance work order updated",
+                operationsService.updateMaintenanceTicket(accountId(), id, request)));
+    }
+
     @GetMapping("/stations")
     public ResponseEntity<ApiResponse<List<StationResponse>>> stations() {
         return ResponseEntity.ok(ApiResponse.success(operationsService.getStations(accountId())));
@@ -142,9 +166,25 @@ public class CompanyOperationsController {
         return ResponseEntity.ok(ApiResponse.success(operationsService.payouts(accountId())));
     }
 
+    @GetMapping("/settlements")
+    public ResponseEntity<ApiResponse<CompanySettlementResponse>> settlements() {
+        return ResponseEntity.ok(ApiResponse.success(operationsService.settlements(accountId())));
+    }
+
     @GetMapping("/notifications")
     public ResponseEntity<ApiResponse<List<Notification>>> notifications() {
         return ResponseEntity.ok(ApiResponse.success(notificationService.getNotificationsForUser(accountId())));
+    }
+
+    @PatchMapping("/notifications/{id}/read")
+    public ResponseEntity<ApiResponse<Notification>> markNotificationRead(@PathVariable Long id) {
+        return ResponseEntity.ok(ApiResponse.success(notificationService.markRead(accountId(), id)));
+    }
+
+    @PatchMapping("/notifications/read-all")
+    public ResponseEntity<ApiResponse<Void>> markAllNotificationsRead() {
+        notificationService.markAllRead(accountId());
+        return ResponseEntity.ok(ApiResponse.success("Notifications marked as read", null));
     }
 
     @GetMapping("/reports/export")

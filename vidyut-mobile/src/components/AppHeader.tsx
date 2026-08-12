@@ -2,6 +2,7 @@ import React from 'react';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '../constants/colors';
+import { useRouter } from 'expo-router';
 
 interface AppHeaderProps {
   title?: string;
@@ -20,6 +21,7 @@ export function AppHeader({
   rightIcon = 'notifications-outline',
   onRightPress,
 }: AppHeaderProps) {
+  const router = useRouter();
   return (
     <View style={styles.header}>
       <View style={styles.titleRow}>
@@ -36,7 +38,13 @@ export function AppHeader({
         )}
       </View>
 
-      <TouchableOpacity style={styles.action} onPress={onRightPress} activeOpacity={0.7}>
+      <TouchableOpacity
+        accessibilityRole="button"
+        accessibilityLabel={rightIcon.includes('notification') ? 'Open notifications' : 'Open action'}
+        style={styles.action}
+        onPress={onRightPress ?? (() => router.push('/notifications'))}
+        activeOpacity={0.7}
+      >
         <Ionicons name={rightIcon} size={21} color={Colors.textPrimary} />
         {notificationCount > 0 ? (
           <View style={styles.dot}><Text style={styles.dotText}>{notificationCount > 9 ? '9+' : notificationCount}</Text></View>

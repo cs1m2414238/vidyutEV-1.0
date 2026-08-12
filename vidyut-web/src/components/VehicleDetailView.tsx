@@ -9,9 +9,11 @@ import {
   CheckCircle2,
   CircleAlert,
   Clock3,
+  FlaskConical,
   Gauge,
   MapPin,
   PencilLine,
+  Radio,
   RefreshCw,
   Route,
   Smartphone,
@@ -33,14 +35,25 @@ interface VehicleDetailViewProps {
   onVehicleUpdated?: (vehicle: Vehicle) => void;
 }
 
+interface BluetoothCharacteristicLike {
+  value?: DataView | null;
+  readValue(): Promise<DataView>;
+  startNotifications?(): Promise<BluetoothCharacteristicLike>;
+  stopNotifications?(): Promise<BluetoothCharacteristicLike>;
+  addEventListener?(type: 'characteristicvaluechanged', listener: EventListener): void;
+  removeEventListener?(type: 'characteristicvaluechanged', listener: EventListener): void;
+}
+
 interface BluetoothRemoteGattServerLike {
   getPrimaryService(service: string): Promise<{
-    getCharacteristic(characteristic: string): Promise<{ readValue(): Promise<DataView> }>;
+    getCharacteristic(characteristic: string): Promise<BluetoothCharacteristicLike>;
   }>;
 }
 
 interface BluetoothDeviceLike {
   name?: string;
+  addEventListener?(type: 'gattserverdisconnected', listener: EventListener): void;
+  removeEventListener?(type: 'gattserverdisconnected', listener: EventListener): void;
   gatt?: {
     connected: boolean;
     connect(): Promise<BluetoothRemoteGattServerLike>;
@@ -54,6 +67,10 @@ interface BluetoothApiLike {
 
 type SupportChoice = 'UNKNOWN' | 'YES' | 'NO';
 type ChargingChoice = 'UNKNOWN' | 'CHARGING' | 'NOT_CHARGING';
+type NoticeTone = 'success' | 'info';
+
+const DEMO_ENERGY_PER_KM_KWH = 0.12;
+const DEFAULT_DEMO_BATTERY_CAPACITY_KWH = 40.5;
 
 interface TelemetryForm {
   batteryPercent: string;
@@ -109,6 +126,7 @@ function formatDateTime(value?: string | null): string {
 }
 
 function sourceLabel(vehicle: Vehicle): string {
+  if (vehicle.telemetrySource === 'BLUETOOTH_DEMO') return 'Bluetooth demo telemetry';
   if (vehicle.telemetrySource === 'BLUETOOTH') return 'Bluetooth reading';
   if (vehicle.telemetrySource === 'CHARGING_SESSION') return 'Charging session';
   if (vehicle.telemetrySource === 'MANUAL') return 'Manual update';
@@ -121,6 +139,30 @@ function capabilityLabel(value?: boolean | null): string {
 
 function supportValue(value: SupportChoice): boolean | undefined {
   return value === 'UNKNOWN' ? undefined : value === 'YES';
+}
+
+function batteryCapacityKwh(value?: string | null): number {
+  const parsed = Number(value?.replace(',', '.').match(/\d+(?:\.\d+)?/)?.[0]);
+  return Number.isFinite(parsed) && parsed > 10 && parsed < 250
+    ? parsed
+    : DEFAULT_DEMO_BATTERY_CAPACITY_KWH;
+}
+
+function demoRangeKm(vehicle: Vehicle, batteryPercent: number): number {
+  const capacity = batteryCapacityKwh(vehicle.batteryCapacity);
+  return Math.round((capacity * batteryPercent / 100 / DEMO_ENERGY_PER_KM_KWH) * 10) / 10;
+}
+
+function normalizedBattery(value: DataView): number {
+  if (value.byteLength < 1) throw new Error('The Bluetooth battery response was empty.');
+  return Math.max(0, Math.min(100, value.getUint8(0)));
+}
+
+function bluetoothErrorMessage(error: Error): string {
+  if (error.name === 'SecurityError') return 'Bluetooth permission was blocked. Allow Bluetooth access for this site and try again.';
+  if (error.name === 'NetworkError') return 'The device was found, but its Bluetooth connection failed. Disconnect it from another app and retry.';
+  if (error.name === 'NotSupportedError') return 'The selected device does not provide a compatible Bluetooth GATT connection.';
+  return error.message || 'Unable to connect to the selected Bluetooth device.';
 }
 
 export function VehicleDetailView({
@@ -136,10 +178,16 @@ export function VehicleDetailView({
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  const [liveBluetooth, setLiveBluetooth] = useState(false);
   const [showEditor, setShowEditor] = useState(false);
+  const [showBluetoothConsent, setShowBluetoothConsent] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
+  const [noticeTone, setNoticeTone] = useState<NoticeTone>('success');
   const bluetoothDevice = useRef<BluetoothDeviceLike | null>(null);
+  const bluetoothCharacteristic = useRef<BluetoothCharacteristicLike | null>(null);
+  const bluetoothValueHandler = useRef<EventListener | null>(null);
+  const bluetoothDisconnectHandler = useRef<EventListener | null>(null);
 
   const loadVehicle = useCallback(async () => {
     setLoading(true);
@@ -160,13 +208,37 @@ export function VehicleDetailView({
   }, [loadVehicle]);
 
   useEffect(() => {
-    if (!showEditor) return undefined;
+    if (!showEditor && !showBluetoothConsent) return undefined;
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && !saving) setShowEditor(false);
+      if (event.key !== 'Escape') return;
+      if (showEditor && !saving) setShowEditor(false);
+      if (showBluetoothConsent && !syncing) setShowBluetoothConsent(false);
     };
     window.addEventListener('keydown', closeOnEscape);
     return () => window.removeEventListener('keydown', closeOnEscape);
-  }, [showEditor, saving]);
+  }, [showBluetoothConsent, showEditor, saving, syncing]);
+
+  useEffect(() => () => {
+    const characteristic = bluetoothCharacteristic.current;
+    const valueHandler = bluetoothValueHandler.current;
+    if (characteristic && valueHandler) {
+      characteristic.removeEventListener?.('characteristicvaluechanged', valueHandler);
+      void characteristic.stopNotifications?.().catch(() => undefined);
+    }
+
+    const device = bluetoothDevice.current;
+    const disconnectHandler = bluetoothDisconnectHandler.current;
+    if (device && disconnectHandler) {
+      device.removeEventListener?.('gattserverdisconnected', disconnectHandler);
+    }
+    if (device?.gatt?.connected) {
+      device.gatt.disconnect();
+      void updateVehicle(token, vehicleId, {
+        connectionStatus: 'DISCONNECTED',
+        telemetrySource: 'BLUETOOTH_DEMO',
+      }).catch(() => undefined);
+    }
+  }, [token, vehicleId]);
 
   const applyUpdate = (updated: Vehicle) => {
     setVehicle(updated);
@@ -180,6 +252,11 @@ export function VehicleDetailView({
     setError('');
     setNotice('');
     setShowEditor(true);
+  };
+
+  const showNotice = (message: string, tone: NoticeTone = 'success') => {
+    setNoticeTone(tone);
+    setNotice(message);
   };
 
   const saveTelemetry = async () => {
@@ -215,7 +292,7 @@ export function VehicleDetailView({
       const updated = await updateVehicle(token, vehicleId, payload);
       applyUpdate(updated);
       setShowEditor(false);
-      setNotice('Vehicle status and capabilities were updated.');
+      showNotice('Vehicle status and capabilities were updated.');
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : 'Unable to update this vehicle.');
     } finally {
@@ -223,7 +300,21 @@ export function VehicleDetailView({
     }
   };
 
+  const saveBluetoothReading = async (deviceName: string, batteryPercent: number) => {
+    if (!vehicle) return;
+    const updated = await updateVehicle(token, vehicleId, {
+      batteryPercent,
+      remainingRangeKm: demoRangeKm(vehicle, batteryPercent),
+      connectionStatus: 'CONNECTED',
+      bluetoothSupported: true,
+      bluetoothDeviceName: deviceName,
+      telemetrySource: 'BLUETOOTH_DEMO',
+    });
+    applyUpdate(updated);
+  };
+
   const syncBluetooth = async () => {
+    if (!vehicle) return;
     const bluetooth = (navigator as Navigator & { bluetooth?: BluetoothApiLike }).bluetooth;
     setError('');
     setNotice('');
@@ -244,34 +335,106 @@ export function VehicleDetailView({
       });
       bluetoothDevice.current = device;
       if (!device.gatt) throw new Error('The selected device does not expose a Bluetooth data connection.');
+
+      const disconnectHandler: EventListener = () => {
+        if (bluetoothDevice.current !== device) return;
+        bluetoothDevice.current = null;
+        bluetoothCharacteristic.current = null;
+        bluetoothValueHandler.current = null;
+        bluetoothDisconnectHandler.current = null;
+        setLiveBluetooth(false);
+        void updateVehicle(token, vehicleId, {
+          connectionStatus: 'DISCONNECTED',
+          telemetrySource: 'BLUETOOTH_DEMO',
+        }).then((updated) => {
+          applyUpdate(updated);
+          showNotice(`${device.name || 'The demo device'} disconnected. The last battery reading is still saved.`, 'info');
+        }).catch(() => {
+          setError('The Bluetooth device disconnected, but Vidyut could not save the offline status.');
+        });
+      };
+      device.addEventListener?.('gattserverdisconnected', disconnectHandler);
+      bluetoothDisconnectHandler.current = disconnectHandler;
+
       const server = await device.gatt.connect();
+      const deviceName = device.name || 'Bluetooth demo device';
       const payload: VehicleUpdatePayload = {
         connectionStatus: 'CONNECTED',
         bluetoothSupported: true,
-        bluetoothDeviceName: device.name || 'Bluetooth vehicle',
-        telemetrySource: 'BLUETOOTH',
+        bluetoothDeviceName: deviceName,
+        telemetrySource: 'BLUETOOTH_DEMO',
       };
 
       let batteryRead = false;
+      let notificationsStarted = false;
       try {
         const service = await server.getPrimaryService('battery_service');
         const characteristic = await service.getCharacteristic('battery_level');
+        bluetoothCharacteristic.current = characteristic;
         const value = await characteristic.readValue();
-        payload.batteryPercent = value.getUint8(0);
+        payload.batteryPercent = normalizedBattery(value);
+        payload.remainingRangeKm = demoRangeKm(vehicle, payload.batteryPercent);
         batteryRead = true;
+
+        if (characteristic.startNotifications && characteristic.addEventListener) {
+          const valueHandler: EventListener = (event) => {
+            const changedCharacteristic = event.target as BluetoothCharacteristicLike | null;
+            if (!changedCharacteristic?.value) return;
+            try {
+              const nextBattery = normalizedBattery(changedCharacteristic.value);
+              void saveBluetoothReading(deviceName, nextBattery).then(() => {
+                showNotice(`Live demo telemetry updated to ${nextBattery}% (${demoRangeKm(vehicle, nextBattery)} km estimated range).`);
+              }).catch(() => {
+                setError('A new Bluetooth reading arrived, but it could not be saved.');
+              });
+            } catch (notificationError) {
+              setError(notificationError instanceof Error ? notificationError.message : 'The live Bluetooth reading was invalid.');
+            }
+          };
+          characteristic.addEventListener('characteristicvaluechanged', valueHandler);
+          bluetoothValueHandler.current = valueHandler;
+          try {
+            await characteristic.startNotifications();
+            notificationsStarted = true;
+            setLiveBluetooth(true);
+          } catch {
+            characteristic.removeEventListener?.('characteristicvaluechanged', valueHandler);
+            bluetoothValueHandler.current = null;
+          }
+        }
       } catch {
-        // Most vehicle makers protect telemetry behind proprietary services.
+        // Windows may know a vendor-specific battery value that Web Bluetooth cannot expose.
       }
 
       const updated = await updateVehicle(token, vehicleId, payload);
       applyUpdate(updated);
-      setNotice(batteryRead
-        ? `Connected to ${device.name || 'the selected device'} and read its battery level.`
-        : `Connected to ${device.name || 'the selected device'}. Its battery level is not exposed through the standard Bluetooth Battery Service.`);
+      showNotice(batteryRead
+        ? `${deviceName} is supplying demo EV telemetry${notificationsStarted ? ' with live updates' : ''}. Battery ${payload.batteryPercent}% maps to ${payload.remainingRangeKm} km estimated range.`
+        : `${deviceName} connected, but it does not expose the standard Bluetooth Battery Service to this browser. Windows can still show a vendor-specific value that Chrome cannot read.`,
+      batteryRead ? 'success' : 'info');
     } catch (syncError) {
       const bluetoothError = syncError as Error;
-      if (bluetoothError.name !== 'NotFoundError') {
-        setError(bluetoothError.message || 'Unable to connect to the selected Bluetooth device.');
+      if (bluetoothError.name === 'NotFoundError') {
+        showNotice('Bluetooth selection was cancelled. No vehicle data was changed.', 'info');
+      } else {
+        const characteristic = bluetoothCharacteristic.current;
+        const valueHandler = bluetoothValueHandler.current;
+        if (characteristic && valueHandler) {
+          characteristic.removeEventListener?.('characteristicvaluechanged', valueHandler);
+          void characteristic.stopNotifications?.().catch(() => undefined);
+        }
+        const device = bluetoothDevice.current;
+        const disconnectHandler = bluetoothDisconnectHandler.current;
+        if (device && disconnectHandler) {
+          device.removeEventListener?.('gattserverdisconnected', disconnectHandler);
+        }
+        device?.gatt?.disconnect();
+        bluetoothDevice.current = null;
+        bluetoothCharacteristic.current = null;
+        bluetoothValueHandler.current = null;
+        bluetoothDisconnectHandler.current = null;
+        setLiveBluetooth(false);
+        setError(bluetoothErrorMessage(bluetoothError));
       }
     } finally {
       setSyncing(false);
@@ -282,16 +445,55 @@ export function VehicleDetailView({
     setSyncing(true);
     setError('');
     try {
-      bluetoothDevice.current?.gatt?.disconnect();
+      const characteristic = bluetoothCharacteristic.current;
+      const valueHandler = bluetoothValueHandler.current;
+      if (characteristic && valueHandler) {
+        characteristic.removeEventListener?.('characteristicvaluechanged', valueHandler);
+        await characteristic.stopNotifications?.().catch(() => undefined);
+      }
+
+      const device = bluetoothDevice.current;
+      const disconnectHandler = bluetoothDisconnectHandler.current;
+      if (device && disconnectHandler) {
+        device.removeEventListener?.('gattserverdisconnected', disconnectHandler);
+      }
+      device?.gatt?.disconnect();
       bluetoothDevice.current = null;
+      bluetoothCharacteristic.current = null;
+      bluetoothValueHandler.current = null;
+      bluetoothDisconnectHandler.current = null;
+      setLiveBluetooth(false);
       const updated = await updateVehicle(token, vehicleId, {
         connectionStatus: 'DISCONNECTED',
-        telemetrySource: 'BLUETOOTH',
+        telemetrySource: 'BLUETOOTH_DEMO',
       });
       applyUpdate(updated);
-      setNotice('Bluetooth was disconnected. Your last reading remains saved.');
+      showNotice('Bluetooth demo telemetry was disconnected. Your last reading remains saved.', 'info');
     } catch (disconnectError) {
       setError(disconnectError instanceof Error ? disconnectError.message : 'Unable to update the connection status.');
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  const refreshBluetoothReading = async () => {
+    if (!vehicle) return;
+    const characteristic = bluetoothCharacteristic.current;
+    const device = bluetoothDevice.current;
+    if (!characteristic || !device?.gatt?.connected) {
+      setShowBluetoothConsent(true);
+      return;
+    }
+
+    setSyncing(true);
+    setError('');
+    setNotice('');
+    try {
+      const batteryPercent = normalizedBattery(await characteristic.readValue());
+      await saveBluetoothReading(device.name || 'Bluetooth demo device', batteryPercent);
+      showNotice(`Demo telemetry refreshed: ${batteryPercent}% battery and ${demoRangeKm(vehicle, batteryPercent)} km estimated range.`);
+    } catch (refreshError) {
+      setError(refreshError instanceof Error ? refreshError.message : 'Unable to refresh the Bluetooth battery reading.');
     } finally {
       setSyncing(false);
     }
@@ -321,6 +523,8 @@ export function VehicleDetailView({
   const connectionClass = vehicle.connectionStatus.toLowerCase();
   const chargeLabel = vehicle.charging == null ? 'Not reported' : vehicle.charging ? 'Charging' : 'Not charging';
   const ringStyle = { '--vehicle-battery-level': `${battery ?? 0}%` } as CSSProperties;
+  const isDemoTelemetry = vehicle.telemetrySource === 'BLUETOOTH_DEMO';
+  const canRefreshBluetooth = Boolean(bluetoothCharacteristic.current && bluetoothDevice.current?.gatt?.connected);
 
   return (
     <section className="vehicle-detail-page" aria-labelledby="vehicle-detail-title">
@@ -333,6 +537,7 @@ export function VehicleDetailView({
             <span>{vehicle.registrationNumber}</span>
             <h1 id="vehicle-detail-title">{vehicle.makeAndModel}</h1>
             <p>{sourceLabel(vehicle)} · Updated {formatDateTime(vehicle.telemetryUpdatedAt)}</p>
+            {isDemoTelemetry && <span className="vehicle-demo-source"><FlaskConical size={12} /> Demo source—not vehicle hardware</span>}
           </div>
         </div>
         <div className="vehicle-detail-header-actions">
@@ -342,14 +547,14 @@ export function VehicleDetailView({
       </header>
 
       {error && <div className="vehicle-detail-message error" role="alert"><CircleAlert size={17} />{error}</div>}
-      {notice && <div className="vehicle-detail-message success" role="status"><CheckCircle2 size={17} />{notice}</div>}
+      {notice && <div className={`vehicle-detail-message ${noticeTone}`} role="status">{noticeTone === 'success' ? <CheckCircle2 size={17} /> : <CircleAlert size={17} />}{notice}</div>}
 
       <div className="vehicle-detail-metrics">
         <article>
           <span><Bluetooth size={19} /></span>
           <small>Connection</small>
           <strong>{vehicle.connectionStatus === 'CONNECTED' ? 'Connected' : vehicle.connectionStatus === 'DISCONNECTED' ? 'Offline' : 'Not synced'}</strong>
-          <p>{vehicle.bluetoothDeviceName || 'No device name saved'}</p>
+          <p>{vehicle.bluetoothDeviceName || 'No device name saved'}{isDemoTelemetry ? ' · Demo' : ''}</p>
         </article>
         <article>
           <span><BatteryCharging size={19} /></span>
@@ -361,7 +566,7 @@ export function VehicleDetailView({
           <span><Route size={19} /></span>
           <small>Estimated range</small>
           <strong>{vehicle.remainingRangeKm == null ? 'Not synced' : `${Math.round(vehicle.remainingRangeKm)} km`}</strong>
-          <p>Remaining driving estimate</p>
+          <p>{isDemoTelemetry ? 'Demo estimate at 0.12 kWh/km' : 'Remaining driving estimate'}</p>
         </article>
         <article className={vehicle.charging ? 'is-charging' : ''}>
           <span><Zap size={19} /></span>
@@ -374,13 +579,16 @@ export function VehicleDetailView({
       <div className="vehicle-detail-grid">
         <article className={`vehicle-live-card ${vehicle.charging ? 'charging' : ''}`}>
           <div className="vehicle-live-copy">
-            <span className="vehicle-live-eyebrow">CURRENT VEHICLE STATE</span>
-            <h2>{vehicle.charging ? 'Charging now' : vehicle.connectionStatus === 'CONNECTED' ? 'Vehicle connected' : 'Ready when you are'}</h2>
-            <p>{vehicle.charging
+            <span className="vehicle-live-eyebrow">{isDemoTelemetry ? 'BLUETOOTH DEMO ADAPTER' : 'CURRENT VEHICLE STATE'}</span>
+            <h2>{isDemoTelemetry && vehicle.connectionStatus === 'CONNECTED' ? 'Demo telemetry connected' : vehicle.charging ? 'Charging now' : vehicle.connectionStatus === 'CONNECTED' ? 'Vehicle connected' : 'Ready when you are'}</h2>
+            <p>{isDemoTelemetry
+              ? `${vehicle.bluetoothDeviceName || 'The selected Bluetooth device'} supplies a demonstration battery value. It is not direct EV hardware telemetry.`
+              : vehicle.charging
               ? 'This status is based on the latest saved vehicle reading.'
               : 'Connect by Bluetooth or update the status to keep the dashboard accurate.'}</p>
+            {isDemoTelemetry && liveBluetooth && <span className="vehicle-live-indicator"><Radio size={13} /> Listening for live battery changes</span>}
             <div className="vehicle-live-actions">
-              <button type="button" onClick={() => void syncBluetooth()} disabled={syncing}><Bluetooth size={16} />{syncing ? 'Connecting…' : 'Sync Bluetooth'}</button>
+              <button type="button" onClick={() => canRefreshBluetooth ? void refreshBluetoothReading() : setShowBluetoothConsent(true)} disabled={syncing}><Bluetooth size={16} />{syncing ? 'Connecting…' : canRefreshBluetooth ? 'Refresh demo reading' : 'Connect demo device'}</button>
               {vehicle.connectionStatus === 'CONNECTED' && (
                 <button type="button" className="ghost" onClick={() => void disconnectBluetooth()} disabled={syncing}><Unplug size={16} /> Disconnect</button>
               )}
@@ -390,7 +598,7 @@ export function VehicleDetailView({
             <div>
               <BatteryCharging size={25} />
               <strong>{battery == null ? '—' : `${battery}%`}</strong>
-              <span>{battery == null ? 'Not synced' : 'Remaining'}</span>
+              <span>{battery == null ? 'Not synced' : isDemoTelemetry ? 'Demo battery' : 'Remaining'}</span>
             </div>
           </div>
         </article>
@@ -444,7 +652,7 @@ export function VehicleDetailView({
       <aside className="vehicle-data-explainer">
         <div>
           <CircleAlert size={19} />
-          <p><strong>How Vidyut decides “charging” or “connected”</strong><br />The dashboard uses this vehicle’s latest saved reading. Bluetooth can read a battery only when the vehicle exposes the standard Battery Service; many manufacturers use protected apps and proprietary services.</p>
+          <p><strong>How Vidyut decides “charging” or “connected”</strong><br />The dashboard uses this vehicle’s latest saved reading. The Bluetooth demo maps a nearby device’s standard Battery Service to EV battery percentage and estimates range; it does not prove the vehicle is charging. Real manufacturers may require protected apps or proprietary services.</p>
         </div>
         <button type="button" onClick={openEditor}>Review data</button>
       </aside>
@@ -453,6 +661,30 @@ export function VehicleDetailView({
         <button type="button" onClick={onFindChargers}><MapPin size={17} /><span><strong>Find a compatible charger</strong><small>Filtered using {vehicle.connectorType || 'your connector'}</small></span></button>
         <button type="button" onClick={onOpenWallet}><Wallet size={17} /><span><strong>Open wallet</strong><small>Manage charging payments</small></span></button>
       </div>
+
+      {showBluetoothConsent && (
+        <div className="vehicle-detail-modal-backdrop" role="presentation" onMouseDown={() => !syncing && setShowBluetoothConsent(false)}>
+          <section className="vehicle-detail-modal vehicle-bluetooth-modal" role="dialog" aria-modal="true" aria-labelledby="bluetooth-demo-title" onMouseDown={(event) => event.stopPropagation()}>
+            <header>
+              <div><span>DEMO TELEMETRY ADAPTER</span><h2 id="bluetooth-demo-title">Use a Bluetooth battery as EV data?</h2><p>Useful for demonstrating Vidyut before real manufacturer telemetry is connected.</p></div>
+              <button type="button" onClick={() => setShowBluetoothConsent(false)} disabled={syncing} aria-label="Close Bluetooth demo"><X size={19} /></button>
+            </header>
+            <div className="vehicle-bluetooth-consent">
+              <div className="vehicle-bluetooth-hero"><span><FlaskConical size={24} /></span><div><strong>Safe, clearly labeled simulation</strong><p>The selected device’s battery percentage will be stored against {vehicle.makeAndModel} as demo data—not as verified vehicle telemetry.</p></div></div>
+              <ul>
+                <li><CheckCircle2 size={16} /><span><strong>Battery mapping</strong>The Bluetooth value becomes the demo EV state of charge.</span></li>
+                <li><Route size={16} /><span><strong>Range calculation</strong>Vidyut estimates range using {batteryCapacityKwh(vehicle.batteryCapacity)} kWh and 0.12 kWh/km.</span></li>
+                <li><Radio size={16} /><span><strong>Live when available</strong>Battery changes update automatically if the device supports notifications.</span></li>
+              </ul>
+              <p className="vehicle-bluetooth-warning"><CircleAlert size={16} /> This does not detect real EV charging, location, speed, diagnostics, Android Auto, or Apple CarPlay.</p>
+            </div>
+            <footer>
+              <button type="button" className="vehicle-secondary-button" onClick={() => setShowBluetoothConsent(false)} disabled={syncing}>Cancel</button>
+              <button type="button" className="vehicle-primary-button" onClick={() => { setShowBluetoothConsent(false); void syncBluetooth(); }} disabled={syncing}><Bluetooth size={16} />{syncing ? 'Opening picker…' : 'Choose Bluetooth device'}</button>
+            </footer>
+          </section>
+        </div>
+      )}
 
       {showEditor && form && (
         <div className="vehicle-detail-modal-backdrop" role="presentation" onMouseDown={() => !saving && setShowEditor(false)}>

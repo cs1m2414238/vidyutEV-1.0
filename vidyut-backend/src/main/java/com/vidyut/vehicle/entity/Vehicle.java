@@ -43,11 +43,20 @@ public class Vehicle {
     private Boolean androidAutoSupported;
     private Boolean appleCarPlaySupported;
     private String bluetoothDeviceName;
+    private String bluetoothDeviceId;
+    private String bluetoothServiceUuid;
+
+    @Builder.Default
+    private boolean btSessionControlEnabled = false;
+
+    @Builder.Default
+    private boolean btSimulatorEnabled = false;
     private String lastChargingStation;
     private String lastChargingAddress;
     private LocalDateTime lastChargedAt;
 
     @Enumerated(EnumType.STRING)
+    @Column(name = "telemetry_source")
     @Builder.Default
     private VehicleTelemetrySource telemetrySource = VehicleTelemetrySource.NOT_AVAILABLE;
 

@@ -1,8 +1,11 @@
 package com.vidyut.autopilot.controller;
 
 import com.vidyut.autopilot.dto.AutopilotProgressRequest;
+import com.vidyut.autopilot.dto.AutopilotPlanResponse;
 import com.vidyut.autopilot.dto.AutopilotTripRequest;
 import com.vidyut.autopilot.dto.AutopilotTripResponse;
+import com.vidyut.autopilot.dto.RouteExperienceRequest;
+import com.vidyut.autopilot.dto.RouteExperienceResponse;
 import com.vidyut.autopilot.service.AutopilotService;
 import com.vidyut.common.response.ApiResponse;
 import com.vidyut.common.util.CurrentUserUtil;
@@ -23,6 +26,14 @@ public class AutopilotController {
 
     private final AutopilotService autopilotService;
     private final CurrentUserUtil currentUser;
+
+    @PostMapping("/trips/preview")
+    public ResponseEntity<ApiResponse<AutopilotPlanResponse>> previewTrip(
+            @Valid @RequestBody AutopilotTripRequest request
+    ) {
+        return ResponseEntity.ok(ApiResponse.success("Autopilot proposal created without booking",
+                autopilotService.previewTrip(currentUser.getCurrentAccountId(), request)));
+    }
 
     @PostMapping("/trips")
     public ResponseEntity<ApiResponse<AutopilotTripResponse>> launchTrip(
@@ -63,5 +74,14 @@ public class AutopilotController {
     public ResponseEntity<ApiResponse<AutopilotTripResponse>> completeCharging(@PathVariable Long tripId) {
         return ResponseEntity.ok(ApiResponse.success("Charging completion processed",
                 autopilotService.completeCharging(tripId, currentUser.getCurrentAccountId())));
+    }
+
+    @PostMapping("/trips/{tripId}/experience")
+    public ResponseEntity<ApiResponse<RouteExperienceResponse>> recordExperience(
+            @PathVariable Long tripId,
+            @Valid @RequestBody RouteExperienceRequest request
+    ) {
+        return ResponseEntity.ok(ApiResponse.success("Route experience stored for future planning",
+                autopilotService.recordExperience(tripId, currentUser.getCurrentAccountId(), request)));
     }
 }

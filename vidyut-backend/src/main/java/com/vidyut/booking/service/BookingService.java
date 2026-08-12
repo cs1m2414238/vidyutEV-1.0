@@ -18,5 +18,6 @@ public interface BookingService {
     BookingResponse updateBookingStatus(Long id, BookingStatusUpdateRequest request);
     BookingResponse cancelBooking(Long id);
     BookingResponse cancelBooking(Long id, Long userId);
+    BookingResponse cancelBookingWithoutFee(Long id, Long userId, String reason);
     List<BookingSlotResponse> getAvailability(Long stationId, LocalDate date);
 }

@@ -29,6 +29,10 @@ public class VehicleResponse {
     private Boolean androidAutoSupported;
     private Boolean appleCarPlaySupported;
     private String bluetoothDeviceName;
+    private String bluetoothDeviceId;
+    private String bluetoothServiceUuid;
+    private boolean btSessionControlEnabled;
+    private boolean btSimulatorEnabled;
     private String lastChargingStation;
     private String lastChargingAddress;
     private LocalDateTime lastChargedAt;

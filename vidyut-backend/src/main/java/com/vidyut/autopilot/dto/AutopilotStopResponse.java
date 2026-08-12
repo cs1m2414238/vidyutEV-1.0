@@ -25,5 +25,8 @@ public class AutopilotStopResponse {
     private int estimatedWaitMinutes;
     private int chargingMinutes;
     private double estimatedCost;
+    private String selectionReason;
+    private String timingScore;
+    private String timingLabel;
     private AutopilotStopStatus status;
 }

@@ -17,3 +17,11 @@ export async function getActiveSessions(): Promise<ChargingSession[]> {
   try { const response = await apiClient.get<ApiResponse<ChargingSession[]>>('/ev/sessions/active'); return unwrapApiResponse(response.data); }
   catch (error) { throw new Error(getApiErrorMessage(error, 'Unable to load active charging.')); }
 }
+export async function updateSessionSoc(id: number | string, batteryPercent: number, simulated: boolean): Promise<ChargingSession> {
+  try { const response = await apiClient.patch<ApiResponse<ChargingSession>>(`/ev/sessions/${id}/soc`, { batteryPercent, simulated }); return unwrapApiResponse(response.data); }
+  catch (error) { throw new Error(getApiErrorMessage(error, 'Unable to update live battery status.')); }
+}
+export async function controlSession(id: number | string, action: 'START' | 'STOP'): Promise<ChargingSession> {
+  try { const response = await apiClient.post<ApiResponse<ChargingSession>>(`/ev/sessions/${id}/control`, { action }); return unwrapApiResponse(response.data); }
+  catch (error) { throw new Error(getApiErrorMessage(error, 'Bluetooth session control failed.')); }
+}

@@ -7,6 +7,8 @@ import com.vidyut.vehicle.repository.VehicleRepository;
 import com.vidyut.wallet.dto.*;
 import com.vidyut.wallet.entity.*;
 import com.vidyut.wallet.repository.*;
+import com.vidyut.notification.entity.NotificationType;
+import com.vidyut.notification.service.NotificationService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -25,6 +27,7 @@ public class VehicleWalletServiceImpl implements VehicleWalletService {
     private final VehicleWalletTransactionRepository transactionRepository;
     private final VehicleRepository vehicleRepository;
     private final VehicleAutoRechargeRuleRepository autoRechargeRuleRepository;
+    private final NotificationService notificationService;
 
     @Value("${vidyut.payments.demo-enabled:false}")
     private boolean demoPaymentsEnabled;
@@ -76,6 +79,9 @@ public class VehicleWalletServiceImpl implements VehicleWalletService {
             rule.setLastTriggeredAt(LocalDateTime.now());
             rule.setUpdatedAt(LocalDateTime.now());
             autoRechargeRuleRepository.save(rule);
+            notificationService.sendNotification(userId, "Vehicle wallet auto-recharged",
+                    "₹" + rule.getRechargeAmount() + " was added for " + vehicle.getMakeAndModel() + ".",
+                    NotificationType.AUTO_RECHARGE, "vidyut://wallet");
         }
         if (wallet.getBalance() < amount) throw new BadRequestException("Insufficient vehicle wallet balance");
         double before = wallet.getBalance();
@@ -84,6 +90,11 @@ public class VehicleWalletServiceImpl implements VehicleWalletService {
         walletRepository.save(wallet);
         saveTransaction(wallet, -amount, before, wallet.getBalance(), bookingId,
                 TransactionType.CHARGING_PAYMENT, description, null, null);
+        if (wallet.getBalance() < LOW_BALANCE_THRESHOLD) {
+            notificationService.sendNotification(userId, "Vehicle wallet balance is low",
+                    "₹" + wallet.getBalance() + " remains for " + vehicle.getMakeAndModel() + ".",
+                    NotificationType.WALLET_LOW_BALANCE, "vidyut://wallet");
+        }
         return map(wallet);
     }
 

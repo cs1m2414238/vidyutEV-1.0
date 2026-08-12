@@ -23,6 +23,12 @@ public interface BookingRepository extends JpaRepository<Booking, Long> {
     List<Booking> findByStationIdInOrderByStartTimeDesc(List<Long> stationIds);
     long countByUserIdAndSeenFalseAndStatusIn(Long userId, Collection<BookingStatus> statuses);
 
+    @Query("select b from Booking b where b.status = :status and b.reminderSent = false " +
+            "and b.startTime between :from and :to order by b.startTime asc")
+    List<Booking> findPendingReminders(@Param("status") BookingStatus status,
+                                       @Param("from") LocalDateTime from,
+                                       @Param("to") LocalDateTime to);
+
     @Query("select count(b) from Booking b where b.stationId = :stationId " +
             "and b.status in :statuses and b.startTime < :endTime and b.endTime > :startTime")
     long countOverlapping(@Param("stationId") Long stationId,

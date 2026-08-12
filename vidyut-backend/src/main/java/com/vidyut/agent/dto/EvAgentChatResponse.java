@@ -1,5 +1,6 @@
 package com.vidyut.agent.dto;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -17,4 +18,6 @@ public class EvAgentChatResponse {
     private String reply;
     private String model;
     private List<AgentToolCallResponse> toolCalls;
+    private JsonNode plan;
+    private JsonNode actionResult;
 }

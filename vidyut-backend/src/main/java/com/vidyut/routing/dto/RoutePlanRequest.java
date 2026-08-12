@@ -18,6 +18,8 @@ public class RoutePlanRequest {
     @NotBlank(message = "Destination location is required")
     private String destination;
 
+    private String tripPurpose;
+
     private double currentBatteryPercent;
     private Long vehicleId;
     private Double originLatitude;

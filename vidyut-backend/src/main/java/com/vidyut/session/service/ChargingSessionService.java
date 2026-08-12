@@ -10,4 +10,6 @@ public interface ChargingSessionService {
     List<ChargingSessionResponse> getActive(Long userId);
     ChargingSessionResponse stop(Long userId, Long sessionId);
     ChargingSessionResponse pay(Long userId, Long sessionId);
+    ChargingSessionResponse updateSoc(Long userId, Long sessionId, int batteryPercent, boolean simulated);
+    ChargingSessionResponse control(Long userId, Long sessionId, String action);
 }

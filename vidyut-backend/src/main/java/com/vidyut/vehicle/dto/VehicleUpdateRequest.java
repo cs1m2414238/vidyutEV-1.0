@@ -31,6 +31,10 @@ public class VehicleUpdateRequest {
     private Boolean androidAutoSupported;
     private Boolean appleCarPlaySupported;
     private String bluetoothDeviceName;
+    private String bluetoothDeviceId;
+    private String bluetoothServiceUuid;
+    private Boolean btSessionControlEnabled;
+    private Boolean btSimulatorEnabled;
     private String lastChargingStation;
     private String lastChargingAddress;
     private LocalDateTime lastChargedAt;

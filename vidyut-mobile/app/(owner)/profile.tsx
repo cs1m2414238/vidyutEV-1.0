@@ -100,6 +100,17 @@ export default function ProfileScreen() {
             <Ionicons name="chevron-forward" size={20} color={Colors.textMuted} />
           </TouchableOpacity>
 
+          <TouchableOpacity style={styles.menuItem} onPress={() => router.push('/bluetooth')}>
+            <View style={styles.menuIconWrapper}>
+              <Ionicons name="bluetooth" size={22} color={Colors.primary} />
+            </View>
+            <View style={styles.menuTextContainer}>
+              <Text style={styles.menuTitle}>Bluetooth & live battery</Text>
+              <Text style={styles.menuSubtitle}>Pair an EV, use simulator mode and control sessions</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={20} color={Colors.textMuted} />
+          </TouchableOpacity>
+
           <TouchableOpacity style={styles.menuItem} onPress={() => router.push('/(owner)/wallet')}>
             <View style={styles.menuIconWrapper}>
               <Ionicons name="card-outline" size={22} color={Colors.primary} />
