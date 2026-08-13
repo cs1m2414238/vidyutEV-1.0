@@ -70,11 +70,33 @@ public class AutopilotService {
 
     private static final double ENERGY_PER_KM_KWH = 0.12;
     private static final double ROAD_DISTANCE_FACTOR = 1.12;
-    private static final int MAX_STOPS = 5;
+    // A cross-country route such as Srinagar -> Kanyakumari needs more than five
+    // safe charging legs. Keep a finite guard, but allow the nationwide demo
+    // network to build realistic long-distance plans.
+    private static final int MAX_STOPS = 20;
 
     private static final Map<String, GeoPoint> CITY_COORDINATES = Map.ofEntries(
+            Map.entry("leh", new GeoPoint(34.1526, 77.5771)),
+            Map.entry("keylong", new GeoPoint(32.5715, 77.0243)),
+            Map.entry("manali", new GeoPoint(32.2432, 77.1892)),
+            Map.entry("kargil", new GeoPoint(34.5539, 76.1349)),
+            Map.entry("srinagar", new GeoPoint(34.0837, 74.7973)),
+            Map.entry("jammu", new GeoPoint(32.7266, 74.8570)),
+            Map.entry("pathankot", new GeoPoint(32.2643, 75.6421)),
+            Map.entry("jalandhar", new GeoPoint(31.3260, 75.5762)),
+            Map.entry("ludhiana", new GeoPoint(30.9010, 75.8573)),
+            Map.entry("chandigarh", new GeoPoint(30.7333, 76.7794)),
+            Map.entry("ambala", new GeoPoint(30.3782, 76.7767)),
+            Map.entry("karnal", new GeoPoint(29.6857, 76.9905)),
+            Map.entry("panipat", new GeoPoint(29.3909, 76.9635)),
+            Map.entry("shimla", new GeoPoint(31.1048, 77.1734)),
+            Map.entry("dehradun", new GeoPoint(30.3165, 78.0322)),
+            Map.entry("haridwar", new GeoPoint(29.9457, 78.1642)),
             Map.entry("kanpur", new GeoPoint(26.4499, 80.3319)),
             Map.entry("lucknow", new GeoPoint(26.8467, 80.9462)),
+            Map.entry("prayagraj", new GeoPoint(25.4358, 81.8463)),
+            Map.entry("varanasi", new GeoPoint(25.3176, 82.9739)),
+            Map.entry("gorakhpur", new GeoPoint(26.7606, 83.3732)),
             Map.entry("etawah", new GeoPoint(26.7829, 79.0277)),
             Map.entry("agra", new GeoPoint(27.1767, 78.0081)),
             Map.entry("mathura", new GeoPoint(27.4924, 77.6737)),
@@ -82,13 +104,89 @@ public class AutopilotService {
             Map.entry("noida", new GeoPoint(28.5355, 77.3910)),
             Map.entry("delhi", new GeoPoint(28.6139, 77.2090)),
             Map.entry("gurugram", new GeoPoint(28.4595, 77.0266)),
+            Map.entry("rewari", new GeoPoint(28.1920, 76.6191)),
             Map.entry("jaipur", new GeoPoint(26.9124, 75.7873)),
             Map.entry("kishangarh", new GeoPoint(26.5906, 74.8564)),
+            Map.entry("ajmer", new GeoPoint(26.4499, 74.6399)),
+            Map.entry("jodhpur", new GeoPoint(26.2389, 73.0243)),
+            Map.entry("jaisalmer", new GeoPoint(26.9157, 70.9083)),
+            Map.entry("kota", new GeoPoint(25.2138, 75.8648)),
             Map.entry("udaipur", new GeoPoint(24.5854, 73.7125)),
             Map.entry("ahmedabad", new GeoPoint(23.0225, 72.5714)),
+            Map.entry("rajkot", new GeoPoint(22.3039, 70.8022)),
+            Map.entry("gandhidham", new GeoPoint(23.0753, 70.1337)),
+            Map.entry("bhuj", new GeoPoint(23.2419, 69.6669)),
             Map.entry("vadodara", new GeoPoint(22.3072, 73.1812)),
             Map.entry("surat", new GeoPoint(21.1702, 72.8311)),
-            Map.entry("mumbai", new GeoPoint(19.0760, 72.8777))
+            Map.entry("nashik", new GeoPoint(19.9975, 73.7898)),
+            Map.entry("mumbai", new GeoPoint(19.0760, 72.8777)),
+            Map.entry("pune", new GeoPoint(18.5204, 73.8567)),
+            Map.entry("kolhapur", new GeoPoint(16.7050, 74.2433)),
+            Map.entry("goa", new GeoPoint(15.4909, 73.8278)),
+            Map.entry("gwalior", new GeoPoint(26.2183, 78.1828)),
+            Map.entry("jhansi", new GeoPoint(25.4484, 78.5685)),
+            Map.entry("sagar", new GeoPoint(23.8388, 78.7378)),
+            Map.entry("bhopal", new GeoPoint(23.2599, 77.4126)),
+            Map.entry("indore", new GeoPoint(22.7196, 75.8577)),
+            Map.entry("dhule", new GeoPoint(20.9042, 74.7749)),
+            Map.entry("aurangabad", new GeoPoint(19.8762, 75.3433)),
+            Map.entry("amravati", new GeoPoint(20.9374, 77.7796)),
+            Map.entry("nagpur", new GeoPoint(21.1458, 79.0882)),
+            Map.entry("jabalpur", new GeoPoint(23.1815, 79.9864)),
+            Map.entry("raipur", new GeoPoint(21.2514, 81.6296)),
+            Map.entry("sambalpur", new GeoPoint(21.4669, 83.9812)),
+            Map.entry("patna", new GeoPoint(25.5941, 85.1376)),
+            Map.entry("ranchi", new GeoPoint(23.3441, 85.3096)),
+            Map.entry("dhanbad", new GeoPoint(23.7957, 86.4304)),
+            Map.entry("durgapur", new GeoPoint(23.5204, 87.3119)),
+            Map.entry("kolkata", new GeoPoint(22.5726, 88.3639)),
+            Map.entry("calcutta", new GeoPoint(22.5726, 88.3639)),
+            Map.entry("berhampore", new GeoPoint(24.0988, 88.2679)),
+            Map.entry("malda", new GeoPoint(25.0108, 88.1411)),
+            Map.entry("raiganj", new GeoPoint(25.6185, 88.1256)),
+            Map.entry("siliguri", new GeoPoint(26.7271, 88.3953)),
+            Map.entry("alipurduar", new GeoPoint(26.4919, 89.5271)),
+            Map.entry("kokrajhar", new GeoPoint(26.4011, 90.2725)),
+            Map.entry("guwahati", new GeoPoint(26.1445, 91.7362)),
+            Map.entry("shillong", new GeoPoint(25.5788, 91.8933)),
+            Map.entry("nagaon", new GeoPoint(26.3464, 92.6840)),
+            Map.entry("dimapur", new GeoPoint(25.9091, 93.7266)),
+            Map.entry("kohima", new GeoPoint(25.6751, 94.1086)),
+            Map.entry("imphal", new GeoPoint(24.8170, 93.9368)),
+            Map.entry("haflong", new GeoPoint(25.1648, 93.0176)),
+            Map.entry("silchar", new GeoPoint(24.8333, 92.7789)),
+            Map.entry("aizawl", new GeoPoint(23.7271, 92.7176)),
+            Map.entry("agartala", new GeoPoint(23.8315, 91.2868)),
+            Map.entry("bhubaneswar", new GeoPoint(20.2961, 85.8245)),
+            Map.entry("berhampur", new GeoPoint(19.3149, 84.7941)),
+            Map.entry("visakhapatnam", new GeoPoint(17.6868, 83.2185)),
+            Map.entry("rajahmundry", new GeoPoint(17.0005, 81.8040)),
+            Map.entry("vijayawada", new GeoPoint(16.5062, 80.6480)),
+            Map.entry("nellore", new GeoPoint(14.4426, 79.9865)),
+            Map.entry("chennai", new GeoPoint(13.0827, 80.2707)),
+            Map.entry("puducherry", new GeoPoint(11.9416, 79.8083)),
+            Map.entry("pondicherry", new GeoPoint(11.9416, 79.8083)),
+            Map.entry("tirupati", new GeoPoint(13.6288, 79.4192)),
+            Map.entry("adilabad", new GeoPoint(19.6641, 78.5320)),
+            Map.entry("nizamabad", new GeoPoint(18.6725, 78.0941)),
+            Map.entry("hyderabad", new GeoPoint(17.3850, 78.4867)),
+            Map.entry("kurnool", new GeoPoint(15.8281, 78.0373)),
+            Map.entry("anantapur", new GeoPoint(14.6819, 77.6006)),
+            Map.entry("bengaluru", new GeoPoint(12.9716, 77.5946)),
+            Map.entry("bangalore", new GeoPoint(12.9716, 77.5946)),
+            Map.entry("mysuru", new GeoPoint(12.2958, 76.6394)),
+            Map.entry("mangalore", new GeoPoint(12.9141, 74.8560)),
+            Map.entry("mangaluru", new GeoPoint(12.9141, 74.8560)),
+            Map.entry("hubballi", new GeoPoint(15.3647, 75.1240)),
+            Map.entry("belagavi", new GeoPoint(15.8497, 74.4977)),
+            Map.entry("salem", new GeoPoint(11.6643, 78.1460)),
+            Map.entry("coimbatore", new GeoPoint(11.0168, 76.9558)),
+            Map.entry("kochi", new GeoPoint(9.9312, 76.2673)),
+            Map.entry("cochin", new GeoPoint(9.9312, 76.2673)),
+            Map.entry("thiruvananthapuram", new GeoPoint(8.5241, 76.9366)),
+            Map.entry("trivandrum", new GeoPoint(8.5241, 76.9366)),
+            Map.entry("madurai", new GeoPoint(9.9252, 78.1198)),
+            Map.entry("kanyakumari", new GeoPoint(8.0883, 77.5385))
     );
 
     private final AutopilotTripRepository tripRepository;
@@ -124,7 +222,8 @@ public class AutopilotService {
                 capacityKwh,
                 request.getCurrentBatteryPercent(),
                 request.getMinimumArrivalBatteryPercent(),
-                purpose
+                purpose,
+                optimization
         );
 
         AutopilotTrip proposal = AutopilotTrip.builder()
@@ -256,7 +355,8 @@ public class AutopilotService {
                 capacityKwh,
                 request.getCurrentBatteryPercent(),
                 request.getMinimumArrivalBatteryPercent(),
-                purpose
+                purpose,
+                optimization
         );
 
         AutopilotTrip trip = tripRepository.save(AutopilotTrip.builder()
@@ -691,7 +791,8 @@ public class AutopilotService {
             double capacityKwh,
             double startingBattery,
             double minimumBattery,
-            TripPurpose purpose
+            TripPurpose purpose,
+            String optimizeFor
     ) {
         List<Candidate> selected = new ArrayList<>();
         Set<Long> used = new HashSet<>();
@@ -720,8 +821,16 @@ public class AutopilotService {
                     .mapToDouble(Candidate::distanceFromOriginKm)
                     .max()
                     .orElseThrow();
+            // Time-first routes stay close to the furthest safe progress point.
+            // Cost-first routes may accept a shorter leg when a substantially
+            // cheaper value charger is available, while still moving forward.
+            double progressWindowKm = switch (optimizeFor) {
+                case "COST" -> 105;
+                case "BALANCED" -> 60;
+                default -> 35;
+            };
             Candidate chosen = reachable.stream()
-                    .filter(candidate -> candidate.distanceFromOriginKm() >= furthestMarker - 35)
+                    .filter(candidate -> candidate.distanceFromOriginKm() >= furthestMarker - progressWindowKm)
                     .min(Comparator.comparingDouble(Candidate::impactMinutes))
                     .orElseThrow();
             selected.add(chosen);

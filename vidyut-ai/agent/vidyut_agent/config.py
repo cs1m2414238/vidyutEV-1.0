@@ -29,6 +29,7 @@ def _env_true(name: str) -> bool:
 @dataclass(frozen=True)
 class Settings:
     model: str
+    fallback_models: tuple[str, ...]
     backend_base_url: str
     backend_timeout_seconds: float
 
@@ -51,6 +52,16 @@ def load_settings() -> Settings:
     model = os.getenv("VIDYUT_AGENT_MODEL", "gemini-3.5-flash").strip()
     if not model:
         raise RuntimeError("VIDYUT_AGENT_MODEL cannot be empty")
+    fallback_models = tuple(
+        candidate
+        for candidate in (
+            value.strip()
+            for value in os.getenv(
+                "VIDYUT_AGENT_FALLBACK_MODELS", "gemini-3.5-flash-lite"
+            ).split(",")
+        )
+        if candidate and candidate != model
+    )
 
     backend_base_url = os.getenv(
         "VIDYUT_BACKEND_BASE_URL", "http://localhost:8080"
@@ -60,6 +71,7 @@ def load_settings() -> Settings:
 
     return Settings(
         model=model,
+        fallback_models=fallback_models,
         backend_base_url=backend_base_url,
         backend_timeout_seconds=_positive_float(
             "VIDYUT_BACKEND_TIMEOUT_SECONDS", 15

@@ -24,6 +24,18 @@ runner = Runner(
     agent=root_agent,
     session_service=session_service,
 )
+model_runners: list[tuple[str, Runner]] = [(settings.model, runner)]
+model_runners.extend(
+    (
+        model,
+        Runner(
+            app_name=APP_NAME,
+            agent=root_agent.model_copy(update={"model": model}),
+            session_service=session_service,
+        ),
+    )
+    for model in settings.fallback_models
+)
 
 app = FastAPI(
     title="Vidyut Autopilot Agent",
@@ -117,6 +129,21 @@ def _record_tool_events(
             artifacts["actionResult"] = data
 
 
+def _is_quota_error(exc: Exception) -> bool:
+    """Recognize quota exhaustion without depending on one SDK exception type."""
+    current: BaseException | None = exc
+    visited: set[int] = set()
+    while current is not None and id(current) not in visited:
+        visited.add(id(current))
+        code = getattr(current, "code", None)
+        status_code = getattr(current, "status_code", None)
+        message = str(current).upper()
+        if code == 429 or status_code == 429 or "RESOURCE_EXHAUSTED" in message:
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
 async def _ensure_session(user_id: str, session_id: str) -> None:
     existing = await session_service.get_session(
         app_name=APP_NAME,
@@ -136,6 +163,7 @@ async def health() -> dict[str, Any]:
     return {
         "status": "ready" if settings.google_auth_configured else "configuration-required",
         "model": settings.model,
+        "fallbackModels": list(settings.fallback_models),
         "geminiAuthenticationConfigured": settings.google_auth_configured,
         "backendBaseUrl": settings.backend_base_url,
     }
@@ -173,22 +201,53 @@ async def chat(
     reply = ""
     tool_states: dict[str, str] = {}
     artifacts: dict[str, dict[str, Any]] = {}
+    used_model = settings.model
     try:
         message = types.Content(
             role="user",
             parts=[types.Part.from_text(text=request.message)],
         )
-        async for event in runner.run_async(
-            user_id=user_id,
-            session_id=session_id,
-            invocation_id=request_id,
-            new_message=message,
-        ):
-            _record_tool_events(event, tool_states, artifacts)
-            if event.is_final_response():
-                final_text = _text_from_event(event)
-                if final_text:
-                    reply = final_text
+        last_quota_error: Exception | None = None
+        for attempt, (model, active_runner) in enumerate(model_runners):
+            try:
+                async for event in active_runner.run_async(
+                    user_id=user_id,
+                    session_id=session_id,
+                    invocation_id=request_id if attempt == 0 else f"{request_id}-fallback-{attempt}",
+                    new_message=message,
+                ):
+                    _record_tool_events(event, tool_states, artifacts)
+                    if event.is_final_response():
+                        final_text = _text_from_event(event)
+                        if final_text:
+                            reply = final_text
+                used_model = model
+                break
+            except Exception as exc:
+                if not _is_quota_error(exc):
+                    raise
+                last_quota_error = exc
+                logger.warning(
+                    "Gemini quota exhausted model=%s request_id=%s; fallback_available=%s",
+                    model,
+                    request_id,
+                    attempt + 1 < len(model_runners),
+                )
+                # Never replay an agent turn after a tool may already have changed
+                # state. The caller receives a precise retryable quota response.
+                if tool_states:
+                    break
+        else:
+            last_quota_error = last_quota_error or RuntimeError("Gemini quota exhausted")
+
+        if not reply and last_quota_error is not None:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=(
+                    "Gemini quota is currently exhausted for the configured models. "
+                    "Retry after the quota window resets or configure billing."
+                ),
+            ) from last_quota_error
     except HTTPException:
         raise
     except Exception as exc:
@@ -214,7 +273,7 @@ async def chat(
         sessionId=session_id,
         requestId=request_id,
         reply=reply,
-        model=settings.model,
+        model=used_model,
         toolCalls=[
             ToolCallResponse(name=name, status=tool_status)
             for name, tool_status in tool_states.items()
