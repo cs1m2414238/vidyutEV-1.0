@@ -25,7 +25,7 @@ public class AiAgentGateway {
     public AiAgentGateway(
             RestClient.Builder restClientBuilder,
             ObjectMapper objectMapper,
-            @Value("${vidyut.agent.base-url:http://localhost:8001}") String agentBaseUrl
+            @Value("${vidyut.agent.base-url}") String agentBaseUrl
     ) {
         this.restClient = restClientBuilder.baseUrl(agentBaseUrl).build();
         this.objectMapper = objectMapper;

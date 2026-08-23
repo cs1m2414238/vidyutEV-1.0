@@ -7,10 +7,13 @@ import {
   CreditCard,
   Plus,
   RefreshCw,
+  ScanLine,
   ShieldCheck,
   Sparkles,
   WalletCards,
+  X,
 } from 'lucide-react';
+import { QRCodeSVG } from 'qrcode.react';
 import { apiRequest } from '../services/api';
 
 interface Vehicle {
@@ -95,6 +98,7 @@ export function WalletView({ token, onOpenVehicles }: { token: string; onOpenVeh
   const [draft, setDraft] = useState<RuleDraft>(defaultRule);
   const [topUpAmount, setTopUpAmount] = useState(1000);
   const [showVehicleForm, setShowVehicleForm] = useState(false);
+  const [showWalletQr, setShowWalletQr] = useState(false);
   const [vehicleForm, setVehicleForm] = useState({ makeAndModel: '', registrationNumber: '', batteryCapacity: '', connectorType: 'CCS2' });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -244,6 +248,7 @@ export function WalletView({ token, onOpenVehicles }: { token: string; onOpenVeh
             </label>
             <button onClick={() => void topUp()} disabled={saving || loading}><Plus size={15} /> Add money</button>
           </div>
+          {selectedWallet?.tagUid && <button className="wallet-qr-trigger" onClick={() => setShowWalletQr(true)}><ScanLine size={15} /> Show vehicle wallet QR</button>}
         </article>
 
         <article className="wallet-stat-card">
@@ -356,6 +361,8 @@ export function WalletView({ token, onOpenVehicles }: { token: string; onOpenVeh
           <button className="manage-vehicles" onClick={onOpenVehicles}>Manage all vehicles <ArrowUpRight size={14} /></button>
         </section>
       </div>
+
+      {showWalletQr && selectedWallet && <div className="wallet-qr-backdrop" role="presentation" onMouseDown={() => setShowWalletQr(false)}><section className="wallet-qr-modal" role="dialog" aria-modal="true" aria-labelledby="wallet-qr-title" onMouseDown={(event) => event.stopPropagation()}><header><div><span>VEHICLE WALLET TAG</span><h2 id="wallet-qr-title">Scan to identify this EV wallet</h2></div><button onClick={() => setShowWalletQr(false)} aria-label="Close wallet QR"><X size={19} /></button></header><div className="wallet-qr-code"><QRCodeSVG value={`vidyut://wallet/${selectedWallet.tagUid}`} size={238} level="H" includeMargin /></div><strong>{selectedWallet.vehicleName}</strong><p>{selectedWallet.registrationNumber} · {selectedWallet.tagUid}</p><small>Use at Vidyut chargers that support QR identification. The charging payment still requires an authenticated booking.</small></section></div>}
 
       {showVehicleForm && (
         <div className="vehicle-form-backdrop" role="presentation" onMouseDown={() => setShowVehicleForm(false)}>

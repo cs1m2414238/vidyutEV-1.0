@@ -1,10 +1,16 @@
 package com.vidyut.host.service;
 
 import com.vidyut.account.entity.*;
+import com.vidyut.autopilot.service.AutopilotService;
 import com.vidyut.email.service.EmailService;
 import com.vidyut.account.repository.AccountRepository;
 import com.vidyut.account.repository.EvUserProfileRepository;
 import com.vidyut.account.repository.HostProfileRepository;
+import com.vidyut.admin.entity.GreenSchemeStatus;
+import com.vidyut.admin.repository.AdminGreenSchemeRepository;
+import com.vidyut.admin.entity.IncidentSeverity;
+import com.vidyut.admin.service.AdminControlService;
+import com.vidyut.admin.service.OperationalControlService;
 import com.vidyut.booking.entity.*;
 import com.vidyut.booking.repository.BookingRepository;
 import com.vidyut.booking.service.WaitlistService;
@@ -21,6 +27,11 @@ import com.vidyut.station.dto.*;
 import com.vidyut.station.entity.*;
 import com.vidyut.station.repository.*;
 import com.vidyut.station.service.ChargingStationService;
+import com.vidyut.session.entity.ChargingSession;
+import com.vidyut.session.entity.ChargingSessionStatus;
+import com.vidyut.session.repository.ChargingSessionRepository;
+import com.vidyut.vehicle.entity.Vehicle;
+import com.vidyut.vehicle.repository.VehicleRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -50,6 +61,12 @@ public class HostOperationsService {
     private final HostReviewRepository reviewRepository;
     private final NotificationService notificationService;
     private final EmailService emailService;
+    private final AutopilotService autopilotService;
+    private final ChargingSessionRepository sessionRepository;
+    private final VehicleRepository vehicleRepository;
+    private final AdminGreenSchemeRepository greenSchemeRepository;
+    private final AdminControlService adminControlService;
+    private final OperationalControlService operationalControlService;
 
     public HostProfileResponse profile(Long accountId) {
         return mapProfile(requireHost(accountId));
@@ -207,8 +224,44 @@ public class HostOperationsService {
     public Map<String, Object> updateChargerStatus(Long accountId, Long connectorId, HostChargerStatusRequest request) {
         requireOperationalHost(accountId);
         ChargingConnector connector = ownedConnector(accountId, connectorId);
+        if (request.getStatus() == ChargerStatus.CHARGING) {
+            throw new BadRequestException("Occupied status is controlled by a live charging session, not set manually");
+        }
+        boolean disruptive = request.getStatus() == ChargerStatus.MAINTENANCE
+                || request.getStatus() == ChargerStatus.OFFLINE
+                || request.getStatus() == ChargerStatus.FAULT;
+        if (disruptive && !request.isImpactApproved()) {
+            throw new BadRequestException("Review affected journeys and reservations before changing charger availability");
+        }
+        if (disruptive) {
+            sessionRepository.findFirstByConnectorIdAndStatusOrderByStartedAtDesc(
+                    connectorId, ChargingSessionStatus.ACTIVE).ifPresent(session -> {
+                session.setStatus(ChargingSessionStatus.COMPLETED);
+                session.setPaymentStatus("INTERRUPTED");
+                session.setCompletedAt(LocalDateTime.now());
+                session.setEstimatedCompletionAt(LocalDateTime.now());
+                session.setUpdatedAt(LocalDateTime.now());
+                sessionRepository.save(session);
+                bookingRepository.findById(session.getBookingId()).ifPresent(booking -> {
+                    booking.setStatus(BookingStatus.COMPLETED);
+                    booking.setKwhDelivered(session.getEnergyKwh());
+                    booking.setTotalAmount(session.getCost());
+                    bookingRepository.save(booking);
+                });
+                if (session.getVehicleId() != null) {
+                    vehicleRepository.findById(session.getVehicleId()).ifPresent(vehicle -> {
+                        vehicle.setCharging(false);
+                        vehicle.setConnectionStatus(com.vidyut.vehicle.entity.VehicleConnectionStatus.DISCONNECTED);
+                        vehicle.setTelemetrySource(com.vidyut.vehicle.entity.VehicleTelemetrySource.CHARGING_SESSION);
+                        vehicle.setTelemetryUpdatedAt(LocalDateTime.now());
+                        vehicleRepository.save(vehicle);
+                    });
+                }
+            });
+        }
         connector.setStatus(request.getStatus());
         connector.setAvailable(request.getStatus() == ChargerStatus.ONLINE);
+        connector.setMaintenanceMode(request.getStatus() == ChargerStatus.MAINTENANCE);
         connector.setCurrentPowerKw(request.getCurrentPowerKw());
         connector.setSessionEnergyKwh(request.getSessionEnergyKwh());
         connector.setHealthScore(request.getHealthScore());
@@ -219,12 +272,139 @@ public class HostOperationsService {
         if (request.getStatus() != ChargerStatus.CHARGING)
             connector.setSessionStartedAt(null);
         connectorRepository.save(connector);
+        ChargingStation station = connector.getStation();
+        boolean stationHasLiveConnector = station.getConnectors().stream().anyMatch(candidate ->
+                candidate.isAvailable() && !candidate.isMaintenanceMode()
+                        && candidate.getStatus() == ChargerStatus.ONLINE);
+        if (stationHasLiveConnector) {
+            station.setStatus(StationStatus.ACTIVE);
+            station.setAvailability(StationAvailability.AVAILABLE);
+            station.setEmergencyDisabled(false);
+        } else {
+            station.setStatus(request.getStatus() == ChargerStatus.MAINTENANCE
+                    ? StationStatus.MAINTENANCE : StationStatus.OFFLINE);
+            station.setAvailability(StationAvailability.UNAVAILABLE);
+        }
+        stationRepository.save(station);
+        Map<String, Object> networkResult = disruptive
+                ? autopilotService.handleConnectorUnavailable(
+                        station.getId(), connector.getType().name(), connector.getId(),
+                        "The station host approved " + request.getStatus().name().toLowerCase(Locale.ROOT) + ".")
+                : Map.of("affectedJourneys", 0, "automaticReroutes", 0, "driverApprovals", 0,
+                        "replanRequired", 0, "backupConnectorAvailable", false);
+        if (disruptive) {
+            adminControlService.recordDetectedIncident(station, connector,
+                    request.getStatus() == ChargerStatus.FAULT ? IncidentSeverity.CRITICAL : IncidentSeverity.HIGH,
+                    "Host reported " + Objects.toString(request.getFaultCode(), request.getStatus().name()),
+                    request.getStatus() == ChargerStatus.FAULT ? 180 : 120, networkResult);
+        }
         if (request.getStatus() == ChargerStatus.FAULT) {
             notificationService.sendNotification(accountId, "Charger fault detected",
                     connector.getChargerCode() + " reported " + Objects.toString(request.getFaultCode(), "a fault"),
                     NotificationType.FAULT_ALERT);
         }
-        return mapConnector(connector);
+        if (disruptive) {
+            notificationService.sendNotification(accountId, "Maintenance change propagated",
+                    networkResult.get("automaticReroutes") + " journey rerouted automatically · "
+                            + networkResult.get("driverApprovals") + " driver approval(s) requested.",
+                    NotificationType.SYSTEM_ALERT);
+        }
+        Map<String, Object> response = new LinkedHashMap<>(mapConnector(connector));
+        response.put("networkResult", networkResult);
+        return response;
+    }
+
+    public Map<String, Object> maintenanceImpact(Long accountId, Long connectorId) {
+        requireOperationalHost(accountId);
+        ChargingConnector connector = ownedConnector(accountId, connectorId);
+        Map<String, Object> journeyImpact = autopilotService.connectorDisruptionImpact(
+                connector.getStation().getId(), connector.getType().name(), connector.getId());
+        long upcomingReservations = bookingRepository.findByStationId(connector.getStation().getId()).stream()
+                .filter(booking -> booking.getStatus() == BookingStatus.PENDING
+                        || booking.getStatus() == BookingStatus.CONFIRMED
+                        || booking.getStatus() == BookingStatus.IN_PROGRESS)
+                .count();
+        List<Map<String, Object>> alternatives = alternativeStationScenarios(connector);
+        Map<String, Object> bestAlternative = alternatives.isEmpty() ? null : alternatives.get(0);
+        double repairEstimate = connector.getPowerKw() >= 100 ? 4_500 : 2_800;
+        double lostRevenueNextThreeHours = connector.getStation().isDemoData()
+                ? 1_840 : round(Math.max(1, upcomingReservations) * 420);
+        double revenueLoss24Hours = connector.getStation().isDemoData()
+                ? 6_700 : round(lostRevenueNextThreeHours * 2.8);
+        int affectedUsers = ((Number) journeyImpact.get("activeJourneys")).intValue()
+                + Math.toIntExact(upcomingReservations);
+        return linkedMap(
+                "connectorId", connector.getId(),
+                "chargerCode", connector.getChargerCode(),
+                "stationId", connector.getStation().getId(),
+                "stationName", connector.getStation().getName(),
+                "operatorCompanyName", Objects.toString(connector.getStation().getOperatorCompanyName(), "Host operated"),
+                "faultCode", Objects.toString(connector.getFaultCode(), "COOLING_SYSTEM_TEMP_HIGH"),
+                "estimatedRepairHours", connector.getPowerKw() >= 100 ? 3 : 2,
+                "repairEstimate", repairEstimate,
+                "estimatedLostRevenueNext3Hours", lostRevenueNextThreeHours,
+                "estimatedRevenueLoss24Hours", revenueLoss24Hours,
+                "repairRecommendation", repairEstimate < revenueLoss24Hours
+                        ? "REPAIR_NOW" : "COMPARE_REPAIR_AND_REPLACEMENT",
+                "activeJourneys", journeyImpact.get("activeJourneys"),
+                "automaticReroutes", journeyImpact.get("automaticReroutes"),
+                "driverApprovals", journeyImpact.get("driverApprovals"),
+                "upcomingReservations", upcomingReservations,
+                "backupConnectorAvailable", journeyImpact.get("backupConnectorAvailable"),
+                "affectedUsers", affectedUsers,
+                "recommendedAlternatives", alternatives,
+                "modeledUserImpact", bestAlternative == null
+                        ? linkedMap("extraDistanceKm", 0, "delayMinutes", 0, "chargingCostDifference", 0,
+                                "extraBatteryPercent", 0, "dataBasis", "NO_SAFE_ALTERNATIVE")
+                        : linkedMap("extraDistanceKm", bestAlternative.get("extraDistanceKm"),
+                                "delayMinutes", bestAlternative.get("delayMinutes"),
+                                "chargingCostDifference", bestAlternative.get("chargingCostDifference"),
+                                "extraBatteryPercent", bestAlternative.get("extraBatteryPercent"),
+                                "dataBasis", "COMPATIBLE_STATION_DEMO_ESTIMATE"),
+                "message", Boolean.TRUE.equals(journeyImpact.get("backupConnectorAvailable"))
+                        ? "Another compatible connector can protect current journey reservations."
+                        : "Affected journeys will be replanned immediately after approval."
+        );
+    }
+
+    private List<Map<String, Object>> alternativeStationScenarios(ChargingConnector unavailable) {
+        ChargingStation source = unavailable.getStation();
+        double sourceSessionCost = source.getPricePerKwh() * 21;
+        return stationRepository.findCompatibleAlternativeStations(
+                        source.getId(), StationStatus.ACTIVE, StationAvailability.UNAVAILABLE,
+                        unavailable.getType(), ChargerStatus.ONLINE,
+                        source.getLatitude() - 1.5, source.getLatitude() + 1.5,
+                        source.getLongitude() - 1.5, source.getLongitude() + 1.5).stream()
+                .<Map<String, Object>>map(station -> station.getConnectors().stream()
+                        .filter(connector -> connector.getType() == unavailable.getType()
+                                && connector.getStatus() == ChargerStatus.ONLINE
+                                && connector.isAvailable() && !connector.isMaintenanceMode())
+                        .max(Comparator.comparingDouble(ChargingConnector::getPowerKw))
+                        .map(connector -> {
+                            double directDistance = haversineKm(source.getLatitude(), source.getLongitude(),
+                                    station.getLatitude(), station.getLongitude());
+                            double extraDistance = round(Math.max(1.2, directDistance * .35));
+                            int waitMinutes = Math.max(0, station.getQueueCount() * 4);
+                            int delayMinutes = Math.max(3, (int) Math.ceil(extraDistance / 52 * 60) + waitMinutes);
+                            double chargingCost = round(station.getPricePerKwh() * 21);
+                            double costDifference = round(chargingCost - sourceSessionCost);
+                            double battery = round(extraDistance * .38);
+                            double score = delayMinutes + Math.max(0, costDifference) * .2
+                                    + Math.max(0, 100 - connector.getHealthScore()) * .15;
+                            return linkedMap("stationId", station.getId(), "stationName", station.getName(),
+                                    "operatorCompanyName", Objects.toString(station.getOperatorCompanyName(), "Vidyut discovery network"),
+                                    "connectorType", connector.getType(), "powerKw", connector.getPowerKw(),
+                                    "extraDistanceKm", extraDistance, "waitMinutes", waitMinutes,
+                                    "chargingCost", chargingCost, "chargingCostDifference", costDifference,
+                                    "delayMinutes", delayMinutes, "extraBatteryPercent", battery,
+                                    "availabilityRisk", Math.max(0, 100 - connector.getHealthScore()),
+                                    "score", round(score), "demoScenario", true);
+                        }).orElse(null))
+                .filter(Objects::nonNull)
+                .filter(item -> ((Number) item.get("extraDistanceKm")).doubleValue() <= 45)
+                .sorted(Comparator.comparingDouble(item -> ((Number) item.get("score")).doubleValue()))
+                .limit(3)
+                .toList();
     }
 
     public List<HostBookingResponse> bookings(Long accountId) {
@@ -280,15 +460,25 @@ public class HostOperationsService {
                 .filter(b -> b.getStatus() == BookingStatus.PENDING || b.getStatus() == BookingStatus.CONFIRMED)
                 .count();
         long active = bookings.stream().filter(b -> b.getStatus() == BookingStatus.IN_PROGRESS).count();
+        LocalDateTime monthStart = LocalDate.now().withDayOfMonth(1).atStartOfDay();
+        long monthlySessions = bookings.stream().filter(b -> b.getStartTime() != null
+                && !b.getStartTime().isBefore(monthStart)
+                && (b.getStatus() == BookingStatus.COMPLETED || b.getStatus() == BookingStatus.CANCELLED)).count();
+        long completedSessions = bookings.stream().filter(b -> b.getStartTime() != null
+                && !b.getStartTime().isBefore(monthStart) && b.getStatus() == BookingStatus.COMPLETED).count();
+        double successfulSessionsPercent = monthlySessions == 0 ? 0 : round(completedSessions * 100.0 / monthlySessions);
         double energy = bookings.stream().mapToDouble(Booking::getKwhDelivered).sum();
         double uptime = connectors.isEmpty() ? 0
                 : round(connectors.stream()
                         .filter(c -> c.getStatus() == ChargerStatus.ONLINE || c.getStatus() == ChargerStatus.CHARGING)
                         .count() * 100.0 / connectors.size());
         return linkedMap("displayName", profile.getDisplayName(), "verified", profile.isVerified(),
+                "totalLocations", stations.size(),
                 "totalChargers", connectors.size(), "onlineChargers",
                 connectors.stream().filter(c -> c.getStatus() == ChargerStatus.ONLINE).count(),
-                "activeSessions", active, "upcomingBookings", upcoming, "energyDeliveredKwh", round(energy),
+                "occupiedChargers", connectors.stream().filter(c -> c.getStatus() == ChargerStatus.CHARGING).count(),
+                "activeSessions", active, "upcomingBookings", upcoming, "monthlySessions", monthlySessions,
+                "successfulSessionsPercent", successfulSessionsPercent, "energyDeliveredKwh", round(energy),
                 "uptimePercent", uptime,
                 "todayEarnings", earnings.get("daily"), "monthlyEarnings", earnings.get("monthly"), "pendingPayout",
                 earnings.get("pendingPayout"),
@@ -301,6 +491,10 @@ public class HostOperationsService {
         requireHost(accountId);
         List<Booking> bookings = ownedBookings(accountId);
         List<Booking> completed = bookings.stream().filter(b -> b.getStatus() == BookingStatus.COMPLETED).toList();
+        List<Booking> completedToday = completed.stream()
+                .filter(booking -> booking.getStartTime() != null
+                        && booking.getStartTime().toLocalDate().equals(LocalDate.now()))
+                .toList();
         double daily = revenueSince(completed, LocalDate.now());
         double weekly = revenueSince(completed, LocalDate.now().minusDays(6));
         double monthly = revenueSince(completed, LocalDate.now().withDayOfMonth(1));
@@ -310,12 +504,31 @@ public class HostOperationsService {
         double available = Math.max(0, total - withdrawn);
         double pending = payouts.stream().filter(p -> "PENDING".equalsIgnoreCase(p.getStatus()))
                 .mapToDouble(Payout::getAmount).sum();
+        double dailyEnergy = completedToday.stream().mapToDouble(Booking::getKwhDelivered).sum();
+        double electricityCost = round(dailyEnergy * 8.5);
+        double platformShare = round(daily * .08);
+        double hostNet = round(Math.max(0, daily - electricityCost - platformShare));
+        double averageSession = completedToday.isEmpty() ? 0 : round(daily / completedToday.size());
+        Map<Integer, Long> hourlyDemand = new HashMap<>();
+        completed.stream().filter(booking -> booking.getStartTime() != null)
+                .forEach(booking -> hourlyDemand.merge(booking.getStartTime().getHour(), 1L, Long::sum));
+        int peakHour = hourlyDemand.entrySet().stream().max(Map.Entry.comparingByValue())
+                .map(Map.Entry::getKey).orElse(18);
+        int connectorCount = Math.max(1, connectorRepository.findByStation_HostUserId(accountId).size());
+        double occupiedMinutes = completedToday.stream().mapToInt(booking -> booking.getDurationMinutes() > 0
+                ? booking.getDurationMinutes() : Math.max(1, booking.getDurationHours()) * 60).sum();
+        double utilization = round(Math.min(100, occupiedMinutes * 100.0 / (connectorCount * 24 * 60)));
         int year = LocalDate.now().getMonthValue() >= 4 ? LocalDate.now().getYear() : LocalDate.now().getYear() - 1;
         return linkedMap("daily", round(daily), "weekly", round(weekly), "monthly", round(monthly), "lifetime",
                 round(total),
                 "availableBalance", round(available), "pendingPayout", round(pending), "taxWithheld",
                 round(total * .01),
                 "financialYear", year + "-" + String.valueOf(year + 1).substring(2), "payouts", payouts,
+                "todayGrossRevenue", round(daily), "todayElectricityCost", electricityCost,
+                "todayPlatformShare", platformShare, "todayHostNet", hostNet,
+                "todaySessions", completedToday.size(), "averageSessionValue", averageSession,
+                "utilizationPercent", utilization,
+                "peakWindow", String.format("%02d:00–%02d:00", peakHour, Math.min(24, peakHour + 3)),
                 "transactions",
                 completed.stream().map(b -> linkedMap("bookingId", b.getId(), "station", b.getStationName(), "amount",
                         b.getTotalAmount(), "timestamp", b.getStartTime(), "status", "EARNED")).toList());
@@ -323,6 +536,7 @@ public class HostOperationsService {
 
     @Transactional
     public Payout withdraw(Long accountId, double amount) {
+        operationalControlService.assertHostPayoutAllowed(accountId);
         HostProfile profile = requireOperationalHost(accountId);
         if (!profile.isBankVerified())
             throw new ForbiddenException("Verify a bank account before withdrawing earnings");
@@ -339,7 +553,15 @@ public class HostOperationsService {
 
     public List<Map<String, Object>> monitoring(Long accountId) {
         requireHost(accountId);
-        return connectorRepository.findByStation_HostUserId(accountId).stream().map(this::mapConnector).toList();
+        List<ChargingConnector> connectors = connectorRepository.findByStation_HostUserId(accountId);
+        List<Long> stationIds = connectors.stream().map(connector -> connector.getStation().getId()).distinct().toList();
+        Map<Long, ChargingSession> activeByConnector = stationIds.isEmpty() ? Map.of()
+                : sessionRepository.findByStationIdInAndStatusOrderByStartedAtDesc(
+                                stationIds, ChargingSessionStatus.ACTIVE).stream()
+                        .filter(session -> session.getConnectorId() != null)
+                        .collect(java.util.stream.Collectors.toMap(ChargingSession::getConnectorId,
+                                session -> session, (newest, ignored) -> newest, LinkedHashMap::new));
+        return connectors.stream().map(connector -> mapConnector(connector, activeByConnector.get(connector.getId()))).toList();
     }
 
     public List<HostReview> reviews(Long accountId) {
@@ -370,70 +592,351 @@ public class HostOperationsService {
         List<Booking> bookings = ownedBookings(accountId);
         List<ChargingStation> stations = stationRepository.findByHostUserId(accountId);
         List<ChargingConnector> connectors = connectorRepository.findByStation_HostUserId(accountId);
+        List<Map<String, Object>> liveSessions = monitoring(accountId).stream()
+                .filter(item -> "CHARGING".equals(item.get("status"))).toList();
         Map<Integer, Long> hours = new HashMap<>();
         bookings.stream().filter(b -> b.getStartTime() != null)
                 .forEach(b -> hours.merge(b.getStartTime().getHour(), 1L, Long::sum));
         int peak = hours.entrySet().stream().max(Map.Entry.comparingByValue()).map(Map.Entry::getKey).orElse(18);
         String q = rawQuestion.toLowerCase(Locale.ROOT);
+        List<Map<String, Object>> maintenance = maintenanceRisks(accountId, connectors, bookings);
+        Map<String, Object> operatingHours = operatingHoursRecommendation(stations, bookings, earnings, peak);
+        List<Map<String, Object>> companyDeals = companyDealScenarios(earnings);
+        Map<String, Object> solar = solarOpportunity(stations, bookings);
+        List<Map<String, Object>> actions = new ArrayList<>();
+        ChargingStation busiest = busiestStation(stations, bookings);
+        Map<String, Object> highestRisk = maintenance.isEmpty() ? null : maintenance.get(0);
+        if (highestRisk != null && ((Number) highestRisk.get("riskScore")).intValue() >= 35) {
+            actions.add(linkedMap("action", "PUT_CONNECTOR_IN_MAINTENANCE",
+                    "label", "Put connector into maintenance", "requiresConfirmation", true,
+                    "connectorId", highestRisk.get("connectorId"), "stationId", highestRisk.get("stationId"),
+                    "detail", "Impact-check active journeys, then isolate this connector."));
+        }
+        if (busiest != null) {
+            actions.add(linkedMap("action", "EXTEND_HOURS", "label", "Extend tomorrow to midnight",
+                    "requiresConfirmation", true, "stationId", busiest.getId(),
+                    "detail", operatingHours.get("estimatedAdditionalRevenue") + " estimated gross opportunity."));
+        }
+        actions.add(linkedMap("action", "OPEN_MARKETPLACE", "label", "Compare company offers",
+                "requiresConfirmation", false, "detail", "Open verified marketplace opportunities; no contract will be signed."));
+        if (!stations.isEmpty()) {
+            actions.add(linkedMap("action", "PREPARE_GREEN_FINANCE", "label", "Prepare Green Finance checklist",
+                    "requiresConfirmation", true, "stationId", solar.get("stationId"),
+                    "detail", "Prepare inputs and documents only; submission always needs separate approval."));
+        }
+
         String answer;
-        long unhealthy = connectors.stream().filter(connector -> connector.getStatus() == ChargerStatus.FAULT
-                || connector.getStatus() == ChargerStatus.OFFLINE || connector.getHealthScore() < 70).count();
-        Set<String> amenities = stations.stream().map(ChargingStation::getAmenities).filter(Objects::nonNull)
-                .flatMap(value -> Arrays.stream(value.toLowerCase(Locale.ROOT).split("[,;|]")))
-                .map(String::trim).filter(value -> !value.isBlank()).collect(java.util.stream.Collectors.toSet());
-        List<String> missingFacilities = new ArrayList<>();
-        if (amenities.stream().noneMatch(value -> value.contains("light")))
-            missingFacilities.add("lighting");
-        if (amenities.stream().noneMatch(value -> value.contains("shade") || value.contains("cover")))
-            missingFacilities.add("weather cover");
-        if (amenities.stream().noneMatch(value -> value.contains("restroom") || value.contains("toilet")))
-            missingFacilities.add("restroom access");
-        if (amenities.stream().noneMatch(value -> value.contains("seat") || value.contains("waiting")))
-            missingFacilities.add("safe seating");
-        if (amenities.stream().noneMatch(value -> value.contains("cctv") || value.contains("security")))
-            missingFacilities.add("CCTV/security");
-        if (q.contains("earning") || q.contains("revenue") || q.contains("increase")) {
-            answer = "Open availability around " + String.format("%02d:00", peak) + "–"
-                    + String.format("%02d:00", Math.min(23, peak + 4))
-                    + ", review weekday pricing by ₹1/kWh, and protect high-uptime slots. Current monthly earnings are ₹"
-                    + earnings.get("monthly") + ".";
-        } else if (q.contains("price")) {
-            answer = "Compare utilization before changing price. A ₹1/kWh weekday adjustment is a safe first experiment for a private charger.";
+        if (q.contains("which car") || q.contains("cars charging") || q.contains("vehicles charging")
+                || q.contains("occupied")) {
+            answer = liveSessions.isEmpty()
+                    ? "No vehicle is charging at Prince's stations right now. All occupancy comes from live session state, not an AI guess."
+                    : liveSessions.size() + " vehicle(s) are charging now: " + liveSessions.stream()
+                            .map(item -> item.get("vehicleName") + " on " + item.get("chargerCode") + " at "
+                                    + item.get("stationName") + " · " + item.get("currentBatteryPercent") + "% → "
+                                    + item.get("targetBatteryPercent") + "% · about " + item.get("remainingMinutes")
+                                    + " min remaining")
+                            .collect(java.util.stream.Collectors.joining("; ")) + ".";
+        } else if (q.contains("solar") || q.contains("subsid") || q.contains("government") || q.contains("finance")) {
+            answer = solar.get("stationName") + " could model " + solar.get("solarContributionPercent")
+                    + "% solar contribution and about ₹" + solar.get("monthlySavings")
+                    + " monthly grid-cost reduction. The modeled TATA/CPO + assistance + RESCO structure stays within Prince's ₹10 lakh budget. Incentive leads require current eligibility verification; Vidyut will not claim or submit anything without approval.";
+        } else if (q.contains("deal") || q.contains("company") || q.contains("operator") || q.contains("contract")) {
+            Map<String, Object> best = q.contains("guarantee") || q.contains("low risk") || q.contains("no risk")
+                    ? companyDeals.get(2) : companyDeals.get(0);
+            answer = best.get("company") + " is the strongest match for this goal: " + best.get("tradeoff")
+                    + " These are modeled comparisons, not live contract offers.";
         } else if (q.contains("maintenance") || q.contains("service") || q.contains("repair")
                 || q.contains("fault") || q.contains("health")) {
-            answer = unhealthy == 0
-                    ? "No charger currently needs urgent maintenance. Schedule a preventive inspection outside the "
-                            + String.format("%02d:00", peak)
-                            + " peak window and verify cables, earthing and connector temperature."
-                    : unhealthy
-                            + " charger(s) need attention. Isolate unsafe connectors now and schedule maintenance before "
-                            + String.format("%02d:00", peak) + ", your recorded demand peak.";
-        } else if (q.contains("facility") || q.contains("amenity") || q.contains("upgrade")
-                || q.contains("restroom") || q.contains("lighting") || q.contains("wifi")) {
-            answer = missingFacilities.isEmpty()
-                    ? "Your listed facilities cover the essential driver needs. Next, improve signage, cleanliness and accessibility, then compare ratings after 30 days."
-                    : "Prioritize "
-                            + String.join(", ", missingFacilities.subList(0, Math.min(3, missingFacilities.size())))
-                            + ". These upgrades make waiting safer and help drivers choose your charger for planned rest stops.";
+            answer = highestRisk == null || ((Number) highestRisk.get("riskScore")).intValue() < 35
+                     ? "No connector currently crosses the maintenance threshold. Keep preventive work outside the recorded peak window."
+                     : highestRisk.get("chargerCode") + " at " + highestRisk.get("stationName")
+                             + " has maintenance risk " + highestRisk.get("riskScore") + "/100 from hardware health and "
+                            + highestRisk.get("customerComplaints") + " recent customer complaint(s). Estimated repair is ₹"
+                            + highestRisk.get("repairEstimate") + " versus ₹" + highestRisk.get("estimatedRevenueLoss24Hours")
+                            + " modeled 24-hour revenue loss. Recommendation: "
+                            + highestRisk.get("financialRecommendation") + ". I will ask before isolating it.";
         } else if (q.contains("peak") || q.contains("demand") || q.contains("availability")
-                || q.contains("traffic") || q.contains("open") || q.contains("stay")) {
-            answer = "Recorded demand peaks near " + String.format("%02d:00", peak) + ". Keep the charger open from "
-                    + String.format("%02d:00", Math.max(0, peak - 2)) + " to "
-                    + String.format("%02d:00", Math.min(23, peak + 3))
-                    + ", and avoid maintenance during that high-traffic window.";
-        } else if (q.contains("forecast")) {
-            double forecast = ((Number) earnings.get("monthly")).doubleValue() * 1.18;
-            answer = "With improved peak-hour availability, the current scenario forecast is ₹" + round(forecast)
-                    + " for the next comparable period (+18% scenario).";
+                || q.contains("traffic") || q.contains("open") || q.contains("stay") || q.contains("time")) {
+            answer = "Recorded demand peaks at " + operatingHours.get("peakWindow") + ". "
+                    + operatingHours.get("recommendation") + " I will ask before changing published hours.";
+        } else if (q.contains("earning") || q.contains("revenue") || q.contains("increase") || q.contains("forecast")) {
+            answer = "Today's recorded gross revenue is ₹" + earnings.get("todayGrossRevenue")
+                    + "; modeled electricity cost is ₹" + earnings.get("todayElectricityCost")
+                    + " and platform share is ₹" + earnings.get("todayPlatformShare")
+                    + ", leaving estimated host earnings of ₹" + earnings.get("todayHostNet") + ".";
         } else {
-            answer = "You have " + dashboard.get("totalChargers") + " chargers, " + dashboard.get("upcomingBookings")
-                    + " upcoming bookings and " + dashboard.get("uptimePercent") + "% uptime.";
+            answer = "Prince, you have " + dashboard.get("totalChargers") + " connectors across " + stations.size()
+                    + " corridor hubs, " + dashboard.get("upcomingBookings") + " upcoming bookings and "
+                    + dashboard.get("uptimePercent") + "% uptime. The highest service risk and best opening-hours opportunity are shown below.";
         }
-        return linkedMap("question", rawQuestion, "answer", answer, "peakHour", String.format("%02d:00", peak),
-                "unhealthyChargers", unhealthy, "facilityUpgrades", missingFacilities,
-                "recommendations", List.of("Protect the recorded peak-hour window",
-                        "Schedule preventive maintenance off-peak", "Upgrade driver waiting facilities"),
-                "generatedAt", LocalDateTime.now());
+        List<Map<String, Object>> portfolio = stations.stream().<Map<String, Object>>map(station -> linkedMap(
+                "stationId", station.getId(), "stationName", station.getName(),
+                "propertyOwnerName", Objects.toString(station.getPropertyOwnerName(), "Prince"),
+                "operatorCompanyName", Objects.toString(station.getOperatorCompanyName(), "Host operated"),
+                "operatingModel", Objects.toString(station.getOperatingModel(), "HOST_OPERATED"),
+                "solarProviderName", station.getSolarProviderName(), "connectorCount", station.getConnectors().size(),
+                "onlineConnectors", station.getConnectors().stream()
+                        .filter(connector -> connector.getStatus() == ChargerStatus.ONLINE).count(),
+                "networkHealth", station.getConnectors().stream().anyMatch(connector -> connector.getHealthScore() < 60)
+                        ? "ATTENTION" : "HEALTHY", "demoData", station.isDemoData())).toList();
+        return linkedMap("question", rawQuestion, "answer", answer,
+                "revenue", earnings, "maintenanceRisks", maintenance,
+                "operatingHours", operatingHours, "companyDeals", companyDeals,
+                "solarOpportunity", solar, "networkPortfolio", portfolio,
+                "liveSessions", liveSessions,
+                "outagePlaybook", linkedMap("steps", List.of(
+                                "Stop new reservations on the failed connector",
+                                "Protect or reroute affected journeys according to their autonomy mode",
+                                "Notify the equipment operator and prepare a maintenance ticket",
+                                "Compare repair expense with downtime and replacement economics",
+                                "Offer a customer credit only after Host approval"),
+                        "approvalPolicy", "No credit, company contact, contract, payment or scheme submission is automatic"),
+                "proposedActions", actions,
+                "generatedAt", LocalDateTime.now(), "dataPolicy",
+                "Financial figures are calculated from stored bookings or explicitly labeled demo assumptions; legal, subsidy, and contract actions are never automatic.");
+    }
+
+    @Transactional
+    public Map<String, Object> executeAgentAction(Long accountId, HostAgentActionRequest request) {
+        requireOperationalHost(accountId);
+        if (!request.isApproved()) {
+            throw new BadRequestException("Host approval is required before Vidyut executes this action");
+        }
+        String action = request.getAction().trim().toUpperCase(Locale.ROOT);
+        return switch (action) {
+            case "PUT_CONNECTOR_IN_MAINTENANCE" -> {
+                if (request.getConnectorId() == null) throw new BadRequestException("Choose a connector first");
+                ChargingConnector connector = ownedConnector(accountId, request.getConnectorId());
+                HostChargerStatusRequest status = new HostChargerStatusRequest();
+                status.setStatus(ChargerStatus.MAINTENANCE);
+                status.setHealthScore(connector.getHealthScore());
+                status.setSessionEnergyKwh(connector.getSessionEnergyKwh());
+                status.setFaultCode("HOST_AGENT_APPROVED_SERVICE");
+                status.setImpactApproved(true);
+                yield linkedMap("status", "EXECUTED", "action", action,
+                        "result", updateChargerStatus(accountId, connector.getId(), status));
+            }
+            case "REOPEN_CONNECTOR" -> {
+                if (request.getConnectorId() == null) throw new BadRequestException("Choose a connector first");
+                ChargingConnector connector = ownedConnector(accountId, request.getConnectorId());
+                HostChargerStatusRequest status = new HostChargerStatusRequest();
+                status.setStatus(ChargerStatus.ONLINE);
+                status.setHealthScore(Math.max(85, connector.getHealthScore()));
+                status.setSessionEnergyKwh(connector.getSessionEnergyKwh());
+                status.setImpactApproved(true);
+                yield linkedMap("status", "EXECUTED", "action", action,
+                        "result", updateChargerStatus(accountId, connector.getId(), status));
+            }
+            case "EXTEND_HOURS" -> {
+                if (request.getStationId() == null) throw new BadRequestException("Choose a station first");
+                ChargingStation station = ownedStation(accountId, request.getStationId());
+                station.setWorkingHours("06:00-24:00");
+                station.setWeeklySchedule("MON-SUN 06:00-24:00");
+                station.setAutoAvailability(true);
+                stationRepository.save(station);
+                notificationService.sendNotification(accountId, "Operating hours extended",
+                        station.getName() + " is discoverable and bookable until midnight.",
+                        NotificationType.SYSTEM_ALERT);
+                yield linkedMap("status", "EXECUTED", "action", action, "stationId", station.getId(),
+                        "message", "Published hours updated to 06:00–24:00.");
+            }
+            case "PREPARE_GREEN_FINANCE" -> linkedMap("status", "PREPARED_NOT_SUBMITTED", "action", action,
+                    "stationId", request.getStationId(), "documents", List.of(
+                            "Recent electricity bill", "Property ownership or authorization",
+                            "Site/roof area evidence", "Commercial connection details", "Bank and tax details"),
+                    "workstreams", List.of("Current state EV-policy eligibility check",
+                            "Nodal-agency/CPO route check", "TATA/ChargeZone/Statiq operator comparison",
+                            "Purchase vs finance vs RESCO solar comparison"),
+                    "modeledFundingStructure", linkedMap("projectCost", 3_500_000,
+                            "princeContribution", 1_000_000, "operatorContribution", 1_750_000,
+                            "potentialAssistance", 700_000, "solarProviderContribution", 50_000,
+                            "solarStructure", "RESCO_PPA",
+                            "additionalUpfrontRequired", 0),
+                    "message", "The funding checklist and modeled split are prepared, not submitted. Scheme eligibility, company terms and every external commitment still require Prince's explicit approval.");
+            default -> throw new BadRequestException("This Host Agent action is not executable");
+        };
+    }
+
+    private List<Map<String, Object>> maintenanceRisks(
+            Long accountId,
+            List<ChargingConnector> connectors,
+            List<Booking> bookings
+    ) {
+        List<HostReview> reviews = reviewRepository.findByHostAccountIdOrderByCreatedAtDesc(accountId);
+        LocalDateTime since = LocalDateTime.now().minusDays(7);
+        return connectors.stream().<Map<String, Object>>map(connector -> {
+            Long stationId = connector.getStation().getId();
+            long sessions = bookings.stream().filter(booking -> booking.getStationId().equals(stationId)
+                    && booking.getStatus() == BookingStatus.COMPLETED
+                    && booking.getStartTime() != null && booking.getStartTime().isAfter(since)).count();
+            long complaints = reviews.stream().filter(review -> review.getStationId().equals(stationId)
+                    && review.getCreatedAt() != null && review.getCreatedAt().isAfter(since)
+                    && (review.getRating() <= 3 || containsIssueLanguage(review.getComment()))).count();
+            boolean hardwareSignal = connector.getFaultCode() != null && !connector.getFaultCode().isBlank();
+            boolean slow = connector.getStatus() == ChargerStatus.CHARGING && connector.getCurrentPowerKw() > 0
+                    && connector.getCurrentPowerKw() < connector.getPowerKw() * .75;
+            int risk = Math.min(100, Math.max(0, 100 - connector.getHealthScore()
+                    + (int) complaints * 6 + (hardwareSignal ? 15 : 0)
+                    + (slow ? 15 : 0)
+                    + (connector.getStatus() == ChargerStatus.FAULT ? 25 : 0)));
+            List<String> signals = new ArrayList<>();
+            if (connector.getHealthScore() < 75) signals.add("hardware health " + connector.getHealthScore() + "/100");
+            if (complaints > 0) signals.add(complaints + " customer complaint(s) in 7 days");
+            if (hardwareSignal) signals.add(connector.getFaultCode());
+            if (slow) signals.add("charging power below 75% of rating");
+            if (signals.isEmpty()) signals.add("no elevated customer or hardware signal");
+            boolean replacementCandidate = connector.getHealthScore() <= 55;
+            double repairEstimate = replacementCandidate ? 42_000 : connector.getPowerKw() >= 100 ? 4_500 : 2_800;
+            double revenueLoss24Hours = connector.getStation().isDemoData()
+                    ? (connector.getPowerKw() >= 100 ? 6_700 : 3_400)
+                    : round(Math.max(1, sessions) * 520);
+            double monthlyContribution = connector.getStation().isDemoData()
+                    ? (replacementCandidate ? 7_300 : 18_600) : round(Math.max(1, sessions) * 390);
+            return linkedMap("connectorId", connector.getId(), "stationId", stationId,
+                    "stationName", connector.getStation().getName(), "chargerCode", connector.getChargerCode(),
+                    "operatorCompanyName", Objects.toString(connector.getStation().getOperatorCompanyName(), "Host operated"),
+                    "connectorType", connector.getType(), "riskScore", risk,
+                    "maintenanceHealth", 100 - risk, "recentSessions", sessions,
+                    "customerComplaints", complaints, "signals", signals,
+                    "repairEstimate", repairEstimate, "estimatedRevenueLoss24Hours", revenueLoss24Hours,
+                    "monthlyContribution", monthlyContribution, "estimatedRepairHours", replacementCandidate ? 10 : 3,
+                    "repeatedFailures90Days", replacementCandidate ? 5 : Math.max(1, complaints),
+                    "assetAgeYears", replacementCandidate ? 6.8 : 2.4,
+                    "financialRecommendation", replacementCandidate ? "COMPARE_REPLACEMENT" : "REPAIR_NOW",
+                    "operatorAction", "Notify " + Objects.toString(connector.getStation().getOperatorCompanyName(), "maintenance provider"),
+                    "recommendedWindow", "Before the next peak or during the lowest recorded demand hour");
+        }).sorted(Comparator.comparingInt(item -> -((Number) item.get("riskScore")).intValue())).toList();
+    }
+
+    private Map<String, Object> operatingHoursRecommendation(
+            List<ChargingStation> stations,
+            List<Booking> bookings,
+            Map<String, Object> earnings,
+            int peak
+    ) {
+        double average = ((Number) earnings.get("averageSessionValue")).doubleValue();
+        if (average <= 0) average = 130;
+        long peakSessions = bookings.stream().filter(booking -> booking.getStartTime() != null
+                && booking.getStartTime().getHour() >= peak
+                && booking.getStartTime().getHour() <= Math.min(23, peak + 3)).count();
+        long additionalSessions = Math.max(2, Math.min(10, Math.round(peakSessions * .35)));
+        double extraRevenue = round(additionalSessions * average);
+        return linkedMap("stationId", busiestStation(stations, bookings) == null ? null : busiestStation(stations, bookings).getId(),
+                "peakWindow", String.format("%02d:00–%02d:00", peak, Math.min(24, peak + 3)),
+                "recommendedHours", "06:00–24:00", "additionalSessionsLow", additionalSessions,
+                "additionalSessionsHigh", Math.min(12, additionalSessions + 3),
+                "estimatedAdditionalRevenue", round(extraRevenue),
+                "estimatedAdditionalOperatingCost", round(extraRevenue * .34),
+                "recommendation", "Keep the busiest corridor hub open until midnight.",
+                "dataBasis", bookings.isEmpty() ? "DEMO_SCENARIO" : "RECORDED_BOOKING_HOURS");
+    }
+
+    private List<Map<String, Object>> companyDealScenarios(Map<String, Object> earnings) {
+        List<Map<String, Object>> deals = new ArrayList<>();
+        deals.add(linkedMap("company", "TATA Power Demo", "chargerPowerKw", 120,
+                "revenueModel", "REVENUE_SHARE", "hostShareLabel", "18%",
+                "hostRevenueSharePercent", 18, "installationFunding", "COMPANY_FUNDED",
+                "maintenanceResponsibility", "COMPANY", "expectedSessionsPerMonth", 1_250,
+                "projectedMonthlyHostIncome", 48_300, "projectedAnnualHostRevenue", 579_600,
+                "projectedThreeYearValue", 1_738_800, "riskLevel", "MEDIUM",
+                "recommendationTag", "BEST_FINANCIAL_OFFER",
+                "tradeoff", "Highest modeled three-year income; demand and tariff exposure remain.", "demoScenario", true));
+        deals.add(linkedMap("company", "ChargeZone Demo", "chargerPowerKw", 180,
+                "revenueModel", "REVENUE_SHARE", "hostShareLabel", "16%",
+                "hostRevenueSharePercent", 16, "installationFunding", "COMPANY_FUNDED",
+                "maintenanceResponsibility", "COMPANY", "expectedSessionsPerMonth", 1_340,
+                "projectedMonthlyHostIncome", 46_100, "projectedAnnualHostRevenue", 553_200,
+                "projectedThreeYearValue", 1_659_600, "riskLevel", "MEDIUM",
+                "recommendationTag", "HIGH_POWER_NETWORK",
+                "tradeoff", "Higher-power hardware with a smaller Host share.", "demoScenario", true));
+        deals.add(linkedMap("company", "Statiq Demo", "chargerPowerKw", 60,
+                "revenueModel", "FIXED_RENT", "hostShareLabel", "₹28,000/month",
+                "hostRevenueSharePercent", 0, "installationFunding", "COMPANY_FUNDED",
+                "maintenanceResponsibility", "COMPANY", "expectedSessionsPerMonth", 900,
+                "projectedMonthlyHostIncome", 28_000, "projectedAnnualHostRevenue", 336_000,
+                "projectedThreeYearValue", 1_008_000, "riskLevel", "LOW",
+                "recommendationTag", "BEST_LOW_RISK_OFFER",
+                "tradeoff", "Guaranteed modeled rent with no electricity-price or maintenance exposure.", "demoScenario", true));
+        deals.add(linkedMap("company", "Vidyut Partner Demo", "chargerPowerKw", 120,
+                "revenueModel", "HYBRID", "hostShareLabel", "₹15,000 + 8%",
+                "hostRevenueSharePercent", 8, "installationFunding", "SHARED",
+                "maintenanceResponsibility", "SHARED", "expectedSessionsPerMonth", 1_100,
+                "projectedMonthlyHostIncome", 39_600, "projectedAnnualHostRevenue", 475_200,
+                "projectedThreeYearValue", 1_425_600, "riskLevel", "MEDIUM_LOW",
+                "recommendationTag", "BALANCED_STRUCTURE",
+                "tradeoff", "Base rent protects downside while sharing utilization upside.", "demoScenario", true));
+        return deals;
+    }
+
+    private Map<String, Object> solarOpportunity(List<ChargingStation> stations, List<Booking> bookings) {
+        ChargingStation station = stations.stream().filter(item -> item.getAmenities() != null
+                && item.getAmenities().toLowerCase(Locale.ROOT).contains("solar")).findFirst()
+                .orElse(stations.isEmpty() ? null : stations.get(0));
+        if (station == null) return linkedMap("stationId", null, "stationName", "No station selected",
+                "solarContributionPercent", 0, "monthlySavings", 0, "eligibilityLeads", List.of(),
+                "solarOptions", List.of(), "fundingPlan", Map.of());
+        double recordedEnergy = bookings.stream().filter(booking -> booking.getStationId().equals(station.getId())
+                && booking.getStatus() == BookingStatus.COMPLETED && booking.getStartTime() != null
+                && booking.getStartTime().isAfter(LocalDateTime.now().minusDays(30)))
+                .mapToDouble(Booking::getKwhDelivered).sum();
+        double modeledConsumption = Math.max(recordedEnergy, station.isDemoData() ? 21_000 : recordedEnergy);
+        double solarCapacityKw = station.getAmenities() != null
+                && station.getAmenities().toLowerCase(Locale.ROOT).contains("solar") ? 70 : 10;
+        double generation = solarCapacityKw >= 70 ? 8_300 : round(solarCapacityKw * 4.5 * 30 * .8);
+        double solarUsed = round(Math.min(modeledConsumption, generation));
+        double contribution = modeledConsumption <= 0 ? 0 : round(solarUsed * 100 / modeledConsumption);
+        double savings = round(solarUsed * 8.8);
+        double capex = solarCapacityKw >= 70 ? 2_700_000 : solarCapacityKw * 55_000;
+        return linkedMap("stationId", station.getId(), "stationName", station.getName(),
+                "propertyOwnerName", Objects.toString(station.getPropertyOwnerName(), "Prince"),
+                "operatorCompanyName", Objects.toString(station.getOperatorCompanyName(), "Host operated"),
+                "solarProviderName", Objects.toString(station.getSolarProviderName(), "Provider not selected"),
+                "modeledMonthlyConsumptionKwh", round(modeledConsumption), "solarCapacityKw", solarCapacityKw,
+                "modeledMonthlyGenerationKwh", generation, "solarContributionPercent", contribution,
+                "monthlySavings", savings, "simplePaybackYears", savings <= 0 ? 0 : round(capex / savings / 12),
+                "dataBasis", recordedEnergy >= modeledConsumption ? "RECORDED_ENERGY" : "DEMO_CORRIDOR_ASSUMPTION",
+                "eligibilityLeads", approvedSchemeLeads(),
+                "solarOptions", List.of(
+                        linkedMap("option", "PURCHASE", "label", "Prince buys solar", "upfrontRequirement", "HIGH",
+                                "modeledInvestment", 2_700_000, "monthlyPayment", 0, "ownership", "PRINCE",
+                                "tradeoff", "Highest long-term savings, highest upfront capital."),
+                        linkedMap("option", "FINANCE", "label", "Solar loan", "upfrontRequirement", "MEDIUM",
+                                "modeledInvestment", 270_000, "monthlyPayment", 42_000, "ownership", "PRINCE_AFTER_FINANCE",
+                                "tradeoff", "Lower upfront requirement with modeled monthly EMI."),
+                        linkedMap("option", "RESCO_PPA", "label", "RESCO / solar PPA", "upfrontRequirement", "LOW",
+                                "modeledInvestment", 100_000, "monthlyPayment", 0, "ownership", "SOLAR_PROVIDER",
+                                "tradeoff", "Low/no plant purchase; Prince buys generated power at a contracted tariff.")),
+                "fundingPlan", linkedMap("projectCost", 3_500_000, "princeBudget", 1_000_000,
+                        "princeContribution", 1_000_000, "operatorContribution", 1_750_000,
+                        "potentialGovernmentAssistance", 700_000, "solarProviderContribution", 50_000,
+                        "solarStructure", "RESCO_PPA",
+                        "additionalUpfrontRequired", 0, "withinPrinceBudget", true,
+                        "status", "MODELED_NOT_APPROVED"),
+                "legalNotice", "These are leads, not guaranteed subsidies. Eligibility and current official terms must be verified before submission.");
+    }
+
+    private List<Map<String, Object>> approvedSchemeLeads() {
+        var schemes = greenSchemeRepository.findByStatusOrderByUpdatedAtDesc(GreenSchemeStatus.ACTIVE);
+        if (schemes.isEmpty()) return List.of(linkedMap("name", "No Admin-approved scheme source",
+                "status", "AWAITING_VERIFIED_SOURCE", "potentialAmount", 0,
+                "note", "A Finance Admin must add and verify an official source before eligibility is suggested."));
+        return schemes.stream().<Map<String, Object>>map(item -> linkedMap("name", item.getName(), "authority", item.getAuthority(),
+                "status", "VERIFY_HOST_ELIGIBILITY", "potentialAmount", 0, "note", item.getSummary(),
+                "sourceUrl", item.getSourceUrl(), "validUntil", item.getValidUntil())).toList();
+    }
+
+    private ChargingStation busiestStation(List<ChargingStation> stations, List<Booking> bookings) {
+        Map<Long, Long> counts = bookings.stream().collect(java.util.stream.Collectors.groupingBy(
+                Booking::getStationId, java.util.stream.Collectors.counting()));
+        return stations.stream().max(Comparator.comparingLong(station -> counts.getOrDefault(station.getId(), 0L)))
+                .orElse(null);
+    }
+
+    private boolean containsIssueLanguage(String comment) {
+        if (comment == null) return false;
+        String normalized = comment.toLowerCase(Locale.ROOT);
+        return normalized.contains("fail") || normalized.contains("loose") || normalized.contains("slow")
+                || normalized.contains("broken") || normalized.contains("heat") || normalized.contains("unsafe");
     }
 
     public byte[] exportReport(Long accountId, String reportType, String format) {
@@ -507,15 +1010,41 @@ public class HostOperationsService {
     }
 
     private Map<String, Object> mapConnector(ChargingConnector connector) {
+        return mapConnector(connector, null);
+    }
+
+    private Map<String, Object> mapConnector(ChargingConnector connector, ChargingSession session) {
         long duration = connector.getSessionStartedAt() == null ? 0
                 : Duration.between(connector.getSessionStartedAt(), LocalDateTime.now()).toMinutes();
+        Vehicle vehicle = session == null || session.getVehicleId() == null ? null
+                : vehicleRepository.findById(session.getVehicleId()).orElse(null);
+        long remainingMinutes = session == null || session.getEstimatedCompletionAt() == null ? 0
+                : Math.max(0, Duration.between(LocalDateTime.now(), session.getEstimatedCompletionAt()).toMinutes());
+        String effectiveStatus = session == null ? connector.getStatus().name() : ChargerStatus.CHARGING.name();
         return linkedMap("id", connector.getId(), "stationId", connector.getStation().getId(), "stationName",
                 connector.getStation().getName(),
+                "operatorCompanyName", Objects.toString(connector.getStation().getOperatorCompanyName(), "Host operated"),
                 "chargerCode", connector.getChargerCode(), "connectorType", connector.getType(), "powerKw",
                 connector.getPowerKw(),
-                "status", connector.getStatus(), "available", connector.isAvailable(), "currentPowerKw",
-                connector.getCurrentPowerKw(),
-                "sessionEnergyKwh", connector.getSessionEnergyKwh(), "sessionDurationMinutes", duration, "healthScore",
+                "status", effectiveStatus, "availabilityLabel", session == null && connector.isAvailable() ? "AVAILABLE" :
+                        session != null ? "OCCUPIED" : effectiveStatus,
+                "available", session == null && connector.isAvailable(), "currentPowerKw",
+                session == null ? connector.getCurrentPowerKw() : session.getPowerKw(),
+                "sessionEnergyKwh", session == null ? connector.getSessionEnergyKwh() : session.getEnergyKwh(),
+                "sessionDurationMinutes", session == null ? duration : Math.max(0,
+                        Duration.between(session.getStartedAt(), LocalDateTime.now()).toMinutes()),
+                "sessionId", session == null ? null : session.getId(),
+                "bookingId", session == null ? null : session.getBookingId(),
+                "vehicleId", session == null ? null : session.getVehicleId(),
+                "vehicleName", vehicle == null ? null : vehicle.getMakeAndModel(),
+                "vehicleRegistration", vehicle == null ? null : vehicle.getRegistrationNumber(),
+                "startBatteryPercent", session == null ? null : session.getStartBatteryPercent(),
+                "currentBatteryPercent", session == null ? null : session.getCurrentBatteryPercent(),
+                "targetBatteryPercent", session == null ? null : session.getTargetBatteryPercent(),
+                "estimatedCompletionAt", session == null ? null : session.getEstimatedCompletionAt(),
+                "remainingMinutes", remainingMinutes,
+                "sessionCost", session == null ? 0 : session.getCost(),
+                "healthScore",
                 connector.getHealthScore(),
                 "faultCode", connector.getFaultCode(), "lastHeartbeat", connector.getLastHeartbeat());
     }
@@ -570,6 +1099,15 @@ public class HostOperationsService {
 
     private double round(double value) {
         return Math.round(value * 100.0) / 100.0;
+    }
+
+    private double haversineKm(double lat1, double lon1, double lat2, double lon2) {
+        double latitude = Math.toRadians(lat2 - lat1);
+        double longitude = Math.toRadians(lon2 - lon1);
+        double a = Math.sin(latitude / 2) * Math.sin(latitude / 2)
+                + Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2))
+                * Math.sin(longitude / 2) * Math.sin(longitude / 2);
+        return 6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
     }
 
     private LinkedHashMap<String, Object> linkedMap(Object... values) {

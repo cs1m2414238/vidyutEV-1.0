@@ -13,4 +13,5 @@ public interface AutopilotStopRepository extends JpaRepository<AutopilotStop, Lo
             Long tripId,
             AutopilotStopStatus status
     );
+    List<AutopilotStop> findByStationIdAndStatus(Long stationId, AutopilotStopStatus status);
 }

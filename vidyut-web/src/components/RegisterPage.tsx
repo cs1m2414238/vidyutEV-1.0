@@ -45,21 +45,7 @@ const GoogleIcon = () => (
 
 const VidyutLogo: React.FC = () => (
   <div className="vidyut-logo-wrapper">
-    <svg width="100" height="100" viewBox="0 0 200 200" fill="none" xmlns="http://www.w3.org/2000/svg" className="brand-logo-img" aria-hidden="true">
-      <defs>
-        <linearGradient id="vidyutVGradientReg" x1="0%" y1="0%" x2="100%" y2="100%">
-          <stop offset="0%" stopColor="#d9f99d" />
-          <stop offset="25%" stopColor="#a3e635" />
-          <stop offset="60%" stopColor="#22c55e" />
-          <stop offset="100%" stopColor="#15803d" />
-        </linearGradient>
-        <filter id="vGlowReg" x="-30%" y="-30%" width="160%" height="160%">
-          <feGaussianBlur stdDeviation="7" result="blur" />
-          <feComposite in="SourceGraphic" in2="blur" operator="over" />
-        </filter>
-      </defs>
-      <path d="M 38,30 L 65,36 L 100,165 L 128,75 L 114,80 L 165,15 L 142,58 L 158,58 L 100,185 Z" fill="url(#vidyutVGradientReg)" filter="url(#vGlowReg)" />
-    </svg>
+    <img src="/vidyut-logo.svg" className="brand-logo-img" alt="" />
     <span className="vidyut-logo-sub">Powering a Smarter Tomorrow</span>
   </div>
 );

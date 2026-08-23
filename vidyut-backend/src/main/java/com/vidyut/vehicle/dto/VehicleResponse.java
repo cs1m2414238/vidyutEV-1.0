@@ -1,5 +1,6 @@
 package com.vidyut.vehicle.dto;
 
+import com.vidyut.station.entity.ConnectorType;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -9,6 +10,7 @@ import com.vidyut.vehicle.entity.VehicleConnectionStatus;
 import com.vidyut.vehicle.entity.VehicleTelemetrySource;
 
 import java.time.LocalDateTime;
+import java.util.Set;
 
 @Data
 @Builder
@@ -21,6 +23,11 @@ public class VehicleResponse {
     private String registrationNumber;
     private String batteryCapacity;
     private String connectorType;
+    private Set<ConnectorType> supportedConnectors;
+    private Double efficiencyWhPerKm;
+    private Double maxAcChargePowerKw;
+    private Double maxDcChargePowerKw;
+    private Double chargingEfficiency;
     private VehicleConnectionStatus connectionStatus;
     private Integer batteryPercent;
     private Double remainingRangeKm;

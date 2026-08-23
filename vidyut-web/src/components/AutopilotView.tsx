@@ -8,9 +8,9 @@ import {
   CarFront,
   Check,
   CircleCheckBig,
+  Clock3,
   Eye,
   IndianRupee,
-  Clock3,
   Gauge,
   LoaderCircle,
   MapPin,
@@ -27,24 +27,27 @@ import {
 } from 'lucide-react';
 import {
   addAutopilotVehicle,
+  approveAutopilotReroute,
   completeAutopilotCharging,
   getAutopilotVehicles,
   getCurrentAutopilotTrip,
   launchAutopilotTrip,
+  parseAutopilotJourneyIntent,
   previewAutopilotTrip,
+  recommendAutopilotVehicle,
   recordAutopilotExperience,
   sendAutopilotAgentMessage,
   simulateAutopilotFault,
   startAutopilotTrip,
   topUpAutopilotWallet,
-} from '../services/autopilot';
-import type {
-  AutopilotMode,
-  AutopilotPlan,
-  AutopilotTrip,
-  AutopilotTripRequest,
-  TripPurpose,
-  AutopilotVehicle,
+  type AutopilotMode,
+  type AutopilotPlan,
+  type AutopilotTrip,
+  type AutopilotTripRequest,
+  type TripPurpose,
+  type AutopilotVehicle,
+  type JourneyIntent,
+  type VehicleRecommendation,
 } from '../services/autopilot';
 import './AutopilotView.css';
 
@@ -54,7 +57,17 @@ interface AutopilotViewProps {
   onOpenWallet: () => void;
 }
 
-const initialGoal = "Get me from Kanpur to Delhi by 6 PM. Keep charging under ₹900 and don't let my battery fall below 15%.";
+interface PlanningInputs {
+  origin: string;
+  destination: string;
+  deadline: string;
+  battery: number;
+  minimumBattery: number;
+  budget: number;
+  optimizeFor: AutopilotTripRequest['optimizeFor'];
+  autonomyMode: AutopilotMode;
+  tripPurpose: TripPurpose;
+}
 
 export function AutopilotView({ token, userName, onOpenWallet }: AutopilotViewProps) {
   const [trip, setTrip] = useState<AutopilotTrip | null>(null);
@@ -63,17 +76,21 @@ export function AutopilotView({ token, userName, onOpenWallet }: AutopilotViewPr
   const [loading, setLoading] = useState(true);
   const [action, setAction] = useState('');
   const [error, setError] = useState('');
+  const [plannerError, setPlannerError] = useState('');
   const [agentReply, setAgentReply] = useState('');
   const [agentToolCalls, setAgentToolCalls] = useState<Array<{ name: string; status: string }>>([]);
   const [proposal, setProposal] = useState<AutopilotPlan | null>(null);
+  const [vehicleRecommendation, setVehicleRecommendation] = useState<VehicleRecommendation | null>(null);
   const [agentSessionId, setAgentSessionId] = useState<string>();
-  const [goal, setGoal] = useState(initialGoal);
-  const [origin, setOrigin] = useState('Kanpur');
-  const [destination, setDestination] = useState('Delhi');
-  const [deadline, setDeadline] = useState('18:00');
-  const [battery, setBattery] = useState(42);
+  const [goal, setGoal] = useState('');
+  const [intentFeedback, setIntentFeedback] = useState('');
+  const [parsedIntentText, setParsedIntentText] = useState('');
+  const [origin, setOrigin] = useState('');
+  const [destination, setDestination] = useState('');
+  const [deadline, setDeadline] = useState('');
+  const [battery, setBattery] = useState(50);
   const [minimumBattery, setMinimumBattery] = useState(15);
-  const [budget, setBudget] = useState(900);
+  const [budget, setBudget] = useState(1000);
   const [optimizeFor, setOptimizeFor] = useState<AutopilotTripRequest['optimizeFor']>('TIME');
   const [autonomyMode, setAutonomyMode] = useState<AutopilotMode>('ASK_BEFORE_ACTIONS');
   const [tripPurpose, setTripPurpose] = useState<TripPurpose>('GENERAL');
@@ -82,6 +99,8 @@ export function AutopilotView({ token, userName, onOpenWallet }: AutopilotViewPr
     registrationNumber: '',
     batteryCapacity: '40.5 kWh',
     connectorType: 'CCS2',
+    maxDcChargePowerKw: 50,
+    chargingEfficiency: 0.9,
   });
 
   const refresh = useCallback(async () => {
@@ -93,7 +112,9 @@ export function AutopilotView({ token, userName, onOpenWallet }: AutopilotViewPr
         getCurrentAutopilotTrip(token),
       ]);
       setVehicles(availableVehicles);
-      setVehicleId((current) => current ?? availableVehicles[0]?.id ?? null);
+      const active = availableVehicles[0];
+      setVehicleId((current) => current ?? active?.id ?? null);
+      if (active?.batteryPercent != null) setBattery(active.batteryPercent);
       setTrip(currentTrip);
     } catch (requestError) {
       setError(messageFor(requestError));
@@ -112,26 +133,173 @@ export function AutopilotView({ token, userName, onOpenWallet }: AutopilotViewPr
   );
 
   const cancelledStop = useMemo(
-    () => trip?.stops.find((stop) => stop.status === 'CANCELLED') ?? null,
+    () => {
+      if (!trip) return null;
+      const activeReplacement = trip.stops.filter((stop) => stop.stationId === trip.activeStationId
+        && (stop.status === 'PLANNED' || stop.status === 'RESERVED')).at(-1);
+      const activeReplacementCancelledStop = activeReplacement
+        ? trip.stops.filter((stop) => stop.status === 'CANCELLED'
+          && stop.sequenceNumber === activeReplacement.sequenceNumber).at(-1)
+        : null;
+      return activeReplacementCancelledStop
+        ?? trip.stops.filter((stop) => stop.status === 'CANCELLED').at(-1)
+        ?? null;
+    },
     [trip],
   );
 
-  const buildTripRequest = (): AutopilotTripRequest => ({
-    vehicleId: vehicleId ?? 0,
+  const pairedReplacement = useMemo(
+    () => cancelledStop
+      ? trip?.stops.filter((stop) => stop.id !== cancelledStop.id
+        && stop.sequenceNumber === cancelledStop.sequenceNumber
+        && stop.status !== 'CANCELLED').at(-1) ?? null
+      : null,
+    [trip, cancelledStop],
+  );
+
+  const proposedReplacement = useMemo(
+    () => pairedReplacement?.status === 'PLANNED'
+      ? pairedReplacement
+      : trip?.stops.filter((stop) => stop.status === 'PLANNED').at(-1) ?? null,
+    [trip, pairedReplacement],
+  );
+
+  const reservedReplacement = pairedReplacement?.status === 'RESERVED' ? pairedReplacement : null;
+
+  const rerouteImpact = useMemo(() => {
+    const replacement = pairedReplacement;
+    if (!trip || !cancelledStop || !replacement) return null;
+    const extraDistanceKm = Math.max(0, replacement.routeOffsetKm - cancelledStop.routeOffsetKm);
+    const originalStopMinutes = cancelledStop.estimatedWaitMinutes + cancelledStop.chargingMinutes + cancelledStop.connectionMinutes;
+    const replacementStopMinutes = replacement.estimatedWaitMinutes + replacement.chargingMinutes + replacement.connectionMinutes;
+    const delayMinutes = Math.max(0, replacementStopMinutes - originalStopMinutes + Math.ceil(extraDistanceKm / 0.8));
+    const vehicle = vehicles.find((item) => item.id === trip.telemetry.vehicleId);
+    const efficiencyWhPerKm = vehicle?.efficiencyWhPerKm ?? 160;
+    const extraBatteryPercent = trip.telemetry.batteryCapacityKwh > 0
+      ? extraDistanceKm * efficiencyWhPerKm / 1000 / trip.telemetry.batteryCapacityKwh * 100
+      : 0;
+    return {
+      extraDistanceKm: Number(extraDistanceKm.toFixed(1)),
+      delayMinutes,
+      chargingCostDifference: Number((replacement.estimatedCost - cancelledStop.estimatedCost).toFixed(0)),
+      extraBatteryPercent: Number(extraBatteryPercent.toFixed(1)),
+    };
+  }, [trip, cancelledStop, pairedReplacement, vehicles]);
+
+  const selectVehicle = (nextVehicleId: number) => {
+    setVehicleId(nextVehicleId);
+    const selected = vehicles.find((vehicle) => vehicle.id === nextVehicleId);
+    if (selected?.batteryPercent != null) setBattery(selected.batteryPercent);
+    setVehicleRecommendation(null);
+    setProposal(null);
+  };
+
+  const currentPlanningInputs = (): PlanningInputs => ({
     origin,
     destination,
-    goal,
-    tripPurpose,
-    arrivalDeadline: deadline,
+    deadline,
+    battery,
+    minimumBattery,
+    budget,
     optimizeFor,
     autonomyMode,
-    currentBatteryPercent: battery,
-    minimumArrivalBatteryPercent: minimumBattery,
-    maximumChargingBudget: budget,
+    tripPurpose,
+  });
+
+  const applyJourneyIntent = (intent: JourneyIntent, current: PlanningInputs): PlanningInputs => {
+    const next: PlanningInputs = {
+      origin: intent.origin?.trim() || current.origin,
+      destination: intent.destination?.trim() || current.destination,
+      deadline: intent.arrivalDeadline || current.deadline,
+      battery: intent.currentBatteryPercent ?? current.battery,
+      minimumBattery: intent.minimumArrivalBatteryPercent ?? current.minimumBattery,
+      budget: intent.maximumChargingBudget ?? current.budget,
+      optimizeFor: intent.optimizeFor ?? current.optimizeFor,
+      autonomyMode: intent.autonomyMode ?? current.autonomyMode,
+      tripPurpose: intent.tripPurpose ?? current.tripPurpose,
+    };
+    setOrigin(next.origin);
+    setDestination(next.destination);
+    setDeadline(next.deadline);
+    setBattery(next.battery);
+    setMinimumBattery(next.minimumBattery);
+    setBudget(next.budget);
+    setOptimizeFor(next.optimizeFor);
+    setAutonomyMode(next.autonomyMode);
+    setTripPurpose(next.tripPurpose);
+    return next;
+  };
+
+  const resolveJourneyIntent = async (showFeedback = false, force = false): Promise<PlanningInputs> => {
+    const current = currentPlanningInputs();
+    if (!goal.trim()) return current;
+    if (!force && parsedIntentText === goal.trim()) return current;
+    try {
+      const intent = await parseAutopilotJourneyIntent(token, goal.trim());
+      const next = applyJourneyIntent(intent, current);
+      setParsedIntentText(goal.trim());
+      if (showFeedback || intent.recognizedFields.length > 0) {
+        setIntentFeedback(intent.recognizedFields.length > 0
+          ? `Applied ${intent.recognizedFields.length} detail${intent.recognizedFields.length === 1 ? '' : 's'} from your request. Review the fields below before planning.`
+          : 'No structured trip details were recognized. Add “from … to …”, battery, reserve, budget, or arrival time.');
+      }
+      return next;
+    } catch (requestError) {
+      if (showFeedback) setPlannerError(messageFor(requestError));
+      return current;
+    }
+  };
+
+  const interpretGoal = async () => {
+    if (!goal.trim()) {
+      setPlannerError('Describe the journey first—for example, “Kanpur to Bhopal, battery 76%, reserve 10%, under ₹900, fastest.”');
+      return;
+    }
+    setAction('parse-intent');
+    setPlannerError('');
+    try {
+      await resolveJourneyIntent(true, true);
+    } finally {
+      setAction('');
+    }
+  };
+
+  const buildTripRequest = (inputs: PlanningInputs = currentPlanningInputs()): AutopilotTripRequest => ({
+    vehicleId: vehicleId ?? 0,
+    origin: inputs.origin.trim(),
+    destination: inputs.destination.trim(),
+    goal: goal.trim(),
+    tripPurpose: inputs.tripPurpose,
+    arrivalDeadline: inputs.deadline,
+    optimizeFor: inputs.optimizeFor,
+    autonomyMode: inputs.autonomyMode,
+    currentBatteryPercent: inputs.battery,
+    minimumArrivalBatteryPercent: inputs.minimumBattery,
+    maximumChargingBudget: inputs.budget,
     idempotencyKey: typeof crypto !== 'undefined' && 'randomUUID' in crypto
       ? crypto.randomUUID()
       : `TRIP-${Date.now()}`,
   });
+
+  const planningInputsAreValid = (inputs: PlanningInputs = currentPlanningInputs()): boolean => {
+    if (!vehicleId) {
+      setPlannerError('Add an EV before planning the journey.');
+      return false;
+    }
+    if (!inputs.origin.trim() || !inputs.destination.trim()) {
+      setPlannerError('Enter both the starting place and destination.');
+      return false;
+    }
+    if (inputs.battery <= inputs.minimumBattery) {
+      setPlannerError('Current battery must be above the arrival reserve.');
+      return false;
+    }
+    if (inputs.budget <= 0) {
+      setPlannerError('Enter a charging budget greater than zero.');
+      return false;
+    }
+    return true;
+  };
 
   const runAction = async (name: string, operation: () => Promise<AutopilotTrip>) => {
     setAction(name);
@@ -145,63 +313,125 @@ export function AutopilotView({ token, userName, onOpenWallet }: AutopilotViewPr
     }
   };
 
-  const planWithGemini = async () => {
-    if (!vehicleId) {
-      setError('Add an EV before asking Gemini to plan the journey.');
-      return;
-    }
+  const planWithAgent = async () => {
+    const inputs = await resolveJourneyIntent();
+    if (!planningInputsAreValid(inputs)) return;
     setAction('agent');
-    setError('');
+    setPlannerError('');
     setAgentReply('');
     setAgentToolCalls([]);
+    setVehicleRecommendation(null);
     setProposal(null);
     try {
+      const userPrompt = goal.trim()
+        ? `Driver request: "${goal.trim()}". Check vehicle ID ${vehicleId} status and generate a read-only Autopilot proposal with preview_autopilot_trip. Enforce the parsed application values: from ${inputs.origin} to ${inputs.destination}, current battery ${inputs.battery}%, arrival reserve ${inputs.minimumBattery}%, budget ₹${inputs.budget}, arrival deadline ${inputs.deadline || 'none'}, purpose ${inputs.tripPurpose}, optimize for ${inputs.optimizeFor}, autonomy mode ${inputs.autonomyMode}.`
+        : `Create a read-only Vidyut Autopilot proposal. First call get_vehicle_status for vehicle ID ${vehicleId}, then call preview_autopilot_trip. Route: ${inputs.origin} to ${inputs.destination}. Current battery: ${inputs.battery}%. Arrival deadline: ${inputs.deadline || 'none'}. Minimum arrival reserve: ${inputs.minimumBattery}%. Maximum charging budget: INR ${inputs.budget}. Trip purpose: ${inputs.tripPurpose}. Optimize for: ${inputs.optimizeFor}. Autonomy mode: ${inputs.autonomyMode}.`;
+
       const response = await sendAutopilotAgentMessage(
         token,
-        `Create a read-only Vidyut Autopilot proposal. Do not book, reserve, pay, or launch anything. `
-          + `First call get_vehicle_status for vehicle ID ${vehicleId}, then call preview_autopilot_trip. `
-          + `Route: ${origin} to ${destination}. Current battery: ${battery}%. Arrival deadline: ${deadline}. `
-          + `Minimum arrival reserve: ${minimumBattery}%. Maximum charging budget: INR ${budget}. `
-          + `Trip purpose: ${tripPurpose}. Optimize for: ${optimizeFor}. Autonomy mode: ${autonomyMode}. User goal: ${goal}`,
+        userPrompt,
         agentSessionId,
+        buildTripRequest(inputs),
       );
       setAgentSessionId(response.sessionId);
       setAgentReply(response.reply);
       setAgentToolCalls(response.toolCalls);
-      setProposal(response.plan ?? await previewAutopilotTrip(token, buildTripRequest()));
+      setProposal(response.plan ?? await previewAutopilotTrip(token, buildTripRequest(inputs)));
     } catch (requestError) {
-      setError(messageFor(requestError));
+      setPlannerError(messageFor(requestError));
     } finally {
       setAction('');
     }
   };
 
   const quickPreview = async () => {
-    if (!vehicleId) {
-      setError('Add an EV before previewing the journey.');
-      return;
-    }
+    const inputs = await resolveJourneyIntent();
+    if (!planningInputsAreValid(inputs)) return;
     setAction('preview');
-    setError('');
+    setPlannerError('');
     setAgentReply('');
     setAgentToolCalls([]);
+    setVehicleRecommendation(null);
     try {
-      setProposal(await previewAutopilotTrip(token, buildTripRequest()));
+      setProposal(await previewAutopilotTrip(token, buildTripRequest(inputs)));
     } catch (requestError) {
-      setError(messageFor(requestError));
+      setPlannerError(messageFor(requestError));
+    } finally {
+      setAction('');
+    }
+  };
+
+  const chooseBestVehicle = async () => {
+    if (!vehicles.length) {
+      setPlannerError('Add an EV before comparing your garage.');
+      return;
+    }
+    const inputs = await resolveJourneyIntent();
+    if (!inputs.origin.trim() || !inputs.destination.trim()) {
+      setPlannerError('Enter both the starting place and destination.');
+      return;
+    }
+    if (inputs.budget <= 0) {
+      setPlannerError('Enter a charging budget greater than zero.');
+      return;
+    }
+    setAction('recommend-vehicle');
+    setPlannerError('');
+    setAgentReply('');
+    setAgentToolCalls([]);
+    setProposal(null);
+    try {
+      const recommendation = await recommendAutopilotVehicle(token, {
+        origin: inputs.origin.trim(),
+        destination: inputs.destination.trim(),
+        goal: goal.trim(),
+        tripPurpose: inputs.tripPurpose,
+        arrivalDeadline: inputs.deadline,
+        optimizeFor: inputs.optimizeFor,
+        autonomyMode: inputs.autonomyMode,
+        fallbackBatteryPercent: inputs.battery,
+        minimumArrivalBatteryPercent: inputs.minimumBattery,
+        maximumChargingBudget: inputs.budget,
+      });
+      setVehicleRecommendation(recommendation);
+      if (recommendation.recommendedVehicleId) {
+        setVehicleId(recommendation.recommendedVehicleId);
+        const selected = recommendation.vehicles.find(
+          (vehicle) => vehicle.vehicleId === recommendation.recommendedVehicleId,
+        );
+        if (selected) setBattery(selected.currentBatteryPercent);
+      }
+      setProposal(recommendation.recommendedPlan ?? null);
+    } catch (requestError) {
+      setPlannerError(messageFor(requestError));
     } finally {
       setAction('');
     }
   };
 
   const confirmProposal = async () => {
-    if (!vehicleId || !proposal || autonomyMode === 'RECOMMEND_ONLY') return;
+    if (!vehicleId || !proposal || autonomyMode === 'RECOMMEND_ONLY' || !proposal.overallFeasible) return;
     setAction('confirm');
     setError('');
     try {
       // The user has approved the reviewed proposal, so execute its typed,
-      // deterministic Spring command instead of asking Gemini to repeat it.
-      const createdTrip = await launchAutopilotTrip(token, buildTripRequest());
+      // deterministic Spring command instead of asking the agent to repeat it.
+      const createdTrip = await launchAutopilotTrip(token, {
+        vehicleId: proposal.vehicleId,
+        origin: proposal.origin,
+        destination: proposal.destination,
+        goal: goal.trim(),
+        tripPurpose: proposal.tripPurpose,
+        arrivalDeadline: proposal.arrivalDeadline ?? '',
+        optimizeFor: proposal.optimizeFor,
+        autonomyMode,
+        currentBatteryPercent: proposal.currentBatteryPercent,
+        minimumArrivalBatteryPercent: proposal.minimumArrivalBatteryPercent,
+        maximumChargingBudget: proposal.maximumChargingBudget,
+        idempotencyKey: typeof crypto !== 'undefined' && 'randomUUID' in crypto
+          ? crypto.randomUUID()
+          : `TRIP-${Date.now()}`,
+      });
       if (!createdTrip) {
         setError(
           'The reservation was not created. Your plan is still available—try Confirm Autopilot again.',
@@ -211,10 +441,24 @@ export function AutopilotView({ token, userName, onOpenWallet }: AutopilotViewPr
       setTrip(createdTrip);
       setProposal(null);
     } catch (requestError) {
-      setError(messageFor(requestError));
+      setPlannerError(messageFor(requestError));
     } finally {
       setAction('');
     }
+  };
+
+  const useRequiredBudget = () => {
+    if (!proposal) return;
+    const requiredBudget = Math.ceil(proposal.estimatedChargingCost);
+    setBudget(requiredBudget);
+    setPlannerError('');
+    setProposal({
+      ...proposal,
+      maximumChargingBudget: requiredBudget,
+      budgetRemaining: requiredBudget - proposal.estimatedChargingCost,
+      withinBudget: true,
+      overallFeasible: proposal.safeArrivalReserve && proposal.deadlineFeasible,
+    });
   };
 
   const addVehicle = async () => {
@@ -310,10 +554,9 @@ export function AutopilotView({ token, userName, onOpenWallet }: AutopilotViewPr
         </div>
       </section>
 
-      {error && <div className="autopilot-error" role="alert"><AlertTriangle size={18} /> {error}</div>}
-
       <div className="autopilot-layout">
         <div className="autopilot-main-column">
+          {error && <div className="autopilot-error" role="alert"><AlertTriangle size={18} /> {error}</div>}
           <section className="autopilot-card goal-card">
             <div className="autopilot-card-heading">
               <div>
@@ -321,7 +564,7 @@ export function AutopilotView({ token, userName, onOpenWallet }: AutopilotViewPr
                 <div><h2>Set the journey goal</h2><p>Natural-language intent plus enforceable safety constraints.</p></div>
               </div>
               {vehicles.length > 0 && (
-                <select value={vehicleId ?? ''} onChange={(event) => setVehicleId(Number(event.target.value))}>
+                <select value={vehicleId ?? ''} onChange={(event) => selectVehicle(Number(event.target.value))}>
                   {vehicles.map((vehicle) => <option value={vehicle.id} key={vehicle.id}>{vehicle.makeAndModel} · {vehicle.registrationNumber}</option>)}
                 </select>
               )}
@@ -335,7 +578,9 @@ export function AutopilotView({ token, userName, onOpenWallet }: AutopilotViewPr
                   <label>Make & model<input value={vehicleForm.makeAndModel} onChange={(event) => setVehicleForm((current) => ({ ...current, makeAndModel: event.target.value }))} /></label>
                   <label>Registration<input placeholder="UP78 AB 1234" value={vehicleForm.registrationNumber} onChange={(event) => setVehicleForm((current) => ({ ...current, registrationNumber: event.target.value }))} /></label>
                   <label>Battery<input value={vehicleForm.batteryCapacity} onChange={(event) => setVehicleForm((current) => ({ ...current, batteryCapacity: event.target.value }))} /></label>
-                  <label>Connector<select value={vehicleForm.connectorType} onChange={(event) => setVehicleForm((current) => ({ ...current, connectorType: event.target.value }))}><option>CCS2</option><option>TYPE2</option><option>CHADEMO</option></select></label>
+                  <label>Connector<select value={vehicleForm.connectorType} onChange={(event) => setVehicleForm((current) => ({ ...current, connectorType: event.target.value }))}><option>CCS2</option><option>TYPE2</option><option>CHADEMO</option><option>GB_T</option><option>TYPE1</option></select></label>
+                  <label>Maximum DC power<input type="number" min="1" value={vehicleForm.maxDcChargePowerKw} onChange={(event) => setVehicleForm((current) => ({ ...current, maxDcChargePowerKw: Number(event.target.value) }))} /></label>
+                  <label>Charging efficiency<input type="number" min="0.5" max="1" step="0.01" value={vehicleForm.chargingEfficiency} onChange={(event) => setVehicleForm((current) => ({ ...current, chargingEfficiency: Number(event.target.value) }))} /></label>
                 </div>
                 <button className="autopilot-secondary-button" onClick={() => void addVehicle()} disabled={Boolean(action)}>
                   {action === 'vehicle' ? <LoaderCircle className="spin" size={16} /> : <CarFront size={16} />} Add EV
@@ -353,7 +598,7 @@ export function AutopilotView({ token, userName, onOpenWallet }: AutopilotViewPr
                       active={autonomyMode === 'RECOMMEND_ONLY'}
                       icon={<Eye size={17} />}
                       title="Recommend only"
-                      detail="Plan everything; I take the actions"
+                      detail="Plan everything • I take the actions"
                       onClick={() => setAutonomyMode('RECOMMEND_ONLY')}
                     />
                     <ModeButton
@@ -361,22 +606,38 @@ export function AutopilotView({ token, userName, onOpenWallet }: AutopilotViewPr
                       recommended
                       icon={<ShieldCheck size={17} />}
                       title="Ask before actions"
-                      detail="Approve bookings and payments"
+                      detail="Plan automatically • Ask before executing"
                       onClick={() => setAutonomyMode('ASK_BEFORE_ACTIONS')}
                     />
                     <ModeButton
                       active={autonomyMode === 'FULL_AUTOPILOT'}
                       icon={<RadioTower size={17} />}
                       title="Full Autopilot"
-                      detail="Act automatically inside my limits"
+                      detail="Plan and act automatically within my limits"
                       onClick={() => setAutonomyMode('FULL_AUTOPILOT')}
                     />
                   </div>
                 </div>
                 <label className="goal-prompt-label">
                   <span><Bot size={16} /> Tell Vidyut what matters</span>
-                  <textarea value={goal} onChange={(event) => setGoal(event.target.value)} rows={3} />
+                  <textarea
+                    placeholder="Describe your route, battery reserve, budget, arrival time, and priorities..."
+                    value={goal}
+                    onChange={(event) => {
+                      setGoal(event.target.value);
+                      setIntentFeedback('');
+                      setParsedIntentText('');
+                    }}
+                    rows={3}
+                  />
                 </label>
+                <div className="intent-parser-row">
+                  <button type="button" onClick={() => void interpretGoal()} disabled={Boolean(action)}>
+                    {action === 'parse-intent' ? <LoaderCircle className="spin" size={15} /> : <Sparkles size={15} />}
+                    {action === 'parse-intent' ? 'Reading request…' : 'Fill trip details from text'}
+                  </button>
+                  {intentFeedback && <span role="status">{intentFeedback}</span>}
+                </div>
                 <div className="trip-purpose-block">
                   <span>What should this stop support?</span>
                   <div>
@@ -389,26 +650,34 @@ export function AutopilotView({ token, userName, onOpenWallet }: AutopilotViewPr
                   </div>
                 </div>
                 <div className="route-input-row">
-                  <label><span>From</span><div><MapPin size={16} /><input value={origin} onChange={(event) => setOrigin(event.target.value)} /></div></label>
+                  <label><span>From</span><div><MapPin size={16} /><input placeholder="City, address, or coordinates" value={origin} onChange={(event) => setOrigin(event.target.value)} /></div></label>
                   <ArrowRight size={18} className="route-arrow" />
-                  <label><span>To</span><div><Navigation size={16} /><input value={destination} onChange={(event) => setDestination(event.target.value)} /></div></label>
+                  <label><span>To</span><div><Navigation size={16} /><input placeholder="City, address, or coordinates" value={destination} onChange={(event) => setDestination(event.target.value)} /></div></label>
                 </div>
                 <div className="constraint-grid">
-                  <label><span>Current battery</span><div><BatteryCharging size={16} /><input type="number" min="1" max="100" value={battery} onChange={(event) => setBattery(Number(event.target.value))} /><strong>%</strong></div></label>
-                  <label><span>Safety reserve</span><div><ShieldCheck size={16} /><input type="number" min="5" max="50" value={minimumBattery} onChange={(event) => setMinimumBattery(Number(event.target.value))} /><strong>%</strong></div></label>
-                  <label><span>Maximum budget</span><div><IndianRupee size={16} /><input type="number" min="1" value={budget} onChange={(event) => setBudget(Number(event.target.value))} /></div></label>
+                  <label><span>Current battery</span><div><BatteryCharging size={16} /><input type="number" min="1" max="100" placeholder="50" value={battery} onChange={(event) => setBattery(Number(event.target.value))} /><strong>%</strong></div></label>
+                  <label><span>Safety reserve</span><div><ShieldCheck size={16} /><input type="number" min="5" max="50" placeholder="15" value={minimumBattery} onChange={(event) => setMinimumBattery(Number(event.target.value))} /><strong>%</strong></div></label>
+                  <label><span>Maximum budget</span><div><IndianRupee size={16} /><input type="number" min="1" placeholder="1000" value={budget} onChange={(event) => setBudget(Number(event.target.value))} /></div></label>
                   <label><span>Arrive by</span><div><Clock3 size={16} /><input type="time" value={deadline} onChange={(event) => setDeadline(event.target.value)} /></div></label>
                 </div>
                 <div className="goal-footer">
                   <div className="optimization-switch" aria-label="Optimization preference">
-                    {(['TIME', 'BALANCED', 'COST'] as const).map((option) => (
-                      <button key={option} className={optimizeFor === option ? 'active' : ''} onClick={() => setOptimizeFor(option)}>{option === 'TIME' ? 'Fastest' : option === 'COST' ? 'Lowest cost' : 'Balanced'}</button>
+                    {([
+                      ['TIME', 'Fastest', 'Minimize total trip time'],
+                      ['BALANCED', 'Balanced', 'Time + cost + convenience'],
+                      ['COST', 'Lowest cost', 'Minimize charging expense'],
+                    ] as const).map(([option, label, detail]) => (
+                      <button type="button" key={option} className={optimizeFor === option ? 'active' : ''} onClick={() => setOptimizeFor(option)}><strong>{label}</strong><small>{detail}</small></button>
                     ))}
                   </div>
                   <div className="agent-plan-actions">
-                    <button className="autopilot-agent-button" onClick={() => void planWithGemini()} disabled={Boolean(action)}>
+                    <button className="autopilot-recommend-vehicle-button" onClick={() => void chooseBestVehicle()} disabled={Boolean(action)}>
+                      {action === 'recommend-vehicle' ? <LoaderCircle className="spin" size={18} /> : <CarFront size={18} />}
+                      {action === 'recommend-vehicle' ? 'Comparing garage…' : 'Choose my best car'}
+                    </button>
+                    <button className="autopilot-agent-button" onClick={() => void planWithAgent()} disabled={Boolean(action)}>
                       {action === 'agent' ? <LoaderCircle className="spin" size={18} /> : <Bot size={18} />}
-                      {action === 'agent' ? 'Gemini is planning…' : 'Build plan with Gemini'}
+                      {action === 'agent' ? 'Vidyut is planning…' : 'Build plan with Vidyut'}
                     </button>
                     <button className="autopilot-preview-button" onClick={() => void quickPreview()} disabled={Boolean(action)}>
                       {action === 'preview' ? <LoaderCircle className="spin" size={18} /> : <BrainCircuit size={18} />}
@@ -423,9 +692,22 @@ export function AutopilotView({ token, userName, onOpenWallet }: AutopilotViewPr
                     <div className="planning-dots"><i /><i /><i /></div>
                   </div>
                 )}
+                {plannerError && (
+                  <div className="planner-inline-error" role="alert">
+                    <AlertTriangle size={17} />
+                    <span>{plannerError}</span>
+                  </div>
+                )}
               </>
             )}
           </section>
+
+          {vehicleRecommendation && (
+            <VehicleRecommendationPanel
+              recommendation={vehicleRecommendation}
+              onChoose={selectVehicle}
+            />
+          )}
 
           {proposal && (
             <AutopilotProposal
@@ -435,6 +717,7 @@ export function AutopilotView({ token, userName, onOpenWallet }: AutopilotViewPr
               toolCalls={agentToolCalls}
               busy={action === 'confirm'}
               onConfirm={() => void confirmProposal()}
+              onUseRequiredBudget={useRequiredBudget}
             />
           )}
 
@@ -450,6 +733,13 @@ export function AutopilotView({ token, userName, onOpenWallet }: AutopilotViewPr
                   <TripMetric icon={<Clock3 />} value={formatMinutes(trip.totalDurationMinutes)} label="Door-to-door" />
                   <TripMetric icon={<IndianRupee />} value={`₹${trip.estimatedChargingCost.toFixed(0)}`} label={`of ₹${trip.maximumChargingBudget.toFixed(0)}`} />
                   <TripMetric icon={<Gauge />} value={`${trip.estimatedArrivalBatteryPercent}%`} label="Arrival battery" />
+                </div>
+                <div className="active-plan-breakdown">
+                  <span>Base {trip.baseRouteDistanceKm} km</span>
+                  <span>Detour +{trip.chargingDetourDistanceKm} km / {trip.chargingDetourMinutes}m</span>
+                  <span>Charge {trip.estimatedChargingMinutes}m</span>
+                  <span>Queue {trip.estimatedQueueMinutes}m</span>
+                  <span>Setup {trip.connectionOverheadMinutes}m</span>
                 </div>
                 <div className="journey-line">
                   <div className="journey-endpoint"><span className="journey-dot start" /><strong>{trip.origin}</strong><small>{trip.telemetry.batteryPercent}% now</small></div>
@@ -468,29 +758,52 @@ export function AutopilotView({ token, userName, onOpenWallet }: AutopilotViewPr
                 <section className="autopilot-recovery" role="status" aria-live="polite">
                   <div className="recovery-icon"><RefreshCw size={22} /></div>
                   <div className="recovery-copy">
-                    <div className="recovery-eyebrow"><CircleCheckBig size={13} /> AUTONOMOUS RECOVERY COMPLETE</div>
-                    <h2>Vidyut protected the journey without driver action</h2>
+                    <div className="recovery-eyebrow"><CircleCheckBig size={13} /> {trip.autonomyMode === 'FULL_AUTOPILOT' ? 'AUTONOMOUS RECOVERY COMPLETE' : 'DRIVER-APPROVED RECOVERY COMPLETE'}</div>
+                    <h2>{trip.autonomyMode === 'FULL_AUTOPILOT' ? 'Vidyut protected the journey without driver action' : 'Your approved replacement is reserved'}</h2>
                     <p>
                       {cancelledStop?.stationName ?? 'The unavailable charging stop'} was cancelled and{' '}
-                      <strong>{activeStop?.stationName ?? 'a compatible replacement'}</strong> is now reserved.
+                      <strong>{reservedReplacement?.stationName ?? 'a compatible replacement'}</strong> is now reserved.
                       The route, charging plan, and wallet authorization were updated together.
                     </p>
                   </div>
                   <div className="recovery-facts" aria-label="Updated journey safeguards">
-                    <span><small>NEW STOP</small><strong>{activeStop?.stationName ?? 'Reserved'}</strong></span>
+                    <span><small>NEW STOP</small><strong>{reservedReplacement?.stationName ?? 'Reserved'}</strong></span>
                     <span><small>ARRIVAL RESERVE</small><strong>{trip.estimatedArrivalBatteryPercent}%</strong></span>
                     <span><small>UPDATED COST</small><strong>₹{trip.estimatedChargingCost.toFixed(0)} / ₹{trip.maximumChargingBudget.toFixed(0)}</strong></span>
+                    {rerouteImpact && <><span><small>OUTAGE DELAY</small><strong>+{rerouteImpact.delayMinutes} min</strong></span><span><small>EXTRA DRIVING</small><strong>+{rerouteImpact.extraDistanceKm} km</strong></span><span><small>CHARGING DIFFERENCE</small><strong>{rerouteImpact.chargingCostDifference >= 0 ? '+' : '−'}₹{Math.abs(rerouteImpact.chargingCostDifference)}</strong></span><span><small>EXTRA BATTERY</small><strong>−{rerouteImpact.extraBatteryPercent}%</strong></span></>}
                   </div>
                 </section>
               )}
 
+              {trip.status === 'REROUTE_APPROVAL_REQUIRED' && (
+                <section className="autopilot-recovery approval-required" role="status" aria-live="polite">
+                  <div className="recovery-icon"><ShieldCheck size={22} /></div>
+                  <div className="recovery-copy">
+                    <div className="recovery-eyebrow"><AlertTriangle size={13} /> HOST AVAILABILITY CHANGED</div>
+                    <h2>A safe replacement needs your approval</h2>
+                    <p><strong>{cancelledStop?.stationName ?? 'The original stop'}</strong> became unavailable. Vidyut selected <strong>{proposedReplacement?.stationName ?? 'a compatible alternative'}</strong>, but has not booked it because your autonomy setting requires a driver decision.</p>
+                    {rerouteImpact && <div className="approval-impact-line"><span>+{rerouteImpact.extraDistanceKm} km</span><span>+{rerouteImpact.delayMinutes} min</span><span>{rerouteImpact.chargingCostDifference >= 0 ? '+' : '−'}₹{Math.abs(rerouteImpact.chargingCostDifference)}</span><span>−{rerouteImpact.extraBatteryPercent}% battery</span></div>}
+                  </div>
+                  <button className="autopilot-secondary-button" disabled={action === 'approve-reroute'} onClick={() => void runAction('approve-reroute', () => approveAutopilotReroute(token, trip.id))}>
+                    {action === 'approve-reroute' ? <LoaderCircle className="spin" size={16} /> : <Navigation size={16} />} Approve reroute
+                  </button>
+                </section>
+              )}
+
+              {trip.status === 'REPLAN_REQUIRED' && (
+                <section className="autopilot-recovery replan-required" role="alert">
+                  <div className="recovery-icon"><AlertTriangle size={22} /></div>
+                  <div className="recovery-copy"><div className="recovery-eyebrow">SAFE STOP REQUIRED</div><h2>No compatible replacement currently fits your limits</h2><p>The unavailable reservation was released without a fee. Stop safely and adjust the route, budget, or charging constraints before continuing.</p></div>
+                </section>
+              )}
+
               <section className="autopilot-card stops-card">
-                <div className="simple-card-head"><div><h2>Charging stops</h2><p>Selected for total journey impact—not simply nearest distance.</p></div><span>{trip.stops.filter((stop) => stop.status !== 'CANCELLED').length} active</span></div>
+                <div className="simple-card-head"><div><h2>Charging stops</h2><p>Selected for total journey impact—not simply nearest distance.</p></div><span>{trip.stops.filter((stop) => stop.status === 'PLANNED' || stop.status === 'RESERVED').length} remaining</span></div>
                 <div className="stops-list">
                   {trip.stops.map((stop) => (
                     <article className={`stop-card stop-${stop.status.toLowerCase()}`} key={stop.id}>
                       <div className="stop-sequence">{stop.status === 'CANCELLED' ? <AlertTriangle size={17} /> : stop.sequenceNumber}</div>
-                      <div className="stop-copy"><div className="stop-title-row"><h3>{stop.stationName}</h3><span>{stop.status}</span></div><p><MapPin size={13} /> {stop.stationAddress}</p><div className="stop-specs"><span><Zap size={13} /> {stop.connectorType} · {stop.powerKw} kW</span><span><Clock3 size={13} /> {stop.estimatedWaitMinutes + stop.chargingMinutes} min impact</span><span><IndianRupee size={13} /> ₹{stop.estimatedCost.toFixed(0)}</span></div>{stop.selectionReason && <p className="stop-selection-reason"><BrainCircuit size={12} /> {stop.selectionReason}</p>}</div>
+                      <div className="stop-copy"><div className="stop-title-row"><h3>{stop.stationName}</h3>{stop.demoData && <span className="demo-data-badge">DEMO DATA</span>}<span>{stop.status}</span></div><p><MapPin size={13} /> {stop.stationAddress}</p><div className="stop-specs"><span><Zap size={13} /> {stop.connectorType} · {stop.powerKw} kW rated{stop.effectivePowerKw > 0 ? ` · ~${stop.effectivePowerKw} kW effective` : ''}</span><span><Clock3 size={13} /> {stop.estimatedWaitMinutes + stop.chargingMinutes} min impact</span><span><IndianRupee size={13} /> ₹{stop.estimatedCost.toFixed(0)}</span></div>{stop.selectionReason && <p className="stop-selection-reason"><BrainCircuit size={12} /> {stop.selectionReason}</p>}</div>
                       <div className="battery-transfer"><small>ARRIVE</small><strong>{stop.arrivalBatteryPercent}%</strong><ArrowRight size={15} /><small>LEAVE</small><strong>{stop.targetBatteryPercent}%</strong></div>
                     </article>
                   ))}
@@ -513,10 +826,11 @@ export function AutopilotView({ token, userName, onOpenWallet }: AutopilotViewPr
               </section>
 
               <section className="action-control-card">
-                <div className="simple-card-head"><div><h2>Demo controls</h2><p>Trigger real backend actions.</p></div></div>
+                <div className="simple-card-head"><div><h2>Journey controls</h2><p>Update live trip progress.</p></div></div>
                 <div className="control-stack">
                   {trip.status === 'RESERVED' && <ActionButton icon={<Navigation size={17} />} label="Start monitored journey" detail="Begin telemetry and live checks" busy={action === 'start'} onClick={() => void runAction('start', () => startAutopilotTrip(token, trip.id))} />}
                   {(trip.status === 'MONITORING' || trip.status === 'RESERVED') && <ActionButton icon={<AlertTriangle size={17} />} label="Simulate charger fault" detail="Cancel, replan and rebook" danger busy={action === 'fault'} onClick={() => void runAction('fault', () => simulateAutopilotFault(token, trip.id))} />}
+                  {trip.status === 'REROUTE_APPROVAL_REQUIRED' && <ActionButton icon={<ShieldCheck size={17} />} label="Approve replacement charger" detail={proposedReplacement ? `${proposedReplacement.stationName} · ₹${proposedReplacement.estimatedCost.toFixed(0)}` : 'Review the proposed route'} busy={action === 'approve-reroute'} onClick={() => void runAction('approve-reroute', () => approveAutopilotReroute(token, trip.id))} />}
                   {['MONITORING', 'REROUTED', 'PAYMENT_REQUIRED', 'RESERVED'].includes(trip.status) && <ActionButton icon={<Zap size={17} />} label="Complete charging + AutoPay" detail={activeStop ? `Pay ₹${activeStop.estimatedCost.toFixed(0)} from wallet` : 'Finish active session'} busy={action === 'complete'} onClick={() => void runAction('complete', () => completeAutopilotCharging(token, trip.id))} />}
                   {activeStop && <ActionButton icon={<Clock3 size={17} />} label="Report excessive wait" detail="Teach future plans on this route" busy={action === 'wait-memory'} onClick={() => void saveRouteExperience('wait-memory', 'EXCESS_WAIT', `Unexpected wait at ${activeStop.stationName}`, Math.max(15, activeStop.estimatedWaitMinutes + 15))} />}
                   {activeStop && <ActionButton icon={<AlertTriangle size={17} />} label="Report access issue" detail="Lower this stop for later drivers" danger busy={action === 'access-memory'} onClick={() => void saveRouteExperience('access-memory', 'ACCESS_ISSUE', `Driver reported an access issue at ${activeStop.stationName}`)} />}
@@ -582,6 +896,85 @@ function ModeButton({
   );
 }
 
+function VehicleRecommendationPanel({
+  recommendation,
+  onChoose,
+}: {
+  recommendation: VehicleRecommendation;
+  onChoose: (vehicleId: number) => void;
+}) {
+  const recommended = recommendation.vehicles.find(
+    (vehicle) => vehicle.vehicleId === recommendation.recommendedVehicleId,
+  );
+  const others = recommendation.vehicles.filter(
+    (vehicle) => vehicle.vehicleId !== recommendation.recommendedVehicleId,
+  );
+
+  return (
+    <section className="autopilot-card vehicle-recommendation-card" aria-live="polite">
+      <div className="vehicle-recommendation-heading">
+        <div className="vehicle-recommendation-icon"><CarFront size={22} /></div>
+        <div>
+          <span><Sparkles size={12} /> GARAGE COMPARISON</span>
+          <h2>Recommended vehicle for this trip</h2>
+          <p>{recommendation.origin} → {recommendation.destination} · ranked for {optimizationLabel(recommendation.optimizeFor)}</p>
+        </div>
+      </div>
+
+      {recommended ? (
+        <article className="recommended-vehicle-result">
+          <div className="recommended-vehicle-copy">
+            <div><em>BEST MATCH</em><span>{recommended.registrationNumber}</span></div>
+            <h3>{recommended.vehicleName}</h3>
+            <p>{recommendation.reason}</p>
+            <div className="recommended-vehicle-specs">
+              <span><Zap size={13} /> {recommended.supportedConnectors.map(connectorName).join(' + ')}</span>
+              <span><BatteryCharging size={13} /> {recommended.batteryCapacityKwh} kWh · {recommended.currentBatteryPercent}%</span>
+              <span><Gauge size={13} /> {recommended.efficiencyWhPerKm} Wh/km</span>
+            </div>
+          </div>
+          <div className="recommended-vehicle-metrics">
+            <span><strong>{recommended.chargingStops}</strong><small>charging stops</small></span>
+            <span><strong>{formatMinutes(recommended.journeyMinutes)}</strong><small>door-to-door</small></span>
+            <span><strong>₹{recommended.estimatedCost.toFixed(0)}</strong><small>charging</small></span>
+            <span><strong>{recommended.arrivalBatteryPercent}%</strong><small>arrival battery</small></span>
+          </div>
+        </article>
+      ) : (
+        <div className="vehicle-recommendation-empty" role="status">
+          <AlertTriangle size={20} />
+          <div><strong>No saved car satisfies every constraint</strong><p>{recommendation.reason}</p></div>
+        </div>
+      )}
+
+      {others.length > 0 && (
+        <div className="vehicle-comparison-list">
+          <div className="vehicle-comparison-title"><h3>Other vehicles</h3><span>{others.length} compared</span></div>
+          {others.map((vehicle) => (
+            <article key={vehicle.vehicleId} className={vehicle.feasible ? 'feasible' : 'infeasible'}>
+              <div className="vehicle-comparison-status">
+                {vehicle.feasible ? <CircleCheckBig size={16} /> : <AlertTriangle size={16} />}
+              </div>
+              <div className="vehicle-comparison-copy">
+                <div><strong>{vehicle.vehicleName}</strong><span>{vehicle.supportedConnectors.map(connectorName).join(' + ')}</span></div>
+                <p>{vehicle.reason}</p>
+              </div>
+              {vehicle.feasible ? (
+                <div className="vehicle-comparison-numbers">
+                  <span>{vehicle.chargingStops} stop{vehicle.chargingStops === 1 ? '' : 's'}</span>
+                  <span>{formatMinutes(vehicle.journeyMinutes)}</span>
+                  <span>₹{vehicle.estimatedCost.toFixed(0)}</span>
+                  <button type="button" onClick={() => onChoose(vehicle.vehicleId)}>Use this car</button>
+                </div>
+              ) : <span className="vehicle-not-feasible">NOT FEASIBLE</span>}
+            </article>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function AutopilotProposal({
   plan,
   mode,
@@ -589,6 +982,7 @@ function AutopilotProposal({
   toolCalls,
   busy,
   onConfirm,
+  onUseRequiredBudget,
 }: {
   plan: AutopilotPlan;
   mode: AutopilotMode;
@@ -596,7 +990,15 @@ function AutopilotProposal({
   toolCalls: Array<{ name: string; status: string }>;
   busy: boolean;
   onConfirm: () => void;
+  onUseRequiredBudget: () => void;
 }) {
+  const feasibilityCopy = plan.overallFeasible
+    ? { heading: 'A route that fits your limits', label: 'Feasible' }
+    : !plan.deadlineFeasible
+      ? { heading: 'Safe route found — arrival deadline missed', label: 'Deadline missed' }
+      : !plan.withinBudget
+        ? { heading: 'Route ready — review the budget', label: 'Budget update needed' }
+        : { heading: 'Route ready — review the safety limits', label: 'Constraint update needed' };
   const actionCopy = mode === 'FULL_AUTOPILOT'
     ? {
         title: 'Launch Full Autopilot',
@@ -612,11 +1014,14 @@ function AutopilotProposal({
       <div className="proposal-header">
         <div className="proposal-agent-mark"><Bot size={22} /></div>
         <div className="proposal-title-copy">
-          <div className="proposal-eyebrow"><Sparkles size={12} /> GEMINI PLAN READY</div>
-          <h2>A route that fits your limits</h2>
+          <div className="proposal-eyebrow"><Sparkles size={12} /> VIDYUT PLAN READY</div>
+          <h2>{feasibilityCopy.heading}</h2>
           <p>{plan.vehicleName} · {plan.registrationNumber} · {plan.connectorType}</p>
         </div>
-        <div className="proposal-confidence"><CircleCheckBig size={16} /><span><strong>Feasible</strong><small>{plan.compatibleChargersEvaluated} chargers checked</small></span></div>
+        <div className={`proposal-confidence ${plan.overallFeasible ? '' : 'warning'}`}>
+          {plan.overallFeasible ? <CircleCheckBig size={16} /> : <AlertTriangle size={16} />}
+          <span><strong>{feasibilityCopy.label}</strong><small>{plan.compatibleChargersEvaluated} chargers checked</small></span>
+        </div>
       </div>
 
       <div className="proposal-route-band">
@@ -628,16 +1033,93 @@ function AutopilotProposal({
       <div className="proposal-metrics">
         <TripMetric icon={<Route />} value={`${plan.totalDistanceKm} km`} label="Journey distance" />
         <TripMetric icon={<Clock3 />} value={formatMinutes(plan.totalDurationMinutes)} label={`ETA ${plan.estimatedArrivalTime}`} />
-        <TripMetric icon={<IndianRupee />} value={`₹${plan.estimatedChargingCost.toFixed(0)}`} label={`₹${plan.budgetRemaining.toFixed(0)} budget left`} />
+        <TripMetric
+          icon={<IndianRupee />}
+          value={`₹${plan.estimatedChargingCost.toFixed(0)}`}
+          label={plan.withinBudget
+            ? `₹${Math.max(0, plan.budgetRemaining).toFixed(0)} budget left`
+            : `₹${Math.abs(plan.budgetRemaining).toFixed(0)} over budget`}
+        />
         <TripMetric icon={<ShieldCheck />} value={`${plan.estimatedArrivalBatteryPercent}%`} label={`${plan.minimumArrivalBatteryPercent}% minimum`} />
+      </div>
+
+      <div className="proposal-audit-grid">
+        <article>
+          <div className="proposal-audit-title"><Route size={15} /><h3>Route evidence</h3></div>
+          <dl>
+            <div><dt>Base road route</dt><dd>{plan.baseRouteDistanceKm} km</dd></div>
+            <div><dt>Charging detour</dt><dd>+{plan.chargingDetourDistanceKm} km</dd></div>
+            <div className="total"><dt>Final EV route</dt><dd>{plan.totalDistanceKm} km</dd></div>
+          </dl>
+          <small>{plan.routeEngine.replaceAll('_', ' ').toLowerCase()}</small>
+        </article>
+        <article>
+          <div className="proposal-audit-title"><Clock3 size={15} /><h3>Time accounting</h3></div>
+          <dl>
+            <div><dt>Base driving</dt><dd>{plan.baseDriveMinutes}m</dd></div>
+            <div><dt>Charger detours</dt><dd>{plan.chargingDetourMinutes}m</dd></div>
+            <div><dt>Charging</dt><dd>{plan.estimatedChargingMinutes}m</dd></div>
+            <div><dt>Queue</dt><dd>{plan.estimatedQueueMinutes}m</dd></div>
+            <div><dt>Plug / setup</dt><dd>{plan.connectionOverheadMinutes}m</dd></div>
+            <div className="total"><dt>Door-to-door</dt><dd>{plan.totalDurationMinutes}m</dd></div>
+          </dl>
+        </article>
+        <article>
+          <div className="proposal-audit-title"><BatteryCharging size={15} /><h3>Vehicle energy model</h3></div>
+          <dl>
+            <div><dt>Battery capacity</dt><dd>{plan.batteryCapacityKwh} kWh</dd></div>
+            <div><dt>Usable before reserve</dt><dd>{plan.availableEnergyKwh} kWh</dd></div>
+            <div><dt>Consumption</dt><dd>{plan.energyConsumptionKwhPer100Km} kWh/100 km</dd></div>
+            <div><dt>Maximum DC input</dt><dd>{plan.vehicleMaxChargingPowerKw} kW</dd></div>
+            <div><dt>Battery-side efficiency</dt><dd>{plan.chargingEfficiencyPercent}%</dd></div>
+            <div><dt>Start / reserve</dt><dd>{plan.currentBatteryPercent}% / {plan.minimumArrivalBatteryPercent}%</dd></div>
+            <div className="total"><dt>Expected arrival</dt><dd>{plan.estimatedArrivalBatteryPercent}%</dd></div>
+          </dl>
+        </article>
       </div>
 
       <div className="proposal-validation-row">
         <span className={plan.safeArrivalReserve ? 'passed' : 'failed'}><ShieldCheck size={13} /> Safe reserve</span>
-        <span className={plan.withinBudget ? 'passed' : 'failed'}><WalletCards size={13} /> Within budget</span>
+        <span className={plan.withinBudget ? 'passed' : 'failed'}>
+          <WalletCards size={13} /> {plan.withinBudget ? 'Within budget' : 'Budget exceeded'}
+        </span>
+        <span className={plan.deadlineFeasible ? 'passed' : 'failed'}>
+          <Clock3 size={13} /> {plan.arrivalDeadline
+            ? plan.deadlineFeasible ? 'Deadline met' : 'Arrival deadline missed'
+            : 'No arrival deadline'}
+        </span>
         <span className={plan.liveAvailabilityChecked ? 'passed' : 'failed'}><Wifi size={13} /> Live availability</span>
         <span className="passed"><Zap size={13} /> Connector matched</span>
       </div>
+
+      {!plan.withinBudget && (
+        <div className="proposal-budget-warning" role="status">
+          <AlertTriangle size={18} />
+          <div>
+            <strong>The road route is safe, but the current limit is too low.</strong>
+            <p>Estimated charging is ₹{plan.estimatedChargingCost.toFixed(0)}. No booking or payment has been made.</p>
+          </div>
+          <button type="button" onClick={onUseRequiredBudget}>
+            Use ₹{Math.ceil(plan.estimatedChargingCost)} budget
+          </button>
+        </div>
+      )}
+
+      {!plan.deadlineFeasible && plan.arrivalDeadline && (
+        <div className="proposal-deadline-warning" role="status">
+          <AlertTriangle size={18} />
+          <div>
+            <strong>{plan.safeArrivalReserve && plan.withinBudget
+              ? 'Battery and budget are feasible, but the requested arrival is not.'
+              : 'The requested arrival deadline is also not feasible.'}</strong>
+            <p>
+              Expected arrival: {formatClockTime(plan.estimatedArrivalTime)} · Requested arrival:{' '}
+              {formatClockTime(plan.arrivalDeadline)} · Late by: {formatMinutes(plan.deadlineMinutesLate)}.
+              No booking or payment has been made.
+            </p>
+          </div>
+        </div>
+      )}
 
       <div className="proposal-purpose-memory">
         <div><Navigation size={15} /><span><strong>{plan.tripPurpose.replaceAll('_', ' ')}</strong><small>{plan.purposeSummary}</small></span></div>
@@ -645,7 +1127,7 @@ function AutopilotProposal({
       </div>
 
       <div className="proposal-stops-heading">
-        <div><h3>Recommended charging plan</h3><p>Optimized for {plan.optimizeFor.toLowerCase()} with wait and charging time included.</p></div>
+        <div><h3>Recommended charging plan</h3><p>Optimized for {plan.optimizeFor.toLowerCase()} across {plan.feasibleAlternativesCompared} feasible energy states.</p></div>
         <span>{plan.stops.length} STOP{plan.stops.length === 1 ? '' : 'S'}</span>
       </div>
       <div className="proposal-stops">
@@ -654,19 +1136,20 @@ function AutopilotProposal({
             <div className="proposal-stop-index">{stop.sequenceNumber}</div>
             <div className="proposal-stop-main">
               <div className="proposal-stop-title">
-                <div><h4>{stop.stationName}</h4><p><MapPin size={12} /> {stop.stationAddress}</p></div>
+                <div><div className="proposal-stop-name"><h4>{stop.stationName}</h4>{stop.demoData && <em>DEMO DATA</em>}</div><p><MapPin size={12} /> {stop.stationAddress}</p></div>
                 <span><Star size={11} /> {stop.rating.toFixed(1)}</span>
               </div>
               <div className="proposal-stop-details">
                 <span><Clock3 size={12} /> ETA {stop.estimatedArrivalTime}</span>
-                <span><Zap size={12} /> {stop.connectorType} · {stop.powerKw} kW</span>
+                <span><Zap size={12} /> {stop.connectorType} · {stop.powerKw} kW rated · ~{stop.effectivePowerKw} kW to battery</span>
                 <span><Wifi size={12} /> {stop.availableConnectors} live</span>
                 <span><IndianRupee size={12} /> ₹{stop.estimatedCost.toFixed(0)}</span>
               </div>
               {stop.selectionReason && <p className="proposal-stop-reason"><Sparkles size={11} /> {stop.selectionReason}</p>}
             </div>
             <div className="proposal-charge-block">
-              <small>{stop.estimatedWaitMinutes}m wait + {stop.chargingMinutes}m charge</small>
+              <small>{stop.estimatedWaitMinutes}m wait + {stop.chargingMinutes}m charge + {stop.connectionMinutes}m setup</small>
+              <small>{stop.routeOffsetKm} km from base route</small>
               <div><strong>{stop.arrivalBatteryPercent}%</strong><ArrowRight size={14} /><strong>{stop.targetBatteryPercent}%</strong></div>
             </div>
           </article>
@@ -675,7 +1158,11 @@ function AutopilotProposal({
 
       <div className="proposal-agent-explanation">
         <span><Bot size={17} /></span>
-        <div><strong>Why Gemini chose this plan</strong><p>{reply || `The route engine compared compatible live chargers and kept the journey within your ₹${plan.maximumChargingBudget.toFixed(0)} limit and ${plan.minimumArrivalBatteryPercent}% reserve.`}</p></div>
+        <div><strong>Why Vidyut chose this plan</strong><p>{plan.optimizationSummary}</p><p>{compactAgentReply(reply) || (plan.overallFeasible
+          ? `The route engine compared compatible live chargers and kept the journey within your ₹${plan.maximumChargingBudget.toFixed(0)} limit and ${plan.minimumArrivalBatteryPercent}% reserve.`
+          : !plan.deadlineFeasible
+            ? `The route is safe for battery and budget, but it arrives ${formatMinutes(plan.deadlineMinutesLate)} after your requested deadline.`
+            : `The route engine found a battery-safe charger plan, but its ₹${plan.estimatedChargingCost.toFixed(0)} estimate is above your ₹${plan.maximumChargingBudget.toFixed(0)} limit.`)}</p></div>
       </div>
 
       {toolCalls.length > 0 && (
@@ -696,7 +1183,7 @@ function AutopilotProposal({
           <>
             <div className="consent-icon">{mode === 'FULL_AUTOPILOT' ? <RadioTower size={19} /> : <ShieldCheck size={19} />}</div>
             <div><strong>{actionCopy.title}</strong><p>{actionCopy.detail}</p></div>
-            <button type="button" onClick={onConfirm} disabled={busy}>
+            <button type="button" onClick={onConfirm} disabled={busy || !plan.overallFeasible}>
               {busy ? <LoaderCircle className="spin" size={17} /> : <Check size={17} />}
               {busy ? 'Authorizing…' : mode === 'FULL_AUTOPILOT' ? 'Launch Autopilot' : 'Confirm Autopilot'}
             </button>
@@ -729,8 +1216,43 @@ function formatMinutes(minutes: number): string {
   return hours ? `${hours}h ${remainder}m` : `${remainder}m`;
 }
 
+function connectorName(value: string): string {
+  if (value === 'GB_T') return 'GB/T';
+  if (value === 'TYPE1') return 'Type 1';
+  if (value === 'TYPE2') return 'Type 2';
+  return value;
+}
+
+function optimizationLabel(value: VehicleRecommendation['optimizeFor']): string {
+  return value === 'COST' ? 'lowest cost' : value === 'BALANCED' ? 'balanced' : 'fastest journey';
+}
+
+function formatClockTime(value: string): string {
+  const [hourText, minuteText] = value.split(':');
+  const hour = Number(hourText);
+  if (!Number.isFinite(hour) || minuteText == null) return value;
+  const period = hour >= 12 ? 'PM' : 'AM';
+  const displayHour = hour % 12 || 12;
+  return `${displayHour}:${minuteText} ${period}`;
+}
+
+function compactAgentReply(reply: string): string {
+  if (!reply.trim()) return '';
+  const paragraph = reply
+    .split(/\r?\n\s*\r?\n/)
+    .map((value) => value.trim())
+    .find((value) => value && !value.startsWith('#')) ?? reply.trim();
+  const plain = paragraph
+    .replace(/^#{1,6}\s+/g, '')
+    .replace(/\*\*(.*?)\*\*/g, '$1')
+    .replace(/[`*_]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return plain.length > 420 ? `${plain.slice(0, 417).trimEnd()}…` : plain;
+}
+
 function statusLabel(status: AutopilotTrip['status']): string {
-  return ({ RESERVED: 'Charger reserved', MONITORING: 'Monitoring live', REROUTED: 'Route updated', PAYMENT_REQUIRED: 'Payment needed', COMPLETED: 'Autopilot complete', CANCELLED: 'Cancelled' })[status];
+  return ({ RESERVED: 'Charger reserved', MONITORING: 'Monitoring live', REROUTED: 'Route updated', REROUTE_APPROVAL_REQUIRED: 'Approve reroute', REPLAN_REQUIRED: 'Safe replan needed', PAYMENT_REQUIRED: 'Payment needed', COMPLETED: 'Autopilot complete', CANCELLED: 'Cancelled' })[status];
 }
 
 function messageFor(error: unknown): string {

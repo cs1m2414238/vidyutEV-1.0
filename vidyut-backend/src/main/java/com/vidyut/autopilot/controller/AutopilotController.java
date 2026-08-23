@@ -4,9 +4,14 @@ import com.vidyut.autopilot.dto.AutopilotProgressRequest;
 import com.vidyut.autopilot.dto.AutopilotPlanResponse;
 import com.vidyut.autopilot.dto.AutopilotTripRequest;
 import com.vidyut.autopilot.dto.AutopilotTripResponse;
+import com.vidyut.autopilot.dto.JourneyIntentParseRequest;
+import com.vidyut.autopilot.dto.JourneyIntentParseResponse;
 import com.vidyut.autopilot.dto.RouteExperienceRequest;
 import com.vidyut.autopilot.dto.RouteExperienceResponse;
+import com.vidyut.autopilot.dto.VehicleRecommendationRequest;
+import com.vidyut.autopilot.dto.VehicleRecommendationResponse;
 import com.vidyut.autopilot.service.AutopilotService;
+import com.vidyut.autopilot.service.JourneyIntentParser;
 import com.vidyut.common.response.ApiResponse;
 import com.vidyut.common.util.CurrentUserUtil;
 import jakarta.validation.Valid;
@@ -25,7 +30,24 @@ import org.springframework.web.bind.annotation.RestController;
 public class AutopilotController {
 
     private final AutopilotService autopilotService;
+    private final JourneyIntentParser journeyIntentParser;
     private final CurrentUserUtil currentUser;
+
+    @PostMapping("/intent/parse")
+    public ResponseEntity<ApiResponse<JourneyIntentParseResponse>> parseJourneyIntent(
+            @Valid @RequestBody JourneyIntentParseRequest request
+    ) {
+        return ResponseEntity.ok(ApiResponse.success("Journey intent converted into enforceable fields",
+                journeyIntentParser.parse(request.getText())));
+    }
+
+    @PostMapping("/vehicles/recommend")
+    public ResponseEntity<ApiResponse<VehicleRecommendationResponse>> recommendVehicle(
+            @Valid @RequestBody VehicleRecommendationRequest request
+    ) {
+        return ResponseEntity.ok(ApiResponse.success("Owned vehicles compared against the live route",
+                autopilotService.recommendVehicle(currentUser.getCurrentAccountId(), request)));
+    }
 
     @PostMapping("/trips/preview")
     public ResponseEntity<ApiResponse<AutopilotPlanResponse>> previewTrip(
@@ -74,6 +96,12 @@ public class AutopilotController {
     public ResponseEntity<ApiResponse<AutopilotTripResponse>> completeCharging(@PathVariable Long tripId) {
         return ResponseEntity.ok(ApiResponse.success("Charging completion processed",
                 autopilotService.completeCharging(tripId, currentUser.getCurrentAccountId())));
+    }
+
+    @PostMapping("/trips/{tripId}/approve-reroute")
+    public ResponseEntity<ApiResponse<AutopilotTripResponse>> approveReroute(@PathVariable Long tripId) {
+        return ResponseEntity.ok(ApiResponse.success("Replacement charger approved and reserved",
+                autopilotService.approvePreparedReroute(tripId, currentUser.getCurrentAccountId())));
     }
 
     @PostMapping("/trips/{tripId}/experience")

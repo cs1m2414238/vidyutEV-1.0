@@ -1,5 +1,6 @@
 import type { LucideIcon } from 'lucide-react';
 import {
+  Activity,
   BatteryCharging,
   ArrowRight,
   Building2,
@@ -13,7 +14,9 @@ import {
   Bot,
   Bell,
   BadgeIndianRupee,
+  BookmarkCheck,
   Gift,
+  GraduationCap,
   Headphones,
   History,
   HousePlug,
@@ -29,6 +32,7 @@ import {
   Users,
   WalletCards,
   Wrench,
+  Zap,
   X,
 } from 'lucide-react';
 import type { User } from '../types';
@@ -61,9 +65,11 @@ const roleItems: Record<UserRole, SidebarItem[]> = {
     { icon: MapPinned, label: 'Find Charger', id: 'find' },
     { icon: Route, label: 'Trip Planner', id: 'trip' },
     { icon: CalendarDays, label: 'My Bookings', id: 'bookings' },
+    { icon: Zap, label: 'Active Charging', id: 'charging' },
     { icon: History, label: 'Charging History', id: 'history' },
     { icon: WalletCards, label: 'Wallet', id: 'wallet' },
     { icon: CarFront, label: 'My Vehicles', id: 'vehicles' },
+    { icon: GraduationCap, label: 'Outlet Access', id: 'outlets' },
     { icon: HousePlug, label: 'Become a Host', id: 'host' },
     { icon: Gift, label: 'Rewards', id: 'rewards' },
     { icon: Bell, label: 'Notifications', id: 'notifications' },
@@ -76,30 +82,34 @@ const roleItems: Record<UserRole, SidebarItem[]> = {
     { icon: MapPinned, label: 'Find Companies', id: 'marketplace' },
     { icon: Route, label: 'Installations', id: 'installations' },
     { icon: HousePlug, label: 'My Chargers', id: 'chargers' },
+    { icon: Bot, label: 'AI Assistant', id: 'ai' },
+    { icon: BadgeIndianRupee, label: 'Offers & Green Finance', id: 'finance' },
     { icon: Clock3, label: 'Availability', id: 'availability' },
     { icon: CalendarDays, label: 'Bookings', id: 'bookings' },
     { icon: CircleDollarSign, label: 'Earnings', id: 'earnings' },
     { icon: HeartPulse, label: 'Monitoring', id: 'monitoring' },
     { icon: MessageSquare, label: 'Reviews', id: 'reviews' },
-    { icon: Bot, label: 'AI Assistant', id: 'ai' },
     { icon: FileBarChart, label: 'Reports', id: 'reports' },
     { icon: Bell, label: 'Notifications', id: 'notifications' },
     { icon: Settings, label: 'Host Profile', id: 'profile' },
   ],
   COMPANY_ADMIN: [
-    { icon: LayoutDashboard, label: 'Dashboard', id: 'dashboard' },
-    { icon: BatteryCharging, label: 'Product Catalogue', id: 'catalog' },
-    { icon: Building2, label: 'Host Opportunities', id: 'host_opportunities' },
-    { icon: Route, label: 'Installation Pipeline', id: 'installation_pipeline' },
+    { icon: LayoutDashboard, label: 'Overview', id: 'dashboard' },
     { icon: Building2, label: 'Stations', id: 'stations' },
     { icon: BatteryCharging, label: 'Chargers', id: 'chargers' },
-    { icon: CalendarDays, label: 'Bookings', id: 'bookings' },
+    { icon: Activity, label: 'Live Monitoring', id: 'monitoring' },
+    { icon: CalendarDays, label: 'Bookings & Sessions', id: 'bookings' },
+    { icon: Wrench, label: 'Maintenance', id: 'maintenance' },
+    { icon: Building2, label: 'Property Marketplace', id: 'host_opportunities' },
+    { icon: BookmarkCheck, label: 'Saved Properties', id: 'saved_properties' },
+    { icon: Route, label: 'Partnership Projects', id: 'installation_pipeline' },
+    { icon: BatteryCharging, label: 'Product Catalogue', id: 'catalog' },
     { icon: BadgeIndianRupee, label: 'Pricing', id: 'pricing' },
     { icon: Gauge, label: 'Analytics', id: 'analytics' },
-    { icon: CircleDollarSign, label: 'Revenue', id: 'revenue' },
-    { icon: Wrench, label: 'Network & Maintenance', id: 'maintenance' },
-    { icon: Users, label: 'Employees', id: 'users' },
-    { icon: Bot, label: 'AI Assistant', id: 'ai' },
+    { icon: CircleDollarSign, label: 'Revenue & Settlements', id: 'revenue' },
+    { icon: MapPinned, label: 'Expansion Intelligence', id: 'expansion' },
+    { icon: Bot, label: 'Company Assistant', id: 'ai' },
+    { icon: Users, label: 'Staff', id: 'users' },
     { icon: FileBarChart, label: 'Reports', id: 'reports' },
     { icon: Bell, label: 'Notifications', id: 'notifications' },
     { icon: Settings, label: 'Settings', id: 'settings' },
@@ -109,7 +119,13 @@ const roleItems: Record<UserRole, SidebarItem[]> = {
 const modeSummary: Record<UserRole, string> = {
   EV_OWNER: 'Personal charging, bookings and vehicle activity',
   LANDOWNER: 'Charger availability, earnings and guest bookings',
-  COMPANY_ADMIN: 'Network health, operations and business reporting',
+  COMPANY_ADMIN: 'Only your company’s network and business data are shown',
+};
+
+const workspaceBoundary: Record<UserRole, string> = {
+  EV_OWNER: 'Private EV-owner workspace',
+  LANDOWNER: 'Private Host workspace',
+  COMPANY_ADMIN: 'Private company workspace',
 };
 
 export function Sidebar({
@@ -142,32 +158,7 @@ export function Sidebar({
       <aside className={`sidebar ${open ? 'open' : ''}`} aria-label="Primary navigation">
         <div className="sidebar-brand">
           <span className="brand-mark">
-            <svg
-              width="44"
-              height="44"
-              viewBox="0 0 200 200"
-              fill="none"
-              xmlns="http://www.w3.org/2000/svg"
-              style={{ filter: 'drop-shadow(0 4px 14px rgba(34, 197, 94, 0.65))' }}
-            >
-              <defs>
-                <linearGradient id="vidyutSidebarGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-                  <stop offset="0%" stopColor="#d9f99d" />
-                  <stop offset="25%" stopColor="#a3e635" />
-                  <stop offset="65%" stopColor="#22c55e" />
-                  <stop offset="100%" stopColor="#15803d" />
-                </linearGradient>
-                <filter id="sidebarGlow" x="-20%" y="-20%" width="140%" height="140%">
-                  <feGaussianBlur stdDeviation="6" result="blur" />
-                  <feComposite in="SourceGraphic" in2="blur" operator="over" />
-                </filter>
-              </defs>
-              <path
-                d="M 38,30 L 65,36 L 100,165 L 128,75 L 114,80 L 165,15 L 142,58 L 158,58 L 100,185 Z"
-                fill="url(#vidyutSidebarGrad)"
-                filter="url(#sidebarGlow)"
-              />
-            </svg>
+            <img src="/vidyut-logo.svg" width="44" height="44" alt="" style={{ filter: 'drop-shadow(0 4px 14px rgba(34, 197, 94, 0.65))' }} />
           </span>
           <div>
             <div className="brand-name">VIDYUT</div>
@@ -214,7 +205,7 @@ export function Sidebar({
           <div className="sidebar-context-top">
             <span className="sidebar-context-dot" />
             <ShieldCheck size={14} />
-            Mode protected
+            {workspaceBoundary[role]}
           </div>
           <p>{modeSummary[role]}</p>
         </div>

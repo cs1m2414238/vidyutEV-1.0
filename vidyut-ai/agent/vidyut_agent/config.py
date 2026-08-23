@@ -30,11 +30,17 @@ def _env_true(name: str) -> bool:
 class Settings:
     model: str
     fallback_models: tuple[str, ...]
+    openrouter_api_key: str
+    openrouter_model: str
+    openrouter_fallback_models: tuple[str, ...]
+    openrouter_base_url: str
     backend_base_url: str
     backend_timeout_seconds: float
 
     @property
     def google_auth_configured(self) -> bool:
+        if _env_true("VIDYUT_AGENT_DISABLE_GEMINI"):
+            return False
         if _env_true("GOOGLE_GENAI_USE_VERTEXAI") or _env_true(
             "GOOGLE_GENAI_USE_ENTERPRISE"
         ):
@@ -46,6 +52,14 @@ class Settings:
             os.getenv("GOOGLE_API_KEY", "").strip()
             or os.getenv("GEMINI_API_KEY", "").strip()
         )
+
+    @property
+    def openrouter_auth_configured(self) -> bool:
+        return bool(self.openrouter_api_key)
+
+    @property
+    def any_llm_auth_configured(self) -> bool:
+        return self.google_auth_configured or self.openrouter_auth_configured
 
 
 def load_settings() -> Settings:
@@ -63,6 +77,34 @@ def load_settings() -> Settings:
         if candidate and candidate != model
     )
 
+    openrouter_api_key = (
+        os.getenv("OPENROUTER_API_KEY", "").strip()
+        or os.getenv("OPEN_ROUTER_API_KEY", "").strip()
+        or os.getenv("OPENROUTER_KEY", "").strip()
+    )
+    openrouter_model = os.getenv(
+        "OPENROUTER_MODEL", "meta-llama/llama-3.3-70b-instruct"
+    ).strip()
+    if not openrouter_model:
+        openrouter_model = "meta-llama/llama-3.3-70b-instruct"
+
+    openrouter_fallback_models = tuple(
+        candidate
+        for candidate in (
+            value.strip()
+            for value in os.getenv(
+                "OPENROUTER_FALLBACK_MODELS", ""
+            ).split(",")
+        )
+        if candidate and candidate != openrouter_model
+    )
+
+    openrouter_base_url = os.getenv(
+        "OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"
+    ).strip().rstrip("/")
+    if not openrouter_base_url.startswith(("http://", "https://")):
+        raise RuntimeError("OPENROUTER_BASE_URL must be an HTTP(S) URL")
+
     backend_base_url = os.getenv(
         "VIDYUT_BACKEND_BASE_URL", "http://localhost:8080"
     ).strip().rstrip("/")
@@ -72,6 +114,10 @@ def load_settings() -> Settings:
     return Settings(
         model=model,
         fallback_models=fallback_models,
+        openrouter_api_key=openrouter_api_key,
+        openrouter_model=openrouter_model,
+        openrouter_fallback_models=openrouter_fallback_models,
+        openrouter_base_url=openrouter_base_url,
         backend_base_url=backend_base_url,
         backend_timeout_seconds=_positive_float(
             "VIDYUT_BACKEND_TIMEOUT_SECONDS", 15

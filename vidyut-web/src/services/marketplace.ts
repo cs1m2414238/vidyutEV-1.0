@@ -23,6 +23,8 @@ export interface HostProperty {
   preferredPowerKw: number;
   photoUrls?: string;
   ownershipDocumentUrl?: string;
+  electricityDocumentUrl?: string;
+  videoVerificationUrl?: string;
   adminReviewNote?: string;
   discoverable: boolean;
   status: string;
@@ -135,8 +137,37 @@ export interface PropertyOpportunity {
   preferredConnectorType?: string;
   preferredPowerKw: number;
   photoUrls?: string;
+  siteVideoUrl?: string;
   matchedBy: string;
   distanceKm?: number;
+  hostDisplayName: string;
+  hostBio?: string;
+  hostMemberSince?: string;
+  hostRating: number;
+  hostReviewCount?: number;
+  hostTrustScore: number;
+  verifiedProperties: number;
+  successfulPartnerships: number;
+  disputes: number;
+  propertyScore: number;
+  commercialScore: number;
+  verificationRisk: 'LOW' | 'MEDIUM' | 'HIGH';
+  verificationMethod: 'DOCUMENT_AND_VIDEO_REVIEW' | 'LIVE_VIDEO_SURVEY' | 'PHYSICAL_SITE_INSPECTION';
+  identityVerified: boolean;
+  ownershipVerified: boolean;
+  electricityVerified: boolean;
+  videoVerified: boolean;
+  physicalInspectionRecommended: boolean;
+  recentHostReviews?: Array<{
+    rating: number;
+    stationId: number;
+    stationName: string;
+    stationCity?: string;
+    reviewerName: string;
+    comment: string;
+    hostReply?: string;
+    createdAt: string;
+  }>;
 }
 
 export interface MarketplaceStation {
@@ -159,7 +190,7 @@ export interface PropertyInterest {
   propertyTitle: string;
   propertyCity?: string;
   message?: string;
-  status: 'PENDING' | 'ACCEPTED' | 'DECLINED' | 'WITHDRAWN';
+  status: 'SAVED' | 'PENDING' | 'ACCEPTED' | 'DECLINED' | 'WITHDRAWN';
   createdAt: string;
   contactUnlocked: boolean;
   companyEmail?: string;
@@ -186,6 +217,7 @@ export const archiveCompanyProduct = (token: string, id: number) => apiRequest<v
 export const getCompanyOpportunities = (token: string) => apiRequest<PropertyOpportunity[]>('/company/marketplace/opportunities', { method: 'GET', ...auth(token) });
 export const getMarketplaceStations = (token: string) => apiRequest<MarketplaceStation[]>('/stations', { method: 'GET', ...auth(token) });
 export const expressPropertyInterest = (token: string, propertyId: number, message: string) => apiRequest<PropertyInterest>(`/company/marketplace/opportunities/${propertyId}/interest`, { method: 'POST', ...auth(token), body: JSON.stringify({ message }) });
+export const savePropertyOpportunity = (token: string, propertyId: number) => apiRequest<PropertyInterest>(`/company/marketplace/opportunities/${propertyId}/save`, { method: 'POST', ...auth(token) });
 export const getCompanyInterests = (token: string) => apiRequest<PropertyInterest[]>('/company/marketplace/interests', { method: 'GET', ...auth(token) });
 export const getCompanyInstallationRequests = (token: string) => apiRequest<InstallationRequest[]>('/company/marketplace/installation-requests', { method: 'GET', ...auth(token) });
 export const sendInstallationProposal = (token: string, id: number, payload: Record<string, unknown>) => apiRequest<InstallationRequest>(`/company/marketplace/installation-requests/${id}/proposal`, { method: 'POST', ...auth(token), body: JSON.stringify(payload) });

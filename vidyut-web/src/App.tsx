@@ -15,6 +15,8 @@ import { HostWorkspace } from './components/HostWorkspace';
 import { AutopilotView } from './components/AutopilotView';
 import { TripPlannerView } from './components/TripPlannerView';
 import { OwnerNotificationsView } from './components/OwnerNotificationsView';
+import { ChargingSessionView } from './components/ChargingSessionView';
+import { OutletAccessView } from './components/OutletAccessView';
 import { ModeSelection } from './components/ModeSelection';
 import { mockUser, mockChargers } from './data/mockData';
 import type { Charger, User } from './types';
@@ -25,6 +27,7 @@ import VidyutRegisterPage from './components/RegisterPage';
 import { CompleteProfileModal } from './components/CompleteProfileModal';
 import { AdminPortal } from './components/AdminPortal';
 import {
+  AUTH_SESSION_EXPIRED_EVENT,
   clearAuthSession,
   loadAuthSession,
   saveAuthSession,
@@ -140,6 +143,7 @@ function MainApplication() {
   const [ownerNotificationsError, setOwnerNotificationsError] = useState('');
   const [chargerSearchQuery, setChargerSearchQuery] = useState('');
   const [chargerMapCenter, setChargerMapCenter] = useState<[number, number]>([26.8467, 80.9462]);
+  const [chargerDataOffline, setChargerDataOffline] = useState(false);
 
   const refreshOwnerNotifications = useCallback(async () => {
     if (!authToken) return;
@@ -167,6 +171,34 @@ function MainApplication() {
     setCurrentView(newView);
     setActiveTab(newTab);
   };
+
+  useEffect(() => {
+    const returnToLogin = () => {
+      clearAuthSession();
+      setAuthToken('');
+      setAllowedModes([]);
+      setIsLoggedIn(false);
+      setActiveMode('EV_USER');
+      setActiveDashboardRole('EV_OWNER');
+      setUser(mockUser);
+      setBookingUnreadCount(0);
+      setBookingRefreshKey(0);
+      setChargers(mockChargers);
+      setPrimaryVehicle(null);
+      setOwnerNotifications([]);
+      setOwnerNotificationsError('');
+      setChargerSearchQuery('');
+      setChargerDataOffline(false);
+      setSidebarOpen(false);
+      setShowProfileModal(false);
+      setCurrentView('login');
+      setActiveTab('dashboard');
+      window.history.replaceState(null, '', '#/login');
+    };
+
+    window.addEventListener(AUTH_SESSION_EXPIRED_EVENT, returnToLogin);
+    return () => window.removeEventListener(AUTH_SESSION_EXPIRED_EVENT, returnToLogin);
+  }, []);
 
   // Browser Back/Forward button listener
   useEffect(() => {
@@ -197,15 +229,29 @@ function MainApplication() {
 
     void refreshOwnerNotifications();
 
+    const refreshStations = async () => {
+      try {
+        const mapped = (await getStations()).map(stationToCharger);
+        if (ignore) return;
+        setChargers(mapped); setChargerDataOffline(false);
+        localStorage.setItem('vidyut:last-known-chargers', JSON.stringify({ savedAt: Date.now(), chargers: mapped }));
+      } catch {
+        if (ignore) return;
+        setChargerDataOffline(true);
+        try {
+          const cached = JSON.parse(localStorage.getItem('vidyut:last-known-chargers') || 'null') as { chargers?: Charger[] } | null;
+          if (cached?.chargers?.length) setChargers(cached.chargers);
+        } catch { /* A damaged cache should never break discovery. */ }
+      }
+    };
+
+    void refreshStations();
+    const stationPoll = window.setInterval(() => void refreshStations(), 30_000);
     void Promise.allSettled([
-      getStations(),
       getUnreadBookingCount(authToken),
       getVehicles(authToken),
-    ]).then(([stationResult, bookingCountResult, vehicleResult]) => {
+    ]).then(([bookingCountResult, vehicleResult]) => {
       if (ignore) return;
-      if (stationResult.status === 'fulfilled') {
-        setChargers(stationResult.value.map(stationToCharger));
-      }
       if (bookingCountResult.status === 'fulfilled') {
         setBookingUnreadCount(bookingCountResult.value);
       }
@@ -220,6 +266,7 @@ function MainApplication() {
 
     return () => {
       ignore = true;
+      window.clearInterval(stationPoll);
     };
   }, [isLoggedIn, activeMode, authToken, refreshOwnerNotifications]);
 
@@ -249,13 +296,13 @@ function MainApplication() {
     setModalCharger(charger);
   };
 
-  const handleConfirmBooking = async (charger: Charger, durationMinutes: number) => {
+  const handleConfirmBooking = async (charger: Charger, durationMinutes: number, startTime?: string) => {
     if (!authToken) throw new Error('Please sign in again before booking a charger.');
     if (!primaryVehicle) throw new Error('Add a vehicle before booking so connector compatibility and payment use the correct EV.');
     await createBooking(authToken, {
       stationId: charger.id,
       vehicleId: primaryVehicle.id,
-      startTime: new Date().toISOString(),
+      startTime: startTime || new Date().toISOString(),
       durationMinutes,
     });
     setBookingUnreadCount((current) => current + 1);
@@ -363,9 +410,11 @@ function MainApplication() {
   const showOwnerAutopilot = activeDashboardRole === 'EV_OWNER' && activeTab === 'autopilot';
   const showOwnerTripPlanner = activeDashboardRole === 'EV_OWNER' && activeTab === 'trip';
   const showOwnerNotifications = activeDashboardRole === 'EV_OWNER' && activeTab === 'notifications';
+  const showOwnerCharging = activeDashboardRole === 'EV_OWNER' && activeTab === 'charging';
+  const showOwnerOutlets = activeDashboardRole === 'EV_OWNER' && activeTab === 'outlets';
   const showCompanyWorkspace = activeDashboardRole === 'COMPANY_ADMIN';
   const showHostWorkspace = activeDashboardRole === 'LANDOWNER';
-  const showModeFeature = activeTab !== 'dashboard' && activeTab !== 'find' && !showOwnerBookings && !showOwnerWallet && !showOwnerVehicles && !showOwnerVehicleDetail && !showOwnerAutopilot && !showOwnerTripPlanner && !showOwnerNotifications && !showCompanyWorkspace && !showHostWorkspace;
+  const showModeFeature = activeTab !== 'dashboard' && activeTab !== 'find' && !showOwnerBookings && !showOwnerWallet && !showOwnerVehicles && !showOwnerVehicleDetail && !showOwnerAutopilot && !showOwnerTripPlanner && !showOwnerNotifications && !showOwnerCharging && !showOwnerOutlets && !showCompanyWorkspace && !showHostWorkspace;
   const profileIncomplete = isProfileIncomplete(user, activeMode);
 
   return (
@@ -452,6 +501,7 @@ function MainApplication() {
           )}
           {activeTab === 'dashboard' && activeDashboardRole === 'EV_OWNER' && (
             <EVOwnerDashboard
+              token={authToken}
               user={user}
               chargers={chargers}
               onSelectCharger={handleSelectCharger}
@@ -459,7 +509,7 @@ function MainApplication() {
               onBookNow={() => setActiveTab('find')}
               onOpenBookings={() => setActiveTab('bookings')}
               onOpenWallet={() => setActiveTab('wallet')}
-              onOpenAutopilot={() => setActiveTab('autopilot')}
+              onOpenAutopilot={() => navigateToState('dashboard', 'autopilot')}
               vehicle={primaryVehicle}
               onOpenVehicle={(vehicleId) => navigateToState('dashboard', `vehicles/${vehicleId}`)}
             />
@@ -508,12 +558,17 @@ function MainApplication() {
 
           {showOwnerTripPlanner && <TripPlannerView token={authToken} />}
 
+          {showOwnerCharging && <ChargingSessionView token={authToken} />}
+
+          {showOwnerOutlets && <OutletAccessView token={authToken} onFindChargers={() => navigateToState('dashboard', 'find')} />}
+
           {showOwnerNotifications && (
             <OwnerNotificationsView
               notifications={ownerNotifications}
               loading={ownerNotificationsLoading}
               error={ownerNotificationsError}
               onRefresh={() => void refreshOwnerNotifications()}
+              token={authToken}
             />
           )}
 
@@ -527,6 +582,8 @@ function MainApplication() {
                 onFilterChange={setMapFilter}
                 searchQuery={chargerSearchQuery}
                 center={chargerMapCenter}
+                compatibleConnector={primaryVehicle?.connectorType || undefined}
+                offline={chargerDataOffline}
               />
             </div>
           )}
@@ -539,6 +596,8 @@ function MainApplication() {
         charger={modalCharger}
         onClose={() => setModalCharger(null)}
         onConfirmBooking={handleConfirmBooking}
+        token={authToken}
+        vehicleId={primaryVehicle?.id}
       />
 
       {(showProfileModal || (profileIncomplete && !profileModalDismissed)) && (

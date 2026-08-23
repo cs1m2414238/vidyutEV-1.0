@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo, useState } from 'react';
 import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
@@ -12,11 +12,14 @@ interface MapViewProps {
   onFilterChange: (filter: 'all' | 'available' | 'fast') => void;
   searchQuery?: string;
   center?: [number, number];
+  compatibleConnector?: string;
+  offline?: boolean;
 }
 
 // Custom Green & Busy marker icons using SVG data URI
-const createCustomIcon = (isAvailable: boolean) => {
-  const color = isAvailable ? '#00A86B' : '#F97316';
+const createCustomIcon = (charger: Charger) => {
+  const unavailable = charger.status === 'OFFLINE' || charger.status === 'MAINTENANCE' || charger.availability === 'UNAVAILABLE';
+  const color = unavailable ? '#94A3B8' : charger.available ? '#00A86B' : '#F97316';
   const svg = `
     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 36 46" width="36" height="46">
       <path d="M18 0C8.06 0 0 8.06 0 18c0 13.5 18 28 18 28s18-14.5 18-28C36 8.06 27.94 0 18 0z" fill="${color}"/>
@@ -34,15 +37,7 @@ const createCustomIcon = (isAvailable: boolean) => {
   });
 };
 
-const createClusterIcon = (count: number) => {
-  const html = `<div style="background:#10B981;color:#fff;font-weight:800;font-size:12px;width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;border:2px solid #ffffff;box-shadow:0 2px 6px rgba(0,0,0,0.2);">${count}</div>`;
-  return L.divIcon({
-    className: 'custom-cluster-pin',
-    html: html,
-    iconSize: [28, 28],
-    iconAnchor: [14, 14],
-  });
-};
+const normalizeConnector = (value?: string) => (value || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
 
 export const MapView: React.FC<MapViewProps> = ({
   chargers,
@@ -51,13 +46,23 @@ export const MapView: React.FC<MapViewProps> = ({
   onFilterChange,
   searchQuery = '',
   center = [26.8467, 80.9462],
+  compatibleConnector,
+  offline = false,
 }) => {
+  const [showMore, setShowMore] = useState(false);
+  const [connector, setConnector] = useState('COMPATIBLE');
+  const [maxPrice, setMaxPrice] = useState(50);
+  const [minimumPower, setMinimumPower] = useState(0);
   const normalizedQuery = searchQuery.trim().toLocaleLowerCase();
+  const connectorOptions = useMemo(() => Array.from(new Set(chargers.map((charger) => charger.connectorType).filter(Boolean))).sort(), [chargers]);
 
   const filteredChargers = chargers.filter((c) => {
     if (normalizedQuery && !`${c.name} ${c.address}`.toLocaleLowerCase().includes(normalizedQuery)) return false;
-    if (filter === 'available') return c.available;
-    if (filter === 'fast') return c.powerKw >= 11;
+    if (filter === 'available' && !c.available) return false;
+    if (filter === 'fast' && c.powerKw < 11) return false;
+    if (c.pricePerKwh > maxPrice || c.powerKw < minimumPower) return false;
+    const requiredConnector = connector === 'COMPATIBLE' ? compatibleConnector : connector === 'ALL' ? '' : connector;
+    if (requiredConnector && normalizeConnector(c.connectorType) !== normalizeConnector(requiredConnector)) return false;
     return true;
   });
 
@@ -95,10 +100,18 @@ export const MapView: React.FC<MapViewProps> = ({
           🚀 Fast Charger (≥11kW)
         </button>
 
-        <button style={styles.filterBtn}>
+        <button style={{ ...styles.filterBtn, ...(showMore ? styles.filterBtnActive : {}) }} onClick={() => setShowMore((value) => !value)}>
           🎛️ More Filters
         </button>
       </div>
+
+      {showMore && <div style={styles.moreFilters}>
+        <label style={styles.filterLabel}>Connector<select style={styles.select} value={connector} onChange={(event) => setConnector(event.target.value)}><option value="COMPATIBLE">Compatible with {compatibleConnector || 'my vehicle'}</option><option value="ALL">All connectors</option>{connectorOptions.map((item) => <option key={item}>{item}</option>)}</select></label>
+        <label style={styles.filterLabel}>Maximum ₹/kWh<input type="number" min="0" max="100" style={styles.input} value={maxPrice} onChange={(event) => setMaxPrice(Number(event.target.value))} /></label>
+        <label style={styles.filterLabel}>Minimum speed<select style={styles.select} value={minimumPower} onChange={(event) => setMinimumPower(Number(event.target.value))}><option value={0}>Any speed</option><option value={7}>7+ kW</option><option value={30}>30+ kW</option><option value={60}>60+ kW</option><option value={120}>120+ kW</option></select></label>
+        <span style={styles.resultCount}>{filteredChargers.length} matching stations</span>
+      </div>}
+      {offline && <div style={styles.offlineBanner}>Offline — showing the last known charger network. Booking will retry when the connection returns.</div>}
 
       {/* Interactive Map */}
       <div style={styles.mapContainer}>
@@ -119,7 +132,7 @@ export const MapView: React.FC<MapViewProps> = ({
             <Marker
               key={c.id}
               position={[c.latitude, c.longitude]}
-              icon={createCustomIcon(c.available)}
+              icon={createCustomIcon(c)}
               eventHandlers={{
                 click: () => onSelect(c),
               }}
@@ -127,6 +140,7 @@ export const MapView: React.FC<MapViewProps> = ({
               <Popup>
                 <div style={styles.popup}>
                   <div style={styles.popupTitle}>{c.name}</div>
+                  {c.outletPartner && <div style={styles.outletBadge}>{c.outletInstitutionName || 'Outlet partner'}</div>}
                   <div style={styles.popupAddress}>{c.address}</div>
                   <div style={styles.popupMeta}>
                     <span>{c.powerKw} kW</span> • <span>{c.connectorType}</span>
@@ -143,10 +157,6 @@ export const MapView: React.FC<MapViewProps> = ({
             </Marker>
           ))}
 
-          {/* Cluster Circle Markers matching prototype */}
-          <Marker position={[26.865, 80.935]} icon={createClusterIcon(3)} />
-          <Marker position={[26.835, 80.965]} icon={createClusterIcon(3)} />
-          <Marker position={[26.820, 80.915]} icon={createClusterIcon(5)} />
         </MapContainer>
       </div>
     </div>
@@ -187,6 +197,12 @@ const styles: Record<string, React.CSSProperties> = {
     border: '1px solid #E2E8F0',
     boxShadow: '0 2px 8px rgba(0,0,0,0.06)',
   },
+  moreFilters: { display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'end', padding: 12, border: '1px solid #DDE8E3', borderRadius: 12, background: '#fff' },
+  filterLabel: { display: 'grid', gap: 4, color: '#475467', fontSize: 10, fontWeight: 700 },
+  select: { minWidth: 150, padding: '8px 9px', border: '1px solid #D8E2DE', borderRadius: 8, color: '#344054', background: '#fff', fontSize: 11 },
+  input: { width: 105, padding: '8px 9px', border: '1px solid #D8E2DE', borderRadius: 8, color: '#344054', fontSize: 11 },
+  resultCount: { marginLeft: 'auto', padding: '8px 10px', borderRadius: 999, color: '#087454', background: '#EAF8F2', fontSize: 10, fontWeight: 800 },
+  offlineBanner: { padding: '9px 12px', border: '1px solid #F3D19C', borderRadius: 10, color: '#9A5B13', background: '#FFF9EB', fontSize: 10, fontWeight: 650 },
   popup: {
     padding: 4,
     minWidth: 160,
@@ -196,6 +212,7 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 800,
     color: '#1E293B',
   },
+  outletBadge: { display: 'inline-block', margin: '3px 0', padding: '2px 6px', borderRadius: 999, color: '#6D28D9', background: '#F0E9FF', fontSize: 9, fontWeight: 800 },
   popupAddress: {
     fontSize: 11,
     color: '#64748B',

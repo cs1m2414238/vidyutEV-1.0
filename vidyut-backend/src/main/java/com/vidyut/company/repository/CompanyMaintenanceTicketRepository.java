@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.Optional;
 
 public interface CompanyMaintenanceTicketRepository extends JpaRepository<CompanyMaintenanceTicket, Long> {
+    List<CompanyMaintenanceTicket> findAllByOrderByUpdatedAtDesc();
     List<CompanyMaintenanceTicket> findByCompanyIdOrderByUpdatedAtDesc(Long companyId);
     Optional<CompanyMaintenanceTicket> findByIdAndCompanyId(Long id, Long companyId);
     boolean existsByCompanyIdAndChargerIdAndStatusIn(Long companyId, Long chargerId,

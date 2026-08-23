@@ -36,8 +36,19 @@ public class CompanyVerificationService {
         return verificationRepository.findByStatusInOrderBySubmittedAtAsc(List.of(
                 CompanyVerificationStatus.DOCUMENTS_SUBMITTED,
                 CompanyVerificationStatus.UNDER_REVIEW,
-                CompanyVerificationStatus.REJECTED
+                CompanyVerificationStatus.NEEDS_INFORMATION,
+                CompanyVerificationStatus.ESCALATED
         )).stream().map(this::toResponse).toList();
+    }
+
+    public List<CompanyVerificationResponse> reviewHistory() {
+        return verificationRepository.findAll().stream()
+                .filter(item -> item.getStatus() == CompanyVerificationStatus.VERIFIED
+                        || item.getStatus() == CompanyVerificationStatus.REJECTED
+                        || item.getStatus() == CompanyVerificationStatus.SUSPENDED)
+                .sorted(java.util.Comparator.comparing(CompanyVerification::getReviewedAt,
+                        java.util.Comparator.nullsLast(java.util.Comparator.reverseOrder())))
+                .map(this::toResponse).toList();
     }
 
     @Transactional

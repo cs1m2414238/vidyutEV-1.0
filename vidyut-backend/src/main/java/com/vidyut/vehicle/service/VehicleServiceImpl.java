@@ -2,6 +2,7 @@ package com.vidyut.vehicle.service;
 
 import com.vidyut.common.exception.DuplicateResourceException;
 import com.vidyut.common.exception.ResourceNotFoundException;
+import com.vidyut.station.entity.ConnectorType;
 import com.vidyut.vehicle.dto.VehicleCreateRequest;
 import com.vidyut.vehicle.dto.VehicleResponse;
 import com.vidyut.vehicle.dto.VehicleUpdateRequest;
@@ -18,6 +19,9 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 import java.time.LocalDateTime;
+import java.util.LinkedHashSet;
+import java.util.Locale;
+import java.util.Set;
 
 @Service
 @RequiredArgsConstructor
@@ -33,12 +37,26 @@ public class VehicleServiceImpl implements VehicleService {
             throw new DuplicateResourceException("Vehicle already registered with number: " + request.getRegistrationNumber());
         }
 
+        Set<ConnectorType> supportedConnectors = supportedConnectors(
+                request.getSupportedConnectors(), request.getConnectorType());
+        String primaryConnector = request.getConnectorType() == null || request.getConnectorType().isBlank()
+                ? supportedConnectors.iterator().next().name()
+                : normalizeConnector(request.getConnectorType()).name();
         Vehicle vehicle = Vehicle.builder()
                 .userId(userId)
                 .makeAndModel(request.getMakeAndModel())
                 .registrationNumber(request.getRegistrationNumber())
                 .batteryCapacity(request.getBatteryCapacity())
-                .connectorType(request.getConnectorType() != null ? request.getConnectorType() : "CCS2")
+                .connectorType(primaryConnector)
+                .supportedConnectors(supportedConnectors)
+                .efficiencyWhPerKm(request.getEfficiencyWhPerKm() != null
+                        ? request.getEfficiencyWhPerKm() : 140.0)
+                .maxAcChargePowerKw(request.getMaxAcChargePowerKw() != null
+                        ? request.getMaxAcChargePowerKw() : 7.2)
+                .maxDcChargePowerKw(request.getMaxDcChargePowerKw() != null
+                        ? request.getMaxDcChargePowerKw() : 50.0)
+                .chargingEfficiency(request.getChargingEfficiency() != null
+                        ? request.getChargingEfficiency() : 0.90)
                 .connectionStatus(VehicleConnectionStatus.UNKNOWN)
                 .telemetrySource(VehicleTelemetrySource.NOT_AVAILABLE)
                 .build();
@@ -78,6 +96,16 @@ public class VehicleServiceImpl implements VehicleService {
         if (request.getLastChargingAddress() != null) vehicle.setLastChargingAddress(clean(request.getLastChargingAddress()));
         if (request.getLastChargedAt() != null) vehicle.setLastChargedAt(request.getLastChargedAt());
         if (request.getTelemetrySource() != null) vehicle.setTelemetrySource(request.getTelemetrySource());
+        if (request.getSupportedConnectors() != null && !request.getSupportedConnectors().isEmpty()) {
+            vehicle.setSupportedConnectors(new LinkedHashSet<>(request.getSupportedConnectors()));
+            if (!vehicle.getSupportedConnectors().contains(normalizeConnector(vehicle.getConnectorType()))) {
+                vehicle.setConnectorType(vehicle.getSupportedConnectors().iterator().next().name());
+            }
+        }
+        if (request.getEfficiencyWhPerKm() != null) vehicle.setEfficiencyWhPerKm(request.getEfficiencyWhPerKm());
+        if (request.getMaxAcChargePowerKw() != null) vehicle.setMaxAcChargePowerKw(request.getMaxAcChargePowerKw());
+        if (request.getMaxDcChargePowerKw() != null) vehicle.setMaxDcChargePowerKw(request.getMaxDcChargePowerKw());
+        if (request.getChargingEfficiency() != null) vehicle.setChargingEfficiency(request.getChargingEfficiency());
         vehicle.setTelemetryUpdatedAt(LocalDateTime.now());
         return mapToResponse(vehicleRepository.save(vehicle));
     }
@@ -118,6 +146,11 @@ public class VehicleServiceImpl implements VehicleService {
                 .registrationNumber(v.getRegistrationNumber())
                 .batteryCapacity(v.getBatteryCapacity())
                 .connectorType(v.getConnectorType())
+                .supportedConnectors(effectiveSupportedConnectors(v))
+                .efficiencyWhPerKm(v.getEfficiencyWhPerKm())
+                .maxAcChargePowerKw(v.getMaxAcChargePowerKw())
+                .maxDcChargePowerKw(v.getMaxDcChargePowerKw())
+                .chargingEfficiency(v.getChargingEfficiency())
                 .connectionStatus(v.getConnectionStatus() != null ? v.getConnectionStatus() : VehicleConnectionStatus.UNKNOWN)
                 .batteryPercent(v.getBatteryPercent())
                 .remainingRangeKm(v.getRemainingRangeKm())
@@ -146,5 +179,33 @@ public class VehicleServiceImpl implements VehicleService {
     private String clean(String value) {
         String cleaned = value.trim();
         return cleaned.isEmpty() ? null : cleaned;
+    }
+
+    private Set<ConnectorType> supportedConnectors(
+            Set<ConnectorType> requested,
+            String legacyConnector
+    ) {
+        if (requested != null && !requested.isEmpty()) {
+            return new LinkedHashSet<>(requested);
+        }
+        return new LinkedHashSet<>(Set.of(normalizeConnector(legacyConnector)));
+    }
+
+    private Set<ConnectorType> effectiveSupportedConnectors(Vehicle vehicle) {
+        if (vehicle.getSupportedConnectors() != null && !vehicle.getSupportedConnectors().isEmpty()) {
+            return new LinkedHashSet<>(vehicle.getSupportedConnectors());
+        }
+        return new LinkedHashSet<>(Set.of(normalizeConnector(vehicle.getConnectorType())));
+    }
+
+    private ConnectorType normalizeConnector(String connector) {
+        if (connector == null || connector.isBlank()) return ConnectorType.CCS2;
+        String normalized = connector.toUpperCase(Locale.ROOT).replaceAll("[^A-Z0-9]", "");
+        if (normalized.contains("BHARATDC001") || normalized.equals("GBT")) return ConnectorType.GB_T;
+        if (normalized.contains("CHADEMO")) return ConnectorType.CHADEMO;
+        if (normalized.contains("CCS2")) return ConnectorType.CCS2;
+        if (normalized.contains("TYPE1")) return ConnectorType.TYPE1;
+        if (normalized.contains("TYPE2")) return ConnectorType.TYPE2;
+        return ConnectorType.CCS2;
     }
 }

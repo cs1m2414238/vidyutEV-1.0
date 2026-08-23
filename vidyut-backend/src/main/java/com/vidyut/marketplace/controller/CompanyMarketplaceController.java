@@ -50,6 +50,11 @@ public class CompanyMarketplaceController {
         return ResponseEntity.ok(ApiResponse.success("Interest sent to Host", marketplace.expressInterest(accountId(), propertyId, request)));
     }
 
+    @PostMapping("/opportunities/{propertyId}/save")
+    public ResponseEntity<ApiResponse<PropertyInterestResponse>> save(@PathVariable Long propertyId) {
+        return ResponseEntity.ok(ApiResponse.success("Property saved privately", marketplace.saveOpportunity(accountId(), propertyId)));
+    }
+
     @GetMapping("/interests")
     public ResponseEntity<ApiResponse<List<PropertyInterestResponse>>> interests() {
         return ResponseEntity.ok(ApiResponse.success(marketplace.companyInterests(accountId())));

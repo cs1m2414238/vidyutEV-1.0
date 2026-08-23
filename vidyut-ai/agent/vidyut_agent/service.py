@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import uuid
 from typing import Any
@@ -12,12 +13,40 @@ from google.genai import types
 from pydantic import BaseModel, Field
 
 from .agent import root_agent
+from .backend import BackendError, backend
 from .config import settings
+from .openrouter import run_openrouter_agent
 from .runtime_context import reset_request_context, set_request_context
 
 
 APP_NAME = "vidyut_autopilot"
 logger = logging.getLogger(__name__)
+
+STATE_CHANGING_TOOLS = {
+    "book_charger",
+    "launch_autopilot_trip",
+    "start_autopilot_monitoring",
+    "handle_charger_unavailable",
+    "complete_autopilot_charging",
+    "swap_autopilot_stop",
+    "simulate_autopilot_delay",
+    "reroute",
+    "cancel_booking",
+    "top_up_wallet",
+}
+
+
+def _state_change_attempted(tool_states: dict[str, str]) -> bool:
+    return any(name in STATE_CHANGING_TOOLS for name in tool_states)
+
+
+def _looks_like_tool_protocol(reply: str) -> bool:
+    normalized = reply.lower()
+    return "function call" in normalized and (
+        "preview_autopilot_trip" in normalized or '"name"' in normalized
+    )
+
+
 session_service = InMemorySessionService()
 runner = Runner(
     app_name=APP_NAME,
@@ -45,6 +74,20 @@ app = FastAPI(
 )
 
 
+class TripContext(BaseModel):
+    vehicleId: int = Field(gt=0)
+    origin: str = Field(min_length=1, max_length=300)
+    destination: str = Field(min_length=1, max_length=300)
+    goal: str = Field(default="", max_length=1200)
+    tripPurpose: str = "GENERAL"
+    arrivalDeadline: str = ""
+    optimizeFor: str = "TIME"
+    autonomyMode: str = "ASK_BEFORE_ACTIONS"
+    currentBatteryPercent: float = Field(ge=1, le=100)
+    minimumArrivalBatteryPercent: float = Field(ge=5, le=50)
+    maximumChargingBudget: float = Field(gt=0)
+
+
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=4000)
     sessionId: str | None = Field(
@@ -59,6 +102,7 @@ class ChatRequest(BaseModel):
         max_length=100,
         pattern=r"^[A-Za-z0-9._:-]+$",
     )
+    tripContext: TripContext | None = None
 
 
 class ToolCallResponse(BaseModel):
@@ -144,6 +188,93 @@ def _is_quota_error(exc: Exception) -> bool:
     return False
 
 
+def _planning_reply(plan: dict[str, Any]) -> str:
+    cost = float(plan.get("estimatedChargingCost") or 0)
+    budget = float(plan.get("maximumChargingBudget") or 0)
+    within_budget = bool(plan.get("withinBudget"))
+    budget_line = (
+        f"The plan is within budget with INR {max(0, budget - cost):.0f} remaining."
+        if within_budget
+        else f"The battery-safe route needs INR {max(0, cost - budget):.0f} more budget before confirming."
+    )
+    deadline_feasible = bool(plan.get("deadlineFeasible", True))
+    deadline = str(plan.get("arrivalDeadline") or "").strip()
+    estimated_arrival = str(plan.get("estimatedArrivalTime") or "").strip()
+    minutes_late = int(plan.get("deadlineMinutesLate") or 0)
+    if not deadline:
+        deadline_line = "No arrival deadline was requested."
+    elif deadline_feasible:
+        deadline_line = f"Arrival deadline met: ETA {estimated_arrival}, requested {deadline}."
+    else:
+        deadline_line = (
+            f"Arrival deadline missed: ETA {estimated_arrival}, requested {deadline}, "
+            f"late by {minutes_late} minutes."
+        )
+    base_distance = float(plan.get("baseRouteDistanceKm") or plan.get("totalDistanceKm") or 0)
+    final_distance = float(plan.get("totalDistanceKm") or 0)
+    detour_distance = float(plan.get("chargingDetourDistanceKm") or 0)
+    base_drive = int(plan.get("baseDriveMinutes") or plan.get("estimatedDriveMinutes") or 0)
+    detour_minutes = int(plan.get("chargingDetourMinutes") or 0)
+    charging_minutes = int(plan.get("estimatedChargingMinutes") or 0)
+    queue_minutes = int(plan.get("estimatedQueueMinutes") or 0)
+    setup_minutes = int(plan.get("connectionOverheadMinutes") or 0)
+    summary = str(plan.get("optimizationSummary") or "").strip()
+    return (
+        f"Vidyut checked the road route and live compatible chargers for "
+        f"{plan.get('origin', 'the origin')} to {plan.get('destination', 'the destination')}. "
+        f"Base route: {base_distance:.1f} km; final EV route: {final_distance:.1f} km "
+        f"({detour_distance:.1f} km charging detour). Time: {base_drive} min base driving + "
+        f"{detour_minutes} min detour driving + {charging_minutes} min charging + "
+        f"{queue_minutes} min queue + {setup_minutes} min setup = "
+        f"{plan.get('totalDurationMinutes', 0)} minutes. Charging estimate: INR {cost:.0f}; "
+        f"arrival battery: {plan.get('estimatedArrivalBatteryPercent', 0)}%. {budget_line} "
+        f"{deadline_line} "
+        f"{summary}"
+    )
+
+
+def _message_for_agent(request: ChatRequest) -> str:
+    if request.tripContext is None:
+        return request.message
+
+    context = request.tripContext.model_dump()
+    context["origin"] = request.tripContext.origin.strip()
+    context["destination"] = request.tripContext.destination.strip()
+    return (
+        f"{request.message}\n\n"
+        "Application trip context (use these values and do not ask for them again; "
+        "a value explicitly stated in the driver's message may override the matching field):\n"
+        f"{json.dumps(context, ensure_ascii=False, separators=(',', ':'))}"
+    )
+
+
+async def _planning_fallback(
+    request: ChatRequest,
+    artifacts: dict[str, dict[str, Any]],
+    tool_states: dict[str, str],
+) -> dict[str, Any] | None:
+    existing_plan = artifacts.get("plan")
+    if existing_plan is not None:
+        return existing_plan
+    if request.tripContext is None:
+        return None
+
+    payload = request.tripContext.model_dump()
+    payload["origin"] = request.tripContext.origin.strip()
+    payload["destination"] = request.tripContext.destination.strip()
+    payload["idempotencyKey"] = f"quota-preview-{uuid.uuid4().hex}"
+    plan = await backend.request(
+        "POST",
+        "/api/ev/autopilot/trips/preview",
+        json=payload,
+    )
+    if not isinstance(plan, dict):
+        raise BackendError("The Vidyut backend returned an invalid trip preview")
+    artifacts["plan"] = plan
+    tool_states["preview_autopilot_trip"] = "completed"
+    return plan
+
+
 async def _ensure_session(user_id: str, session_id: str) -> None:
     existing = await session_service.get_session(
         app_name=APP_NAME,
@@ -161,10 +292,13 @@ async def _ensure_session(user_id: str, session_id: str) -> None:
 @app.get("/health")
 async def health() -> dict[str, Any]:
     return {
-        "status": "ready" if settings.google_auth_configured else "configuration-required",
+        "status": "ready" if settings.any_llm_auth_configured else "configuration-required",
         "model": settings.model,
         "fallbackModels": list(settings.fallback_models),
+        "openrouterModel": settings.openrouter_model,
+        "openrouterFallbackModels": list(settings.openrouter_fallback_models),
         "geminiAuthenticationConfigured": settings.google_auth_configured,
+        "openrouterAuthenticationConfigured": settings.openrouter_auth_configured,
         "backendBaseUrl": settings.backend_base_url,
     }
 
@@ -179,12 +313,12 @@ async def chat(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="A valid Vidyut bearer token is required",
         )
-    if not settings.google_auth_configured:
+    if not settings.any_llm_auth_configured:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=(
-                "Gemini authentication is not configured. Add GOOGLE_API_KEY "
-                "to vidyut_agent/.env."
+                "AI authentication is not configured. Add GOOGLE_API_KEY or "
+                "OPENROUTER_API_KEY to vidyut_agent/.env."
             ),
         )
 
@@ -202,63 +336,110 @@ async def chat(
     tool_states: dict[str, str] = {}
     artifacts: dict[str, dict[str, Any]] = {}
     used_model = settings.model
-    try:
-        message = types.Content(
-            role="user",
-            parts=[types.Part.from_text(text=request.message)],
-        )
-        last_quota_error: Exception | None = None
-        for attempt, (model, active_runner) in enumerate(model_runners):
-            try:
-                async for event in active_runner.run_async(
-                    user_id=user_id,
-                    session_id=session_id,
-                    invocation_id=request_id if attempt == 0 else f"{request_id}-fallback-{attempt}",
-                    new_message=message,
-                ):
-                    _record_tool_events(event, tool_states, artifacts)
-                    if event.is_final_response():
-                        final_text = _text_from_event(event)
-                        if final_text:
-                            reply = final_text
-                used_model = model
-                break
-            except Exception as exc:
-                if not _is_quota_error(exc):
-                    raise
-                last_quota_error = exc
-                logger.warning(
-                    "Gemini quota exhausted model=%s request_id=%s; fallback_available=%s",
-                    model,
-                    request_id,
-                    attempt + 1 < len(model_runners),
-                )
-                # Never replay an agent turn after a tool may already have changed
-                # state. The caller receives a precise retryable quota response.
-                if tool_states:
-                    break
-        else:
-            last_quota_error = last_quota_error or RuntimeError("Gemini quota exhausted")
+    agent_message_text = _message_for_agent(request)
 
-        if not reply and last_quota_error is not None:
-            raise HTTPException(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail=(
-                    "Gemini quota is currently exhausted for the configured models. "
-                    "Retry after the quota window resets or configure billing."
-                ),
-            ) from last_quota_error
+    try:
+        last_quota_error: Exception | None = None
+        gemini_attempted = False
+
+        if settings.google_auth_configured:
+            gemini_attempted = True
+            message = types.Content(
+                role="user",
+                parts=[types.Part.from_text(text=agent_message_text)],
+            )
+            for attempt, (model, active_runner) in enumerate(model_runners):
+                try:
+                    async for event in active_runner.run_async(
+                        user_id=user_id,
+                        session_id=session_id,
+                        invocation_id=request_id if attempt == 0 else f"{request_id}-fallback-{attempt}",
+                        new_message=message,
+                    ):
+                        _record_tool_events(event, tool_states, artifacts)
+                        if event.is_final_response():
+                            final_text = _text_from_event(event)
+                            if final_text:
+                                reply = final_text
+                    used_model = model
+                    break
+                except Exception as exc:
+                    if not _is_quota_error(exc):
+                        logger.warning("Gemini invocation failed (%s): %s", model, exc)
+                        last_quota_error = exc
+                        break
+                    last_quota_error = exc
+                    logger.warning(
+                        "Gemini quota exhausted model=%s request_id=%s; fallback_available=%s",
+                        model,
+                        request_id,
+                        attempt + 1 < len(model_runners),
+                    )
+                    # Read-only lookups and previews are safe to repeat on another provider.
+                    # Never replay only after a tool may actually have changed state.
+                    if _state_change_attempted(tool_states):
+                        break
+            else:
+                last_quota_error = last_quota_error or RuntimeError("Gemini quota exhausted")
+
+        # If Gemini did not succeed (or wasn't configured), fall back to OpenRouter
+        if not reply and settings.openrouter_auth_configured and not _state_change_attempted(tool_states):
+            try:
+                logger.info(
+                    "Falling back to OpenRouter for request_id=%s (gemini_attempted=%s)",
+                    request_id,
+                    gemini_attempted,
+                )
+                openrouter_reply, openrouter_used_model = await run_openrouter_agent(
+                    message=agent_message_text,
+                    tool_states=tool_states,
+                    artifacts=artifacts,
+                )
+                if openrouter_reply:
+                    plan = artifacts.get("plan")
+                    reply = (_planning_reply(plan)
+                             if plan is not None and _looks_like_tool_protocol(openrouter_reply)
+                             else openrouter_reply)
+                    used_model = openrouter_used_model
+            except Exception as or_exc:
+                logger.warning("OpenRouter fallback invocation failed: %s", or_exc)
+                if last_quota_error is None:
+                    last_quota_error = or_exc
+
+        # Deterministic routing fallback if both LLMs fail or are unavailable
+        if not reply and (last_quota_error is not None or not settings.google_auth_configured):
+            try:
+                plan_data = await _planning_fallback(request, artifacts, tool_states)
+                if plan_data is not None:
+                    reply = _planning_reply(plan_data)
+                    used_model = "deterministic-routing-fallback"
+            except BackendError as exc:
+                logger.warning("Deterministic trip fallback failed: %s", exc)
+                raise HTTPException(
+                    status_code=exc.status_code,
+                    detail=str(exc),
+                ) from exc
+            if not reply and last_quota_error is not None:
+                if _is_quota_error(last_quota_error):
+                    raise HTTPException(
+                        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                        detail="The AI model is temporarily at capacity. Try the request again shortly.",
+                    ) from last_quota_error
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail="AI service could not complete the request. Check the API key and quota.",
+                ) from last_quota_error
     except HTTPException:
         raise
     except Exception as exc:
         logger.exception(
-            "Gemini ADK invocation failed request_id=%s session_id=%s",
+            "Agent invocation failed request_id=%s session_id=%s",
             request_id,
             session_id,
         )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Gemini could not complete the request. Check the API key and quota.",
+            detail="AI service could not complete the request. Check the API key and quota.",
         ) from exc
     finally:
         reset_request_context(context_tokens)
@@ -266,7 +447,7 @@ async def chat(
     if not reply:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="Gemini returned an empty response",
+            detail="AI service returned an empty response",
         )
 
     return ChatResponse(

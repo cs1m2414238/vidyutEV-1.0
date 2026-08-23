@@ -20,6 +20,9 @@ public class AdminAuditLog {
     @Column(nullable = false, length = 80) private String resourceType;
     @Column(length = 80) private String resourceId;
     @Column(nullable = false, length = 1200) private String summary;
+    @Column(length = 2000) private String previousValue;
+    @Column(length = 2000) private String newValue;
+    @Column(length = 1200) private String reason;
     @Column(name = "created_at", nullable = false)
     @Builder.Default private LocalDateTime createdAt = LocalDateTime.now();
 }

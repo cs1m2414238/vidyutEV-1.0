@@ -69,8 +69,37 @@ public class LandListing {
     @Column(length = 1000)
     private String ownershipDocumentUrl;
 
+    @Column(length = 1000)
+    private String electricityDocumentUrl;
+
+    @Column(length = 1000)
+    private String videoVerificationUrl;
+
     @Column(length = 800)
     private String adminReviewNote;
+
+    @Builder.Default
+    @Column(nullable = false, length = 40)
+    private String verificationStage = "SUBMITTED";
+
+    @Column(length = 20)
+    private String verificationRisk;
+
+    @Column(length = 60)
+    private String verificationMethod;
+
+    @Builder.Default
+    private boolean videoVerified = false;
+
+    @Column(length = 40)
+    private String physicalInspectionStatus;
+
+    private LocalDateTime inspectionScheduledAt;
+
+    @Column(length = 1200)
+    private String inspectionNote;
+
+    private Integer propertyScore;
 
     @Builder.Default
     private boolean discoverable = false;

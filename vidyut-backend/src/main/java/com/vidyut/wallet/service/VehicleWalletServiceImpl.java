@@ -9,6 +9,7 @@ import com.vidyut.wallet.entity.*;
 import com.vidyut.wallet.repository.*;
 import com.vidyut.notification.entity.NotificationType;
 import com.vidyut.notification.service.NotificationService;
+import com.vidyut.admin.service.OperationalControlService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -28,6 +29,7 @@ public class VehicleWalletServiceImpl implements VehicleWalletService {
     private final VehicleRepository vehicleRepository;
     private final VehicleAutoRechargeRuleRepository autoRechargeRuleRepository;
     private final NotificationService notificationService;
+    private final OperationalControlService operationalControlService;
 
     @Value("${vidyut.payments.demo-enabled:false}")
     private boolean demoPaymentsEnabled;
@@ -49,6 +51,7 @@ public class VehicleWalletServiceImpl implements VehicleWalletService {
     @Override
     @Transactional
     public VehicleWalletResponse topUp(Long userId, Long vehicleId, VehicleWalletTopUpRequest request) {
+        operationalControlService.assertPaymentAllowed(userId);
         if (!demoPaymentsEnabled) {
             throw new BadRequestException("A verified payment provider confirmation is required before wallet credit");
         }
@@ -65,6 +68,7 @@ public class VehicleWalletServiceImpl implements VehicleWalletService {
     @Override
     @Transactional
     public VehicleWalletResponse deduct(Long userId, Long vehicleId, double amount, Long bookingId, String description) {
+        operationalControlService.assertPaymentAllowed(userId);
         if (amount <= 0) throw new BadRequestException("Payment amount must be greater than zero");
         Vehicle vehicle = ownedVehicle(userId, vehicleId);
         getOrCreate(userId, vehicle);

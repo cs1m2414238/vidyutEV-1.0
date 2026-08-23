@@ -5,6 +5,7 @@ import com.vidyut.station.dto.*;
 import com.vidyut.station.entity.*;
 import com.vidyut.station.repository.ChargingStationRepository;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -20,9 +21,37 @@ public class ChargingStationServiceImpl implements ChargingStationService {
 
     private final ChargingStationRepository stationRepository;
 
+    @Value("${vidyut.demo-data.enabled:false}")
+    private boolean demoDataEnabled;
+
     @Override
     public StationResponse createStation(StationCreateRequest request, Long hostUserId) {
-        ChargingStation station = ChargingStation.builder()
+        ChargingStation station = buildStation(request);
+        station.setHostUserId(hostUserId);
+        station.setPropertyOwnerAccountId(hostUserId);
+        station.setOwnershipType(StationOwnershipType.HOST_PARTNERED);
+        addInitialConnector(station, request);
+        return mapToResponse(stationRepository.save(station));
+    }
+
+    @Override
+    public StationResponse createCompanyStation(StationCreateRequest request, Long companyAccountId,
+                                                Long companyId, String companyName) {
+        ChargingStation station = buildStation(request);
+        station.setHostUserId(null);
+        station.setPropertyOwnerAccountId(companyAccountId);
+        station.setOperatorCompanyId(companyId);
+        station.setOwnershipType(StationOwnershipType.COMPANY_OWNED);
+        station.setPropertyOwnerName(valueOrDefault(request.getPropertyOwnerName(), companyName));
+        station.setOperatorCompanyName(companyName);
+        station.setEquipmentOwnerName(valueOrDefault(request.getEquipmentOwnerName(), companyName));
+        station.setOperatingModel("COMPANY_OWNED_AND_OPERATED");
+        addInitialConnector(station, request);
+        return mapToResponse(stationRepository.save(station));
+    }
+
+    private ChargingStation buildStation(StationCreateRequest request) {
+        return ChargingStation.builder()
                 .name(request.getName())
                 .address(request.getAddress())
                 .city(request.getCity() != null ? request.getCity() : "Lucknow")
@@ -38,14 +67,22 @@ public class ChargingStationServiceImpl implements ChargingStationService {
                 .weeklySchedule(request.getWeeklySchedule())
                 .holidaySchedule(request.getHolidaySchedule())
                 .chargingInstructions(request.getChargingInstructions())
+                .propertyOwnerName(request.getPropertyOwnerName())
+                .operatorCompanyName(request.getOperatorCompanyName())
+                .equipmentOwnerName(request.getEquipmentOwnerName())
+                .operatingModel(request.getOperatingModel())
+                .solarProviderName(request.getSolarProviderName())
+                .siteOwnershipDocumentUrl(request.getSiteOwnershipDocumentUrl())
+                .electricityConnectionDocumentUrl(request.getElectricityConnectionDocumentUrl())
                 .autoAvailability(request.isAutoAvailability())
                 .bookingSlotMinutes(request.getBookingSlotMinutes() > 0 ? request.getBookingSlotMinutes() : 60)
                 .status(StationStatus.ACTIVE)
                 .availability(StationAvailability.AVAILABLE)
-                .hostUserId(hostUserId)
                 .connectors(new ArrayList<>())
                 .build();
+    }
 
+    private void addInitialConnector(ChargingStation station, StationCreateRequest request) {
         if (request.getConnectorType() != null) {
             ChargingConnector connector = ChargingConnector.builder()
                     .type(request.getConnectorType())
@@ -56,8 +93,6 @@ public class ChargingStationServiceImpl implements ChargingStationService {
                     .build();
             station.getConnectors().add(connector);
         }
-
-        return mapToResponse(stationRepository.save(station));
     }
 
     @Override
@@ -71,7 +106,7 @@ public class ChargingStationServiceImpl implements ChargingStationService {
     @Override
     @Transactional(readOnly = true)
     public List<StationResponse> getAllStations() {
-        return stationRepository.findAll().stream()
+        return publishedStations().stream()
                 .map(this::mapToResponse)
                 .collect(Collectors.toList());
     }
@@ -79,7 +114,7 @@ public class ChargingStationServiceImpl implements ChargingStationService {
     @Override
     @Transactional(readOnly = true)
     public List<NearbyStationResponse> getNearbyStations(double latitude, double longitude, double radiusKm) {
-        return stationRepository.findAll().stream()
+        return publishedStations().stream()
                 .map(s -> {
                     double dist = calculateDistance(latitude, longitude, s.getLatitude(), s.getLongitude());
                     return NearbyStationResponse.builder()
@@ -102,7 +137,7 @@ public class ChargingStationServiceImpl implements ChargingStationService {
         double maxRadius = radiusKm == null || radiusKm <= 0 ? Double.MAX_VALUE : radiusKm;
         int requiredSlots = minAvailableSlots == null ? 0 : Math.max(0, minAvailableSlots);
 
-        return stationRepository.findAll().stream()
+        return publishedStations().stream()
                 .map(station -> {
                     StationResponse response = mapToResponse(station);
                     if (latitude != null && longitude != null) {
@@ -130,6 +165,10 @@ public class ChargingStationServiceImpl implements ChargingStationService {
                         .thenComparing(Comparator.comparingInt(StationResponse::getAvailableSlots).reversed())
                         .thenComparingDouble(StationResponse::getPricePerKwh))
                 .toList();
+    }
+
+    private List<ChargingStation> publishedStations() {
+        return stationRepository.findPublishedStations(demoDataEnabled);
     }
 
     @Override
@@ -206,6 +245,12 @@ public class ChargingStationServiceImpl implements ChargingStationService {
                 .chargingInstructions(station.getChargingInstructions())
                 .autoAvailability(station.isAutoAvailability())
                 .emergencyDisabled(station.isEmergencyDisabled())
+                .demoData(station.isDemoData())
+                .propertyOwnerName(station.getPropertyOwnerName())
+                .operatorCompanyName(station.getOperatorCompanyName())
+                .equipmentOwnerName(station.getEquipmentOwnerName())
+                .operatingModel(station.getOperatingModel())
+                .solarProviderName(station.getSolarProviderName())
                 .bookingSlotMinutes(station.getBookingSlotMinutes())
                 .queueCount(station.getQueueCount())
                 .occupancyPercent(station.getOccupancyPercent())
@@ -223,6 +268,12 @@ public class ChargingStationServiceImpl implements ChargingStationService {
                 .status(station.getStatus())
                 .availability(station.getAvailability())
                 .hostUserId(station.getHostUserId())
+                .propertyOwnerAccountId(station.getPropertyOwnerAccountId())
+                .operatorCompanyId(station.getOperatorCompanyId())
+                .hostPartnershipId(station.getHostPartnershipId())
+                .ownershipType(station.getOwnershipType())
+                .siteEvidenceComplete(present(station.getSiteOwnershipDocumentUrl())
+                        && present(station.getElectricityConnectionDocumentUrl()))
                 .connectors(new ArrayList<>(station.getConnectors()))
                 .totalSlots(totalSlots)
                 .availableSlots(availableSlots)
@@ -256,6 +307,13 @@ public class ChargingStationServiceImpl implements ChargingStationService {
         if (request.getWeeklySchedule() != null) station.setWeeklySchedule(request.getWeeklySchedule());
         if (request.getHolidaySchedule() != null) station.setHolidaySchedule(request.getHolidaySchedule());
         if (request.getChargingInstructions() != null) station.setChargingInstructions(request.getChargingInstructions());
+        if (request.getPropertyOwnerName() != null) station.setPropertyOwnerName(request.getPropertyOwnerName());
+        if (request.getOperatorCompanyName() != null) station.setOperatorCompanyName(request.getOperatorCompanyName());
+        if (request.getEquipmentOwnerName() != null) station.setEquipmentOwnerName(request.getEquipmentOwnerName());
+        if (request.getOperatingModel() != null) station.setOperatingModel(request.getOperatingModel());
+        if (request.getSolarProviderName() != null) station.setSolarProviderName(request.getSolarProviderName());
+        if (request.getSiteOwnershipDocumentUrl() != null) station.setSiteOwnershipDocumentUrl(request.getSiteOwnershipDocumentUrl());
+        if (request.getElectricityConnectionDocumentUrl() != null) station.setElectricityConnectionDocumentUrl(request.getElectricityConnectionDocumentUrl());
         if (request.getAutoAvailability() != null) station.setAutoAvailability(request.getAutoAvailability());
         if (request.getEmergencyDisabled() != null) station.setEmergencyDisabled(request.getEmergencyDisabled());
         if (request.getBookingSlotMinutes() != null) station.setBookingSlotMinutes(Math.max(15, Math.min(480, request.getBookingSlotMinutes())));
@@ -269,5 +327,13 @@ public class ChargingStationServiceImpl implements ChargingStationService {
                 Math.cos(lat1 * p) * Math.cos(lat2 * p) *
                         (1 - Math.cos((lon2 - lon1) * p))/2;
         return 12742 * Math.asin(Math.sqrt(a));
+    }
+
+    private String valueOrDefault(String value, String fallback) {
+        return present(value) ? value.trim() : fallback;
+    }
+
+    private boolean present(String value) {
+        return value != null && !value.isBlank();
     }
 }

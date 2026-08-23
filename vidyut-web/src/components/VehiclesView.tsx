@@ -41,6 +41,10 @@ function capacityNumber(value?: string | null): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function connectorLabel(value: string): string {
+  return value === 'GB_T' ? 'GB/T' : value === 'TYPE1' ? 'Type 1' : value === 'TYPE2' ? 'Type 2' : value;
+}
+
 export function VehiclesView({
   token,
   onFindChargers,
@@ -93,7 +97,9 @@ export function VehiclesView({
   }, [showForm, pendingDelete, saving, deleting]);
 
   const connectorCount = new Set(
-    vehicles.map((vehicle) => vehicle.connectorType?.trim()).filter(Boolean),
+    vehicles.flatMap((vehicle) => vehicle.supportedConnectors?.length
+      ? vehicle.supportedConnectors
+      : vehicle.connectorType?.trim() ? [vehicle.connectorType.trim()] : []),
   ).size;
   const capacities = vehicles
     .map((vehicle) => capacityNumber(vehicle.batteryCapacity))
@@ -224,7 +230,9 @@ export function VehiclesView({
                       <span className="vehicle-registration">{vehicle.registrationNumber}</span>
                       <h3>{vehicle.makeAndModel}</h3>
                       <div className="vehicle-specs">
-                        <span><Zap size={13} />{vehicle.connectorType || 'Connector not set'}</span>
+                        <span><Zap size={13} />{vehicle.supportedConnectors?.length
+                          ? vehicle.supportedConnectors.map(connectorLabel).join(' + ')
+                          : vehicle.connectorType ? connectorLabel(vehicle.connectorType) : 'Connector not set'}</span>
                         <span><BatteryCharging size={13} />{vehicle.batteryPercent != null ? `${vehicle.batteryPercent}% battery` : vehicle.batteryCapacity || 'Battery not synced'}</span>
                       </div>
                     </div>
@@ -278,10 +286,10 @@ export function VehiclesView({
                   Connector type
                   <select value={form.connectorType} onChange={(event) => setForm((current) => ({ ...current, connectorType: event.target.value }))}>
                     <option value="CCS2">CCS2</option>
-                    <option value="Type 2">Type 2</option>
-                    <option value="CHAdeMO">CHAdeMO</option>
-                    <option value="Bharat DC-001">Bharat DC-001</option>
-                    <option value="Bharat AC-001">Bharat AC-001</option>
+                    <option value="TYPE2">Type 2</option>
+                    <option value="CHADEMO">CHAdeMO</option>
+                    <option value="GB_T">GB/T</option>
+                    <option value="TYPE1">Type 1</option>
                   </select>
                 </label>
               </div>

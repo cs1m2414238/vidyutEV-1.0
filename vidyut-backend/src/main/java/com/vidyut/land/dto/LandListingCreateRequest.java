@@ -56,7 +56,16 @@ public class LandListingCreateRequest {
     @Builder.Default
     @DecimalMin("0.0") private Double preferredPowerKw = 0.0;
     private String photoUrls;
+    @NotBlank(message = "Ownership document URL is required")
+    @Size(max = 1000)
+    @Pattern(regexp = "^https?://\\S+$", message = "Ownership document URL must use http or https")
     private String ownershipDocumentUrl;
+    @Size(max = 1000)
+    @Pattern(regexp = "^$|^https?://\\S+$", message = "Electricity document URL must use http or https")
+    private String electricityDocumentUrl;
+    @Size(max = 1000)
+    @Pattern(regexp = "^$|^https?://\\S+$", message = "Video verification URL must use http or https")
+    private String videoVerificationUrl;
     @Builder.Default
     private Boolean discoverable = true;
 }

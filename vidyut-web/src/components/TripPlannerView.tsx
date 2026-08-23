@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { BatteryCharging, CarFront, ExternalLink, MapPin, Navigation, Route, ShieldCheck, Zap } from 'lucide-react';
+import { AlertTriangle, BatteryCharging, CarFront, ExternalLink, MapPin, Navigation, Route, ShieldCheck, Zap } from 'lucide-react';
 import { apiRequest } from '../services/api';
 import { getVehicles, type Vehicle } from '../services/vehicles';
 import './TripPlannerView.css';
@@ -24,6 +24,7 @@ interface RoutePlan {
   reserveBatteryPercent: number;
   estimatedArrivalBatteryPercent: number;
   destinationWithinRange: boolean;
+  routeSource: string;
   externalMapsUrl: string;
   recommendedChargingStops: RouteStop[];
 }
@@ -31,8 +32,8 @@ interface RoutePlan {
 export function TripPlannerView({ token }: { token: string }) {
   const [vehicles, setVehicles] = useState<Vehicle[]>([]);
   const [vehicleId, setVehicleId] = useState(0);
-  const [origin, setOrigin] = useState('Lucknow');
-  const [destination, setDestination] = useState('Kanpur');
+  const [origin, setOrigin] = useState('');
+  const [destination, setDestination] = useState('');
   const [battery, setBattery] = useState(70);
   const [plan, setPlan] = useState<RoutePlan | null>(null);
   const [loading, setLoading] = useState(false);
@@ -92,7 +93,14 @@ export function TripPlannerView({ token }: { token: string }) {
               <div><small>{plan.destinationWithinRange ? 'DIRECT TRIP' : 'CHARGING STOP NEEDED'}</small><h2>{Math.round(plan.totalDistanceKm)} km • {Math.floor(plan.totalDurationMinutes / 60)}h {plan.totalDurationMinutes % 60}m</h2><p>Usable range {Math.round(plan.usableRangeKm)} km • arrive near {Math.round(plan.estimatedArrivalBatteryPercent)}%</p></div>
               {plan.destinationWithinRange ? <Navigation size={30} /> : <BatteryCharging size={30} />}
             </article>
-            <div className="trip-route-line"><span>{origin}</span><i /><span>{destination}</span></div>
+            {plan.routeSource.includes('ESTIMATED') && (
+              <div className="trip-route-warning" role="status">
+                <AlertTriangle size={16} />
+                Road routing is temporarily unavailable. Distances and times are conservative estimates;
+                confirm live navigation before departure.
+              </div>
+            )}
+            <div className="trip-route-line"><span>{plan.origin}</span><i /><span>{plan.destination}</span></div>
             <h3>Compatible charging stops</h3>
             {plan.recommendedChargingStops.map((stop, index) => <article className="trip-stop" key={stop.station.id}>
               <b>{index + 1}</b><div><h4>{stop.station.name}</h4><p>{stop.station.address}</p><span><Zap size={13} /> {stop.recommendedChargeMinutes} min • {stop.availableSlots} free • {stop.detourKm} km detour • est. ₹{Math.round(stop.estimatedChargingCost)}</span></div>

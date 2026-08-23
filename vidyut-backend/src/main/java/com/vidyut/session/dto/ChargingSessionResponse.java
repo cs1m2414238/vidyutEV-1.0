@@ -13,6 +13,7 @@ public class ChargingSessionResponse {
     private Long id;
     private Long bookingId;
     private Long stationId;
+    private Long connectorId;
     private String stationName;
     private Long vehicleId;
     private String vehicleName;

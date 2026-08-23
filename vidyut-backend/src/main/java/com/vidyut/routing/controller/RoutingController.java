@@ -47,4 +47,5 @@ public class RoutingController {
         return ResponseEntity.ok(ApiResponse.success("Route diversion completed", routingService.divert(
                 currentUser.getCurrentAccountId(), bookingId, request.getAlternativeStationId())));
     }
+
 }

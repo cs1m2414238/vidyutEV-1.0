@@ -10,7 +10,7 @@ interface StationConnector {
   maintenanceMode: boolean;
 }
 
-interface StationResponse {
+export interface StationResponse {
   id: number;
   name: string;
   address: string;
@@ -22,8 +22,14 @@ interface StationResponse {
   reviewCount: number;
   imageUrl?: string | null;
   bookingSlotMinutes?: number;
+  status?: string;
   availability: string;
   emergencyDisabled: boolean;
+  outletPartner?: boolean;
+  outletInstitutionName?: string | null;
+  outletIdVerificationRequired?: boolean;
+  amenities?: string | null;
+  workingHours?: string | null;
   connectors?: StationConnector[];
 }
 
@@ -62,5 +68,9 @@ export function stationToCharger(station: StationResponse): Charger {
     distance: station.city || 'Vidyut network',
     imageUrl: station.imageUrl || fallbackImage,
     bookingSlotMinutes: station.bookingSlotMinutes || 30,
+    status: station.status,
+    availability: station.availability,
+    outletPartner: Boolean(station.outletPartner),
+    outletInstitutionName: station.outletInstitutionName || undefined,
   };
 }

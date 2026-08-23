@@ -4,7 +4,12 @@ import com.vidyut.booking.dto.BookingResponse;
 import com.vidyut.booking.entity.Booking;
 import com.vidyut.booking.entity.BookingStatus;
 import com.vidyut.booking.repository.BookingRepository;
+import com.vidyut.admin.entity.IncidentSeverity;
+import com.vidyut.admin.service.AdminControlService;
+import com.vidyut.admin.service.OperationalControlService;
+import com.vidyut.autopilot.service.AutopilotService;
 import com.vidyut.common.exception.DuplicateResourceException;
+import com.vidyut.common.exception.BadRequestException;
 import com.vidyut.common.exception.ForbiddenException;
 import com.vidyut.common.exception.ResourceNotFoundException;
 import com.vidyut.company.dto.*;
@@ -12,6 +17,7 @@ import com.vidyut.company.entity.Company;
 import com.vidyut.company.entity.CompanyActivityLog;
 import com.vidyut.company.entity.CompanyEmployee;
 import com.vidyut.company.entity.CompanyMaintenanceTicket;
+import com.vidyut.company.entity.CompanyAgentMode;
 import com.vidyut.company.entity.MaintenanceTicketStatus;
 import com.vidyut.company.repository.CompanyEmployeeRepository;
 import com.vidyut.company.repository.CompanyActivityLogRepository;
@@ -31,6 +37,9 @@ import com.vidyut.station.entity.*;
 import com.vidyut.station.repository.ChargingConnectorRepository;
 import com.vidyut.station.repository.ChargingStationRepository;
 import com.vidyut.station.service.ChargingStationService;
+import com.vidyut.session.entity.ChargingSession;
+import com.vidyut.session.entity.ChargingSessionStatus;
+import com.vidyut.session.repository.ChargingSessionRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -39,6 +48,7 @@ import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.Duration;
 import java.util.*;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -56,29 +66,44 @@ public class CompanyOperationsService {
     private final ChargingStationRepository stationRepository;
     private final ChargingConnectorRepository connectorRepository;
     private final ChargingStationService stationService;
+    private final ChargingSessionRepository sessionRepository;
     private final BookingRepository bookingRepository;
     private final PaymentRepository paymentRepository;
     private final PayoutRepository payoutRepository;
     private final LandListingRepository landListingRepository;
     private final CompanyVerificationService verificationService;
+    private final AutopilotService autopilotService;
+    private final AdminControlService adminControlService;
+    private final OperationalControlService operationalControlService;
 
     public List<StationResponse> getStations(Long accountId) {
-        requireCompany(accountId);
-        return stationService.getStationsByOwner(accountId);
+        Company company = requireCompany(accountId);
+        return managedStations(company, accountId).stream()
+                .map(station -> stationService.getStationById(station.getId()))
+                .toList();
     }
 
     @Transactional
     public StationResponse createStation(Long accountId, StationCreateRequest request) {
+        operationalControlService.assertCompanyPublishingAllowed(accountId);
         Company company = requireVerifiedCompany(accountId);
-        StationResponse station = stationService.createStation(request, accountId);
+        if (!present(request.getSiteOwnershipDocumentUrl())
+                || !present(request.getElectricityConnectionDocumentUrl())) {
+            throw new BadRequestException("Company-owned stations require site ownership/control and electricity connection evidence");
+        }
+        StationResponse station = stationService.createCompanyStation(request, accountId, company.getId(), company.getCompanyName());
         recordActivity(company, accountId, "CREATE", "STATION", station.getId(), "Created station " + station.getName());
         return station;
     }
 
     @Transactional
     public StationResponse updateStation(Long accountId, Long id, StationUpdateRequest request) {
+        if (request.getStatus() == StationStatus.ACTIVE) {
+            operationalControlService.assertCompanyPublishingAllowed(accountId);
+        }
         Company company = requireVerifiedCompany(accountId);
-        StationResponse station = stationService.updateStation(id, accountId, request);
+        ownedStation(company, accountId, id);
+        StationResponse station = stationService.updateStation(id, request);
         recordActivity(company, accountId, "UPDATE", "STATION", id, "Updated station " + station.getName());
         return station;
     }
@@ -86,18 +111,25 @@ public class CompanyOperationsService {
     @Transactional
     public void deleteStation(Long accountId, Long id) {
         Company company = requireVerifiedCompany(accountId);
-        String stationName = ownedStation(accountId, id).getName();
-        stationService.deleteStation(id, accountId);
+        ChargingStation station = ownedStation(company, accountId, id);
+        if (station.getOwnershipType() == StationOwnershipType.HOST_PARTNERED) {
+            throw new BadRequestException("A Host-partnered station must be closed through its partnership workflow");
+        }
+        String stationName = station.getName();
+        stationRepository.delete(station);
         recordActivity(company, accountId, "DELETE", "STATION", id, "Deleted station " + stationName);
     }
 
     public List<ChargerResponse> getChargers(Long accountId) {
-        requireCompany(accountId);
-        return connectorRepository.findByStation_HostUserId(accountId).stream().map(this::mapCharger).toList();
+        Company company = requireCompany(accountId);
+        return managedStations(company, accountId).stream()
+                .flatMap(station -> station.getConnectors().stream())
+                .map(this::mapCharger).toList();
     }
 
     @Transactional
     public ChargerResponse createCharger(Long accountId, ChargerRequest request) {
+        operationalControlService.assertCompanyPublishingAllowed(accountId);
         Company company = requireVerifiedCompany(accountId);
         ChargingStation station = ownedStation(accountId, request.getStationId());
         if (connectorRepository.existsByChargerCodeIgnoreCase(request.getChargerCode())) {
@@ -117,10 +149,30 @@ public class CompanyOperationsService {
     public ChargerResponse updateCharger(Long accountId, Long id, ChargerRequest request) {
         Company company = requireVerifiedCompany(accountId);
         ChargingConnector connector = ownedCharger(accountId, id);
+        ChargerStatus previous = connector.getStatus();
         if (!connector.getStation().getId().equals(request.getStationId())) {
             connector.setStation(ownedStation(accountId, request.getStationId()));
         }
-        ChargerResponse response = mapCharger(connectorRepository.save(applyCharger(connector, request)));
+        ChargingConnector saved = connectorRepository.save(applyCharger(connector, request));
+        boolean disruptive = previous != ChargerStatus.FAULT && previous != ChargerStatus.OFFLINE
+                && previous != ChargerStatus.MAINTENANCE
+                && (saved.getStatus() == ChargerStatus.FAULT || saved.getStatus() == ChargerStatus.OFFLINE
+                || saved.getStatus() == ChargerStatus.MAINTENANCE || saved.isMaintenanceMode());
+        if (disruptive) {
+            ChargingStation station = saved.getStation();
+            boolean liveBackup = station.getConnectors().stream().anyMatch(item -> !item.getId().equals(saved.getId())
+                    && item.isAvailable() && item.getStatus() == ChargerStatus.ONLINE && !item.isMaintenanceMode());
+            if (!liveBackup) {
+                station.setAvailability(StationAvailability.UNAVAILABLE);
+                stationRepository.save(station);
+            }
+            String reason = "Operator " + company.getCompanyName() + " reported " + saved.getStatus().name().toLowerCase(Locale.ROOT);
+            Map<String, Object> reroute = autopilotService.handleConnectorUnavailable(station.getId(), saved.getType().name(), saved.getId(), reason);
+            adminControlService.recordDetectedIncident(station, saved,
+                    saved.getStatus() == ChargerStatus.FAULT ? IncidentSeverity.CRITICAL : IncidentSeverity.HIGH,
+                    reason, saved.getStatus() == ChargerStatus.FAULT ? 180 : 120, reroute);
+        }
+        ChargerResponse response = mapCharger(saved);
         recordActivity(company, accountId, "UPDATE", "CHARGER", id, "Updated charger " + response.getChargerCode());
         return response;
     }
@@ -171,9 +223,9 @@ public class CompanyOperationsService {
     }
 
     public Map<String, Object> dashboard(Long accountId) {
-        requireCompany(accountId);
-        List<ChargingStation> stations = stationRepository.findByHostUserId(accountId);
-        List<ChargingConnector> chargers = connectorRepository.findByStation_HostUserId(accountId);
+        Company company = requireCompany(accountId);
+        List<ChargingStation> stations = managedStations(company, accountId);
+        List<ChargingConnector> chargers = stations.stream().flatMap(station -> station.getConnectors().stream()).toList();
         List<Booking> bookings = bookingsForStations(stations);
         List<Payment> payments = paymentsForBookings(bookings);
         double revenue = payments.stream().filter(payment -> payment.getStatus() == PaymentStatus.SUCCESS)
@@ -204,7 +256,8 @@ public class CompanyOperationsService {
 
     public Map<String, Object> analytics(Long accountId) {
         Map<String, Object> dashboard = dashboard(accountId);
-        List<ChargingStation> stations = stationRepository.findByHostUserId(accountId);
+        Company company = requireCompany(accountId);
+        List<ChargingStation> stations = managedStations(company, accountId);
         List<Booking> bookings = bookingsForStations(stations);
         Map<String, Double> stationRevenue = bookings.stream()
                 .filter(booking -> booking.getStatus() == BookingStatus.COMPLETED)
@@ -236,7 +289,9 @@ public class CompanyOperationsService {
         List<ManagedStationResponse> stationResponses = stations.stream().map(station -> {
             List<ChargingConnector> stationChargers = station.getConnectors();
             return new ManagedStationResponse(station.getId(), station.getName(), station.getCity(), station.getAddress(),
-                    station.getHostUserId(), relationship(station, accountId), station.getStatus(), stationChargers.size(),
+                    station.getHostUserId(), station.getPropertyOwnerName(), station.getOperatorCompanyName(),
+                    station.getOwnershipType(), station.getHostPartnershipId(), relationship(station, accountId),
+                    station.getStatus(), stationChargers.size(),
                     (int) stationChargers.stream().filter(charger -> charger.getStatus() == ChargerStatus.ONLINE).count(),
                     (int) stationChargers.stream().filter(this::needsAttention).count());
         }).toList();
@@ -384,47 +439,115 @@ public class CompanyOperationsService {
         recordActivity(company, accountId, "DELETE", "EMPLOYEE", id, "Removed employee " + employee.getName());
     }
 
-    public Map<String, Object> askAssistant(Long accountId, String rawQuestion) {
-        Company company = requireCompany(accountId);
-        Map<String, Object> analytics = analytics(accountId);
-        Map<?, ?> summary = (Map<?, ?>) analytics.get("summary");
-        String question = rawQuestion.toLowerCase(Locale.ROOT);
-        List<ChargingStation> suppliedStations = stationRepository.findBySupplierCompanyId(company.getId());
-        List<ChargingConnector> suppliedChargers = suppliedStations.stream()
-                .flatMap(station -> station.getConnectors().stream()).toList();
-        long nationalFaults = suppliedChargers.stream().filter(charger -> charger.getStatus() == ChargerStatus.FAULT
-                || charger.getStatus() == ChargerStatus.OFFLINE || charger.getHealthScore() < 70).count();
-        List<Map<String, Object>> siteRecommendations = expansionSites();
-        String answer;
-        if (question.contains("revenue")) {
-            answer = "Today's network revenue is ₹" + analytics.get("dailyRevenue") + ". Monthly revenue is ₹" + analytics.get("monthlyRevenue") + ".";
-        } else if (question.contains("maintenance") || question.contains("fault") || question.contains("failure")
-                || question.contains("offline") || question.contains("nation")) {
-            answer = nationalFaults + " chargers need attention across the nationwide company-supplied Host network. "
-                    + "Prioritize offline or sub-70 health units before peak demand; your own workspace currently reports " + summary.get("faults") + " fault(s).";
-        } else if (question.contains("demand") || question.contains("peak")) {
-            answer = "Peak demand is expected around " + analytics.get("peakUsageHour") + ". Keep fast chargers online and reduce maintenance overlap.";
-        } else if (question.contains("price")) {
-            answer = "Use peak pricing only at high-occupancy stations. Protect student and corporate discounts with station-specific rules.";
-        } else if (question.contains("expand") || question.contains("area") || question.contains("location")
-                || question.contains("plant") || question.contains("land") || question.contains("commute")
-                || question.contains("route") || question.contains("install")) {
-            answer = siteRecommendations.isEmpty()
-                    ? "No Host land is published yet. Vidyut will rank nationwide listings as soon as Hosts make them discoverable."
-                    : "Vidyut ranked " + siteRecommendations.size() + " nationwide Host site(s) by grid readiness, parking capacity and distance from existing active stations. Start with "
-                    + siteRecommendations.get(0).get("title") + " in " + siteRecommendations.get(0).get("location") + ".";
-        } else if (question.contains("energy")) {
-            answer = "The network has delivered " + summary.get("energyDeliveredKwh") + " kWh across recorded sessions.";
-        } else {
-            answer = "Your network has " + summary.get("totalStations") + " stations, " + summary.get("totalChargers") + " chargers and " + summary.get("utilizationRate") + "% live utilization.";
-        }
-        return linkedMap("question", rawQuestion, "answer", answer, "generatedAt", LocalDateTime.now(),
-                "suppliedStations", suppliedStations.size(), "nationalFaults", nationalFaults,
-                "siteRecommendations", siteRecommendations,
-                "recommendations", List.of("Review nationwide Host opportunities", "Resolve supplied-network faults", "Validate top sites with a grid and traffic survey"));
+    public CompanyAgentSettingsResponse agentSettings(Long accountId) {
+        return agentSettingsResponse(requireCompany(accountId));
     }
 
-    private List<Map<String, Object>> expansionSites() {
+    @Transactional
+    public CompanyAgentSettingsResponse updateAgentSettings(Long accountId, CompanyAgentSettingsRequest request) {
+        Company company = requireVerifiedCompany(accountId);
+        company.setAgentMode(request.mode());
+        company.setAgentMaxPriceChangePercent(request.maxPriceChangePercent());
+        company.setAgentAutoDisableFaultyChargers(request.autoDisableFaultyChargers());
+        company.setAgentAutoCreateMaintenanceTickets(request.autoCreateMaintenanceTickets());
+        Company saved = companyRepository.save(company);
+        recordActivity(saved, accountId, "UPDATE", "COMPANY_AGENT", saved.getId(),
+                "Updated Company Assistant autonomy to " + saved.getAgentMode());
+        return agentSettingsResponse(saved);
+    }
+
+    public CompanyAgentResponse askAssistant(Long accountId, String rawQuestion) {
+        Company company = requireCompany(accountId);
+        List<ChargingStation> stations = managedStations(company, accountId);
+        List<ChargingConnector> chargers = stations.stream().flatMap(station -> station.getConnectors().stream()).toList();
+        List<Booking> bookings = bookingsForStations(stations);
+        String question = rawQuestion.toLowerCase(Locale.ROOT);
+        String intent = assistantIntent(question);
+        CompanyAgentResponse.NetworkSummary network = agentNetworkSummary(stations, chargers, bookings);
+        CompanyAgentResponse.FaultImpact fault = agentFaultImpact(stations, chargers, bookings);
+        CompanyAgentResponse.RevenueSummary revenue = agentRevenueSummary(stations, bookings);
+        CompanyAgentResponse.PricingRecommendation pricing = agentPricingRecommendation(company, stations);
+        List<CompanyAgentResponse.SiteRecommendation> sites = expansionSites();
+        List<CompanyAgentResponse.RecommendedAction> actions = agentActions(intent, company, fault, pricing);
+        Map<String, Object> offerDraft = "OFFER".equals(intent) ? agentOfferDraft(rawQuestion, sites) : Map.of();
+        String answer = assistantAnswer(intent, network, fault, revenue, pricing, sites, offerDraft);
+        return new CompanyAgentResponse(intent, company.getAgentMode(), answer, network, fault, revenue, pricing,
+                sites, actions, offerDraft, LocalDateTime.now());
+    }
+
+    @Transactional
+    public CompanyAgentActionResponse executeAgentAction(Long accountId, CompanyAgentActionRequest request) {
+        Company company = requireVerifiedCompany(accountId);
+        if (company.getAgentMode() == CompanyAgentMode.RECOMMEND_ONLY) {
+            return new CompanyAgentActionResponse("RECOMMENDED_ONLY",
+                    "Recommend-only mode never changes the network. Switch mode or perform the action manually.",
+                    request.action(), Map.of(), null);
+        }
+        if (!request.approved() && !autopilotAllows(company, request)) {
+            return new CompanyAgentActionResponse("AWAITING_APPROVAL",
+                    "This action is prepared but needs company approval.", request.action(), Map.of(), null);
+        }
+
+        Map<String, Object> result;
+        String message;
+        switch (request.action()) {
+            case DISABLE_NEW_BOOKINGS -> {
+                ChargingConnector charger = managedCharger(company, accountId, required(request.chargerId(), "Choose a charger"));
+                charger.setAvailable(false);
+                charger.setLastHeartbeat(LocalDateTime.now());
+                connectorRepository.save(charger);
+                ChargingStation station = charger.getStation();
+                boolean hasBackup = station.getConnectors().stream().anyMatch(candidate -> !candidate.getId().equals(charger.getId())
+                        && candidate.isAvailable() && candidate.getStatus() == ChargerStatus.ONLINE && !candidate.isMaintenanceMode());
+                if (!hasBackup) {
+                    station.setAvailability(StationAvailability.UNAVAILABLE);
+                    stationRepository.save(station);
+                }
+                Map<String, Object> reroute = autopilotService.handleConnectorUnavailable(station.getId(),
+                        charger.getType().name(), charger.getId(), cleanReason(request.reason(), "Company Assistant isolated a charger"));
+                result = linkedMap("chargerId", charger.getId(), "chargerCode", charger.getChargerCode(),
+                        "stationId", station.getId(), "stationStillAvailable", hasBackup, "journeyReroute", reroute);
+                message = "New assignments to " + charger.getChargerCode() + " are disabled; other healthy chargers remain available.";
+                recordActivity(company, accountId, "AGENT_ACTION", "CHARGER", charger.getId(), message);
+            }
+            case CREATE_MAINTENANCE_TICKET -> {
+                Long chargerId = required(request.chargerId(), "Choose a charger");
+                MaintenanceTicketResponse ticket = createMaintenanceTicket(accountId, new MaintenanceTicketCreateRequest(
+                        chargerId, request.priority() == null ? com.vidyut.company.entity.MaintenancePriority.HIGH : request.priority(),
+                        cleanReason(request.reason(), "Company Assistant detected an operational fault"), null));
+                result = linkedMap("ticketId", ticket.id(), "chargerId", ticket.chargerId(), "status", ticket.status());
+                message = "Maintenance work order #" + ticket.id() + " was created for " + ticket.chargerCode() + ".";
+            }
+            case NOTIFY_STATION_MANAGER -> {
+                ChargingConnector charger = managedCharger(company, accountId, required(request.chargerId(), "Choose a charger"));
+                message = "Station manager notification recorded for " + charger.getChargerCode() + ": "
+                        + cleanReason(request.reason(), "Review the charger condition and acknowledge the incident");
+                recordActivity(company, accountId, "AGENT_ACTION", "STATION_NOTIFICATION", charger.getStation().getId(), message);
+                result = linkedMap("stationId", charger.getStation().getId(), "chargerId", charger.getId(), "notified", true);
+            }
+            case APPLY_PRICE_RECOMMENDATION -> {
+                ChargingStation station = ownedStation(accountId, required(request.stationId(), "Choose a station"));
+                double proposed = request.proposedPricePerKwh() == null ? station.getPricePerKwh() : request.proposedPricePerKwh();
+                double percent = station.getPricePerKwh() <= 0 ? 0
+                        : Math.abs(proposed - station.getPricePerKwh()) / station.getPricePerKwh() * 100;
+                if (percent > company.getAgentMaxPriceChangePercent() + 0.001) {
+                    throw new BadRequestException("Price change exceeds the Company Assistant limit of "
+                            + company.getAgentMaxPriceChangePercent() + "%");
+                }
+                double previous = station.getPricePerKwh();
+                station.setPricePerKwh(round(proposed));
+                stationRepository.save(station);
+                result = linkedMap("stationId", station.getId(), "previousPricePerKwh", previous,
+                        "pricePerKwh", station.getPricePerKwh(), "changePercent", round(percent));
+                message = "Approved pricing test applied to " + station.getName() + ".";
+                recordActivity(company, accountId, "AGENT_ACTION", "PRICING", station.getId(), message);
+            }
+            default -> throw new BadRequestException("Unsupported Company Assistant action");
+        }
+        return new CompanyAgentActionResponse("EXECUTED", message, request.action(), result, LocalDateTime.now());
+    }
+
+    private List<CompanyAgentResponse.SiteRecommendation> expansionSites() {
         List<ChargingStation> activeStations = stationRepository.findAll().stream()
                 .filter(station -> station.getStatus() == StationStatus.ACTIVE).toList();
         return landListingRepository.findByDiscoverableTrueAndStatusIn(List.of(LandListingStatus.APPROVED, LandListingStatus.ACTIVE))
@@ -436,15 +559,261 @@ public class CompanyOperationsService {
                             + Math.min(45, site.getAvailableLoadKw() * 0.7) + Math.min(35, nearestKm * 0.7));
                     String location = java.util.stream.Stream.of(site.getCity(), site.getState()).filter(Objects::nonNull)
                             .filter(value -> !value.isBlank()).collect(Collectors.joining(", "));
-                    return linkedMap("propertyId", site.getId(), "title", site.getTitle(),
-                            "location", location.isBlank() ? site.getAddress() : location,
-                            "parkingBays", site.getAvailableParkingBays(), "availableLoadKw", site.getAvailableLoadKw(),
-                            "nearestActiveStationKm", round(nearestKm), "expansionScore", round(score),
-                            "reason", site.getAvailableLoadKw() >= 60
-                                    ? "Strong grid headroom with a nationwide Host ready to discuss installation"
-                                    : "Underserved Host location; confirm transformer capacity during site survey");
-                }).sorted(Comparator.comparingDouble((Map<String, Object> site) -> ((Number) site.get("expansionScore")).doubleValue()).reversed())
+                    double power = site.getAvailableLoadKw() >= 240 ? 120 : site.getAvailableLoadKw() >= 120 ? 60 : 30;
+                    int count = Math.max(1, Math.min(4, (int) Math.floor(site.getAvailableLoadKw() / Math.max(30, power))));
+                    return new CompanyAgentResponse.SiteRecommendation(site.getId(), site.getTitle(),
+                            location.isBlank() ? site.getAddress() : location, site.getAvailableParkingBays(),
+                            site.getAvailableLoadKw(), round(nearestKm), round(score), count, power,
+                            clean(site.getPreferredConnectorType()) == null ? "CCS2" : site.getPreferredConnectorType(),
+                            site.getAvailableLoadKw() >= 60
+                                    ? "Strong grid headroom with a verified Host ready for a site survey"
+                                    : "Underserved Host location; confirm transformer capacity during the survey");
+                }).sorted(Comparator.comparingDouble(CompanyAgentResponse.SiteRecommendation::expansionScore).reversed())
                 .limit(5).toList();
+    }
+
+    private String assistantIntent(String question) {
+        if (question.contains("offer") || question.contains("proposal") || question.contains("investment")) return "OFFER";
+        if (question.contains("maintenance") || question.contains("fault") || question.contains("failure")
+                || question.contains("offline") || question.contains("repair") || question.contains("downtime")) return "FAULT";
+        if (question.contains("revenue") || question.contains("earn") || question.contains("settlement")
+                || question.contains("performing")) return "REVENUE";
+        if (question.contains("price") || question.contains("tariff") || question.contains("discount")) return "PRICING";
+        if (question.contains("expand") || question.contains("next charger") || question.contains("property")
+                || question.contains("location") || question.contains("site") || question.contains("install")) return "EXPANSION";
+        if (question.contains("occupied") || question.contains("available") || question.contains("charging right now")
+                || question.contains("active session") || question.contains("network") || question.contains("full")) return "NETWORK";
+        return "OVERVIEW";
+    }
+
+    private CompanyAgentResponse.NetworkSummary agentNetworkSummary(List<ChargingStation> stations,
+            List<ChargingConnector> chargers, List<Booking> bookings) {
+        List<Long> stationIds = stations.stream().map(ChargingStation::getId).toList();
+        List<ChargingSession> sessions = stationIds.isEmpty() ? List.of()
+                : sessionRepository.findByStationIdInAndStatusOrderByStartedAtDesc(stationIds, ChargingSessionStatus.ACTIVE);
+        int occupied = (int) chargers.stream().filter(charger -> charger.getStatus() == ChargerStatus.CHARGING).count();
+        int available = (int) chargers.stream().filter(charger -> charger.getStatus() == ChargerStatus.ONLINE
+                && charger.isAvailable() && !charger.isMaintenanceMode()).count();
+        int offline = (int) chargers.stream().filter(charger -> charger.getStatus() == ChargerStatus.OFFLINE
+                || charger.getStatus() == ChargerStatus.MAINTENANCE || charger.isMaintenanceMode()).count();
+        int faults = (int) chargers.stream().filter(this::needsAttention).count();
+        LocalDateTime now = LocalDateTime.now();
+        int reserved = (int) bookings.stream().filter(booking -> booking.getStatus() == BookingStatus.CONFIRMED
+                && booking.getStartTime() != null && !booking.getStartTime().isBefore(now)
+                && booking.getStartTime().isBefore(now.plusMinutes(30))).count();
+        ChargingStation highest = stations.stream().max(Comparator.comparingDouble(ChargingStation::getOccupancyPercent)).orElse(null);
+        ChargingSession longest = sessions.stream().filter(session -> session.getStartedAt() != null)
+                .min(Comparator.comparing(ChargingSession::getStartedAt)).orElse(null);
+        ChargingSession next = sessions.stream().filter(session -> session.getEstimatedCompletionAt() != null)
+                .min(Comparator.comparing(ChargingSession::getEstimatedCompletionAt)).orElse(null);
+        Map<Long, String> chargerCodes = chargers.stream().filter(charger -> charger.getId() != null)
+                .collect(Collectors.toMap(ChargingConnector::getId,
+                        charger -> charger.getChargerCode() == null ? "Charger #" + charger.getId() : charger.getChargerCode(),
+                        (left, right) -> left));
+        String immediate = chargers.stream().filter(charger -> charger.getStatus() == ChargerStatus.ONLINE
+                        && charger.isAvailable() && !charger.isMaintenanceMode())
+                .map(charger -> charger.getChargerCode() == null ? "Charger #" + charger.getId() : charger.getChargerCode())
+                .findFirst().orElse("No charger predicted");
+        return new CompanyAgentResponse.NetworkSummary(stations.size(), chargers.size(), occupied, available,
+                reserved, offline, faults, sessions.size(), highest == null ? "No station data" : highest.getName(),
+                highest == null ? 0 : round(highest.getOccupancyPercent()),
+                longest == null ? "No active session" : chargerCodes.getOrDefault(longest.getConnectorId(), "Session #" + longest.getId()),
+                longest == null ? 0 : Math.max(0, Duration.between(longest.getStartedAt(), now).toMinutes()),
+                next == null ? immediate : chargerCodes.getOrDefault(next.getConnectorId(), "Session #" + next.getId()),
+                next == null ? 0 : Math.max(0, Duration.between(now, next.getEstimatedCompletionAt()).toMinutes()));
+    }
+
+    private CompanyAgentResponse.FaultImpact agentFaultImpact(List<ChargingStation> stations,
+            List<ChargingConnector> chargers, List<Booking> bookings) {
+        ChargingConnector fault = chargers.stream().filter(this::needsAttention)
+                .sorted(Comparator.comparing((ChargingConnector charger) -> charger.getStatus() != ChargerStatus.FAULT)
+                        .thenComparingInt(ChargingConnector::getHealthScore))
+                .findFirst().orElse(null);
+        if (fault == null) return null;
+        LocalDateTime now = LocalDateTime.now();
+        List<Booking> affected = bookings.stream().filter(booking -> booking.getStationId().equals(fault.getStation().getId()))
+                .filter(booking -> booking.getStatus() == BookingStatus.PENDING || booking.getStatus() == BookingStatus.CONFIRMED)
+                .filter(booking -> booking.getStartTime() == null || (!booking.getStartTime().isBefore(now)
+                        && booking.getStartTime().isBefore(now.plusHours(3))))
+                .toList();
+        int downtime = fault.getStatus() == ChargerStatus.FAULT ? 150
+                : fault.getStatus() == ChargerStatus.OFFLINE ? 120 : 75;
+        double revenueRisk = affected.stream().mapToDouble(Booking::getTotalAmount).sum();
+        if (revenueRisk <= 0) revenueRisk = affected.size() * fault.getStation().getPricePerKwh() * 20;
+        List<String> backups = fault.getStation().getConnectors().stream()
+                .filter(charger -> !charger.getId().equals(fault.getId()) && charger.getType() == fault.getType())
+                .filter(charger -> charger.getStatus() == ChargerStatus.ONLINE && charger.isAvailable() && !charger.isMaintenanceMode())
+                .map(charger -> charger.getChargerCode() == null ? "Charger #" + charger.getId() : charger.getChargerCode())
+                .limit(4).toList();
+        if (backups.isEmpty()) {
+            backups = stations.stream().filter(station -> !station.getId().equals(fault.getStation().getId()))
+                    .flatMap(station -> station.getConnectors().stream())
+                    .filter(charger -> charger.getType() == fault.getType() && charger.getStatus() == ChargerStatus.ONLINE
+                            && charger.isAvailable() && !charger.isMaintenanceMode())
+                    .sorted(Comparator.comparingDouble(charger -> distanceKm(fault.getStation().getLatitude(),
+                            fault.getStation().getLongitude(), charger.getStation().getLatitude(), charger.getStation().getLongitude())))
+                    .map(charger -> charger.getStation().getName() + " · " + charger.getChargerCode()).limit(4).toList();
+        }
+        String issue = clean(fault.getFaultCode());
+        if (issue == null) issue = fault.getStatus() == ChargerStatus.FAULT ? "Hardware fault reported"
+                : fault.isMaintenanceMode() ? "Maintenance mode is active" : "Heartbeat or health requires attention";
+        return new CompanyAgentResponse.FaultImpact(fault.getId(), fault.getChargerCode(), fault.getStation().getName(),
+                issue, affected.size(), downtime, round(revenueRisk), backups);
+    }
+
+    private CompanyAgentResponse.RevenueSummary agentRevenueSummary(List<ChargingStation> stations, List<Booking> bookings) {
+        LocalDate today = LocalDate.now();
+        List<Booking> completed = bookings.stream().filter(booking -> booking.getStatus() == BookingStatus.COMPLETED)
+                .filter(booking -> booking.getStartTime() == null || !booking.getStartTime().toLocalDate().isBefore(today)).toList();
+        List<Payment> payments = paymentsForBookings(bookings);
+        double chargingRevenue = payments.stream().filter(payment -> payment.getStatus() == PaymentStatus.SUCCESS)
+                .filter(payment -> payment.getTimestamp() == null || !payment.getTimestamp().toLocalDate().isBefore(today))
+                .mapToDouble(Payment::getAmount).sum();
+        if (chargingRevenue <= 0) chargingRevenue = completed.stream().mapToDouble(Booking::getTotalAmount).sum();
+        double refunds = payments.stream().filter(payment -> payment.getStatus() == PaymentStatus.REFUNDED)
+                .filter(payment -> payment.getTimestamp() == null || !payment.getTimestamp().toLocalDate().isBefore(today))
+                .mapToDouble(Payment::getAmount).sum();
+        Set<Long> partneredStationIds = stations.stream()
+                .filter(station -> station.getOwnershipType() == StationOwnershipType.HOST_PARTNERED)
+                .map(ChargingStation::getId).collect(Collectors.toSet());
+        double partneredRevenue = completed.stream().filter(booking -> partneredStationIds.contains(booking.getStationId()))
+                .mapToDouble(Booking::getTotalAmount).sum();
+        double hostPayouts = partneredRevenue * 0.18;
+        double vidyutFees = chargingRevenue * 0.05;
+        Map<String, Double> byStation = completed.stream().collect(Collectors.groupingBy(Booking::getStationName,
+                Collectors.summingDouble(Booking::getTotalAmount)));
+        String best = byStation.entrySet().stream().max(Map.Entry.comparingByValue()).map(Map.Entry::getKey).orElse("No completed sessions");
+        String lowest = byStation.entrySet().stream().min(Map.Entry.comparingByValue()).map(Map.Entry::getKey).orElse("No completed sessions");
+        return new CompanyAgentResponse.RevenueSummary(completed.size(),
+                round(completed.stream().mapToDouble(Booking::getKwhDelivered).sum()), round(chargingRevenue),
+                round(hostPayouts), round(vidyutFees), round(refunds),
+                round(chargingRevenue - hostPayouts - vidyutFees - refunds), best, lowest);
+    }
+
+    private CompanyAgentResponse.PricingRecommendation agentPricingRecommendation(Company company,
+            List<ChargingStation> stations) {
+        ChargingStation target = stations.stream().filter(station -> station.getStatus() == StationStatus.ACTIVE)
+                .min(Comparator.comparingDouble(ChargingStation::getOccupancyPercent)).orElse(null);
+        if (target == null) return null;
+        double nearbyAverage = stationRepository.findAll().stream()
+                .filter(station -> station.getStatus() == StationStatus.ACTIVE && !station.getId().equals(target.getId()))
+                .filter(station -> distanceKm(target.getLatitude(), target.getLongitude(), station.getLatitude(), station.getLongitude()) <= 35)
+                .mapToDouble(ChargingStation::getPricePerKwh).filter(value -> value > 0).average()
+                .orElse(target.getPricePerKwh());
+        double desired = target.getOccupancyPercent() < 45 && target.getPricePerKwh() > nearbyAverage
+                ? nearbyAverage : target.getPricePerKwh();
+        double maximumDelta = target.getPricePerKwh() * company.getAgentMaxPriceChangePercent() / 100.0;
+        desired = Math.max(target.getPricePerKwh() - maximumDelta, Math.min(target.getPricePerKwh() + maximumDelta, desired));
+        return new CompanyAgentResponse.PricingRecommendation(target.getId(), target.getName(),
+                round(target.getPricePerKwh()), round(nearbyAverage), round(desired),
+                round(target.getOccupancyPercent()), round(Math.min(100, target.getOccupancyPercent() + 9)), "11:00-16:00");
+    }
+
+    private List<CompanyAgentResponse.RecommendedAction> agentActions(String intent, Company company,
+            CompanyAgentResponse.FaultImpact fault, CompanyAgentResponse.PricingRecommendation pricing) {
+        List<CompanyAgentResponse.RecommendedAction> actions = new ArrayList<>();
+        boolean approval = company.getAgentMode() != CompanyAgentMode.AUTOPILOT;
+        if (("FAULT".equals(intent) || "OVERVIEW".equals(intent)) && fault != null) {
+            actions.add(new CompanyAgentResponse.RecommendedAction(CompanyAgentActionType.DISABLE_NEW_BOOKINGS,
+                    "Disable new bookings", "LOW", approval || !company.isAgentAutoDisableFaultyChargers(),
+                    fault.chargerId(), null, null, fault.issue()));
+            actions.add(new CompanyAgentResponse.RecommendedAction(CompanyAgentActionType.CREATE_MAINTENANCE_TICKET,
+                    "Create maintenance ticket", "LOW", approval || !company.isAgentAutoCreateMaintenanceTickets(),
+                    fault.chargerId(), null, null, fault.issue()));
+            actions.add(new CompanyAgentResponse.RecommendedAction(CompanyAgentActionType.NOTIFY_STATION_MANAGER,
+                    "Notify station manager", "LOW", approval, fault.chargerId(), null, null, fault.issue()));
+        }
+        if ("PRICING".equals(intent) && pricing != null
+                && Math.abs(pricing.recommendedPricePerKwh() - pricing.currentPricePerKwh()) > 0.009) {
+            actions.add(new CompanyAgentResponse.RecommendedAction(CompanyAgentActionType.APPLY_PRICE_RECOMMENDATION,
+                    "Apply limited pricing test", "MEDIUM", approval, null, pricing.stationId(),
+                    pricing.recommendedPricePerKwh(), "Time-limited utilization test within company limits"));
+        }
+        return actions;
+    }
+
+    private String assistantAnswer(String intent, CompanyAgentResponse.NetworkSummary network,
+            CompanyAgentResponse.FaultImpact fault, CompanyAgentResponse.RevenueSummary revenue,
+            CompanyAgentResponse.PricingRecommendation pricing, List<CompanyAgentResponse.SiteRecommendation> sites,
+            Map<String, Object> offerDraft) {
+        return switch (intent) {
+            case "FAULT" -> fault == null ? "Every managed charger is currently healthy."
+                    : fault.chargerCode() + " at " + fault.stationName() + " needs attention. "
+                    + fault.affectedBookings() + " booking(s) may be affected and approximately ₹"
+                    + fault.estimatedRevenueAtRisk() + " is at risk during the estimated "
+                    + fault.estimatedDowntimeMinutes() + " minute repair window.";
+            case "REVENUE" -> "Today's recorded performance is " + revenue.sessions() + " completed sessions, "
+                    + revenue.energySoldKwh() + " kWh sold and ₹" + revenue.estimatedCompanyRevenue()
+                    + " estimated company revenue after Host share, Vidyut fees and refunds.";
+            case "PRICING" -> pricing == null ? "No active station has enough pricing context yet."
+                    : pricing.stationName() + " is at " + pricing.currentUtilizationPercent() + "% utilization. Test ₹"
+                    + pricing.recommendedPricePerKwh() + "/kWh from " + pricing.timeWindow()
+                    + "; the current price is ₹" + pricing.currentPricePerKwh() + "/kWh.";
+            case "EXPANSION" -> sites.isEmpty() ? "No verified Host property is currently ready for expansion review."
+                    : sites.get(0).title() + " in " + sites.get(0).location() + " is the strongest current site. "
+                    + "It can support approximately " + sites.get(0).recommendedChargerCount() + " × "
+                    + sites.get(0).recommendedPowerKw() + " kW " + sites.get(0).recommendedConnector() + " chargers.";
+            case "OFFER" -> offerDraft.isEmpty() ? "No verified property is ready for an offer."
+                    : "I prepared a reviewable offer for " + offerDraft.get("property")
+                    + ". Open the installation pipeline to validate the survey and send it.";
+            default -> network.activeSessions() + " vehicle(s) are charging now. " + network.available()
+                    + " chargers are available, " + network.reserved() + " are reserved, " + network.offline()
+                    + " are offline or in maintenance, and " + network.faults() + " need attention.";
+        };
+    }
+
+    private Map<String, Object> agentOfferDraft(String question,
+            List<CompanyAgentResponse.SiteRecommendation> sites) {
+        if (sites.isEmpty()) return Map.of();
+        CompanyAgentResponse.SiteRecommendation site = sites.stream()
+                .filter(candidate -> question.toLowerCase(Locale.ROOT).contains(candidate.title().toLowerCase(Locale.ROOT)))
+                .findFirst().orElse(sites.get(0));
+        double maximum = parseInvestmentLimit(question);
+        double companyInvestment = maximum > 0 ? Math.min(maximum, 1_750_000) : 1_750_000;
+        return linkedMap("propertyId", site.propertyId(), "property", site.title(), "location", site.location(),
+                "installation", site.recommendedChargerCount() + " × " + site.recommendedPowerKw() + " kW " + site.recommendedConnector(),
+                "companyInvestment", round(companyInvestment), "hostInvestment", 900_000,
+                "hostRevenueSharePercent", 18, "agreementYears", 5, "state", "DRAFT_REQUIRES_REVIEW");
+    }
+
+    private double parseInvestmentLimit(String value) {
+        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile("(?i)([0-9]+(?:\\.[0-9]+)?)\\s*(crore|cr|lakh|lac|k)?")
+                .matcher(value == null ? "" : value);
+        double found = 0;
+        while (matcher.find()) {
+            double amount = Double.parseDouble(matcher.group(1));
+            String unit = matcher.group(2) == null ? "" : matcher.group(2).toLowerCase(Locale.ROOT);
+            if (unit.startsWith("crore") || unit.equals("cr")) amount *= 10_000_000;
+            else if (unit.startsWith("la")) amount *= 100_000;
+            else if (unit.equals("k")) amount *= 1_000;
+            if (amount > found) found = amount;
+        }
+        return found;
+    }
+
+    private boolean autopilotAllows(Company company, CompanyAgentActionRequest request) {
+        if (company.getAgentMode() != CompanyAgentMode.AUTOPILOT) return false;
+        return switch (request.action()) {
+            case DISABLE_NEW_BOOKINGS -> company.isAgentAutoDisableFaultyChargers();
+            case CREATE_MAINTENANCE_TICKET -> company.isAgentAutoCreateMaintenanceTickets();
+            case NOTIFY_STATION_MANAGER -> true;
+            case APPLY_PRICE_RECOMMENDATION -> true;
+        };
+    }
+
+    private CompanyAgentSettingsResponse agentSettingsResponse(Company company) {
+        return new CompanyAgentSettingsResponse(company.getAgentMode(), company.getAgentMaxPriceChangePercent(),
+                company.isAgentAutoDisableFaultyChargers(), company.isAgentAutoCreateMaintenanceTickets());
+    }
+
+    private Long required(Long value, String message) {
+        if (value == null) throw new BadRequestException(message);
+        return value;
+    }
+
+    private String cleanReason(String value, String fallback) {
+        String cleaned = clean(value);
+        return cleaned == null ? fallback : cleaned;
     }
 
     private double distanceKm(double lat1, double lon1, double lat2, double lon2) {
@@ -464,6 +833,8 @@ public class CompanyOperationsService {
 
     private List<ChargingStation> managedStations(Company company, Long accountId) {
         Map<Long, ChargingStation> managed = new LinkedHashMap<>();
+        stationRepository.findByOperatorCompanyId(company.getId()).forEach(station -> managed.put(station.getId(), station));
+        // Compatibility for records created before operatorCompanyId was introduced.
         stationRepository.findByHostUserId(accountId).forEach(station -> managed.put(station.getId(), station));
         stationRepository.findBySupplierCompanyId(company.getId()).forEach(station -> managed.put(station.getId(), station));
         return new ArrayList<>(managed.values());
@@ -473,7 +844,8 @@ public class CompanyOperationsService {
         ChargingConnector charger = connectorRepository.findById(chargerId)
                 .orElseThrow(() -> new ResourceNotFoundException("Charger not found"));
         ChargingStation station = charger.getStation();
-        if (!Objects.equals(station.getHostUserId(), accountId)
+        if (!Objects.equals(station.getOperatorCompanyId(), company.getId())
+                && !Objects.equals(station.getHostUserId(), accountId)
                 && !Objects.equals(station.getSupplierCompanyId(), company.getId())) {
             throw new ResourceNotFoundException("Charger not found for this company network");
         }
@@ -486,7 +858,10 @@ public class CompanyOperationsService {
     }
 
     private String relationship(ChargingStation station, Long accountId) {
-        return Objects.equals(station.getHostUserId(), accountId) ? "COMPANY_OPERATED" : "HOST_OPERATED_SUPPLIED";
+        return station.getOwnershipType() == StationOwnershipType.HOST_PARTNERED
+                || (station.getOwnershipType() == null && station.getHostUserId() != null
+                    && !Objects.equals(station.getHostUserId(), accountId))
+                ? "HOST_PARTNERED" : "COMPANY_OWNED";
     }
 
     private ManagedChargerResponse managedChargerResponse(ChargingConnector charger, String relationship) {
@@ -560,17 +935,28 @@ public class CompanyOperationsService {
     }
 
     private ChargingStation ownedStation(Long accountId, Long stationId) {
-        return stationRepository.findByIdAndHostUserId(stationId, accountId)
+        return ownedStation(requireCompany(accountId), accountId, stationId);
+    }
+
+    private ChargingStation ownedStation(Company company, Long accountId, Long stationId) {
+        ChargingStation station = stationRepository.findById(stationId)
                 .orElseThrow(() -> new ResourceNotFoundException("Station not found for this company"));
+        if (!Objects.equals(station.getOperatorCompanyId(), company.getId())
+                && !Objects.equals(station.getSupplierCompanyId(), company.getId())
+                && !Objects.equals(station.getHostUserId(), accountId)) {
+            throw new ResourceNotFoundException("Station not found for this company");
+        }
+        return station;
     }
 
     private ChargingConnector ownedCharger(Long accountId, Long id) {
-        return connectorRepository.findByIdAndStation_HostUserId(id, accountId)
-                .orElseThrow(() -> new ResourceNotFoundException("Charger not found for this company"));
+        Company company = requireCompany(accountId);
+        return managedCharger(company, accountId, id);
     }
 
     private List<Booking> ownedBookings(Long accountId) {
-        return bookingsForStations(stationRepository.findByHostUserId(accountId));
+        Company company = requireCompany(accountId);
+        return bookingsForStations(managedStations(company, accountId));
     }
 
     private List<Booking> bookingsForStations(List<ChargingStation> stations) {
@@ -628,6 +1014,10 @@ public class CompanyOperationsService {
 
     private String clean(String value) {
         return value == null || value.trim().isEmpty() ? null : value.trim();
+    }
+
+    private boolean present(String value) {
+        return value != null && !value.isBlank();
     }
 
     @SuppressWarnings("unchecked")

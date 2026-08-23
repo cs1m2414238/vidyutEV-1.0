@@ -4,7 +4,17 @@ import com.vidyut.autopilot.entity.RouteExperience;
 import com.vidyut.autopilot.entity.RouteExperienceOutcome;
 import com.vidyut.autopilot.entity.TripPurpose;
 import com.vidyut.autopilot.repository.RouteExperienceRepository;
-import com.vidyut.routing.dto.*;
+import com.vidyut.routing.client.OsrmClient;
+import com.vidyut.routing.dto.Coordinate;
+import com.vidyut.routing.dto.DiversionResponse;
+import com.vidyut.routing.dto.OsrmResponse;
+import com.vidyut.routing.dto.OsrmRoute;
+import com.vidyut.routing.dto.OsrmTableResponse;
+import com.vidyut.routing.dto.RoutePlanRequest;
+import com.vidyut.routing.dto.RoutePlanResponse;
+import com.vidyut.routing.dto.RouteStationResponse;
+import com.vidyut.routing.dto.RouteStatusResponse;
+import com.vidyut.routing.dto.StationRouteMetric;
 import com.vidyut.station.dto.StationResponse;
 import com.vidyut.station.entity.*;
 import com.vidyut.station.service.ChargingStationService;
@@ -17,10 +27,9 @@ import com.vidyut.common.exception.ResourceNotFoundException;
 import com.vidyut.vehicle.entity.Vehicle;
 import com.vidyut.vehicle.repository.VehicleRepository;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
-import java.net.URLEncoder;
-import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.util.*;
 
@@ -33,23 +42,30 @@ public class RoutingServiceImpl implements RoutingService {
     private final BookingRepository bookingRepository;
     private final BookingService bookingService;
     private final RouteExperienceRepository experienceRepository;
+    private final OsrmClient osrmClient;
+    private final LocationResolver locationResolver;
 
-    private static final Map<String, double[]> KNOWN_LOCATIONS = Map.of(
-            "lucknow", new double[]{26.8467, 80.9462},
-            "kanpur", new double[]{26.4499, 80.3319},
-            "delhi", new double[]{28.6139, 77.2090},
-            "jaipur", new double[]{26.9124, 75.7873},
-            "mumbai", new double[]{19.0760, 72.8777},
-            "agra", new double[]{27.1767, 78.0081}
-    );
+    @Value("${vidyut.routing.external-map-base-url}")
+    private String externalMapBaseUrl;
+
+    @Value("${vidyut.routing.corridor-margin-degrees}")
+    private double corridorMarginDegrees;
 
     @Override
     public RoutePlanResponse planRoute(RoutePlanRequest request, Long userId) {
         Vehicle vehicle = resolveVehicle(userId, request.getVehicleId());
-        double[] origin = resolveCoordinates(request.getOriginLatitude(), request.getOriginLongitude(), request.getOrigin());
-        double[] destination = resolveCoordinates(request.getDestinationLatitude(), request.getDestinationLongitude(), request.getDestination());
-        double totalDistance = request.getDestinationDistanceKm() != null && request.getDestinationDistanceKm() > 0
-                ? request.getDestinationDistanceKm() : round(distance(origin[0], origin[1], destination[0], destination[1]) * 1.18);
+        Coordinate originCoordinate = locationResolver.resolve(
+                request.getOriginLatitude(), request.getOriginLongitude(), request.getOrigin());
+        Coordinate destinationCoordinate = locationResolver.resolve(
+                request.getDestinationLatitude(), request.getDestinationLongitude(), request.getDestination());
+        double[] origin = {originCoordinate.latitude(), originCoordinate.longitude()};
+        double[] destination = {destinationCoordinate.latitude(), destinationCoordinate.longitude()};
+
+        RoadRouteSelection roadSelection = getRoadRoute(List.of(originCoordinate, destinationCoordinate));
+        OsrmRoute roadRoute = roadSelection.route();
+        double totalDistance = round(roadRoute.distance() / 1000.0);
+        int drivingMinutes = (int) Math.ceil(roadRoute.duration() / 60.0);
+
         double batteryPercent = request.getCurrentBatteryPercent() > 0
                 ? Math.min(100, request.getCurrentBatteryPercent())
                 : Optional.ofNullable(vehicle.getBatteryPercent()).orElse(80);
@@ -66,11 +82,33 @@ public class RoutingServiceImpl implements RoutingService {
                 .collect(java.util.stream.Collectors.groupingBy(RouteExperience::getStationId));
 
         List<RouteStationResponse> candidates = rankStations(stationService.getAllStations(), vehicle, origin,
-                destination, usableRange, purpose, memoryByStation);
+                destination, usableRange, purpose, memoryByStation, totalDistance);
+        if (!withinRange && candidates.isEmpty()) {
+            throw new BadRequestException(
+                    "No compatible charging station is routable inside the configured map coverage");
+        }
         boolean purposeStopUseful = purpose == TripPurpose.MALL_VISIT || purpose == TripPurpose.REST_STOP
                 || purpose == TripPurpose.DESTINATION_CHARGING;
         List<RouteStationResponse> recommended = withinRange && !purposeStopUseful ? List.of()
-                : candidates.stream().limit(requiredStops(totalDistance, Math.max(usableRange, 50))).toList();
+                : candidates.stream()
+                        .limit(requiredStops(totalDistance, Math.max(usableRange, 50)))
+                        .sorted(Comparator.comparingDouble(RouteStationResponse::getDistanceFromOriginKm))
+                        .toList();
+        List<Coordinate> itineraryCoordinates = new ArrayList<>();
+        itineraryCoordinates.add(originCoordinate);
+        recommended.stream()
+                .map(stop -> new Coordinate(
+                        stop.getStation().getLatitude(),
+                        stop.getStation().getLongitude()))
+                .forEach(itineraryCoordinates::add);
+        itineraryCoordinates.add(destinationCoordinate);
+        if (!recommended.isEmpty()) {
+            roadSelection = getRoadRoute(itineraryCoordinates);
+            roadRoute = roadSelection.route();
+            totalDistance = round(roadRoute.distance() / 1000.0);
+            drivingMinutes = (int) Math.ceil(roadRoute.duration() / 60.0);
+            applyItineraryMetrics(recommended, roadRoute);
+        }
         double arrival = Math.max(reserve, batteryPercent - (totalDistance / Math.max(fullRange, 1) * 100));
 
         return RoutePlanResponse.builder()
@@ -80,15 +118,48 @@ public class RoutingServiceImpl implements RoutingService {
                 .purposeSummary(purposeSummary(purpose, request.getDestination()))
                 .pastExperiencesUsed(routeMemory.size())
                 .totalDistanceKm(totalDistance)
-                .totalDurationMinutes((int) Math.ceil(totalDistance / 55.0 * 60)
-                        + recommended.stream().mapToInt(RouteStationResponse::getRecommendedChargeMinutes).sum())
+                .totalDurationMinutes(drivingMinutes + recommended.stream().mapToInt(RouteStationResponse::
+                                                        getRecommendedChargeMinutes).sum())
                 .recommendedChargingStops(recommended)
                 .vehicleId(vehicle.getId()).usableRangeKm(usableRange).reserveBatteryPercent(reserve)
                 .estimatedArrivalBatteryPercent(round(arrival)).destinationWithinRange(withinRange)
-                .routeSource("DETERMINISTIC_RANGE_AND_AVAILABILITY")
-                .externalMapsUrl("https://www.google.com/maps/dir/?api=1&origin=" + encode(request.getOrigin())
-                        + "&destination=" + encode(request.getDestination()))
+                .routeSource(routeSource(roadSelection.engine()))
+                .externalMapsUrl(externalMapUrl(itineraryCoordinates))
                 .build();
+    }
+    private RoadRouteSelection getRoadRoute(List<Coordinate> waypoints) {
+        OsrmClient.RouteSelection selection = osrmClient.getBestRoute(waypoints);
+        OsrmResponse response = selection.response();
+        if (response == null ||
+                !"Ok".equals(response.code()) ||
+                response.routes() == null ||
+                response.routes().isEmpty()) {
+            throw new BadRequestException(
+                    "No drivable route was found in the configured OpenStreetMap coverage");
+        }
+        return new RoadRouteSelection(response.routes().get(0), selection.engine());
+    }
+
+    private String routeSource(OsrmClient.RouteEngine engine) {
+        return switch (engine) {
+            case REFERENCE -> "OSRM_REFERENCE_OPENSTREETMAP";
+            case ESTIMATED -> "ESTIMATED_ROAD_FALLBACK";
+            default -> "OSRM_LOCAL_OPENSTREETMAP";
+        };
+    }
+
+    private void applyItineraryMetrics(List<RouteStationResponse> stops, OsrmRoute route) {
+        if (route.legs() == null || route.legs().size() != stops.size() + 1) {
+            throw new BadRequestException("The routing engine did not return every charging-stop route leg");
+        }
+        double cumulativeDistanceKm = 0;
+        double cumulativeDurationSeconds = 0;
+        for (int index = 0; index < stops.size(); index++) {
+            cumulativeDistanceKm += route.legs().get(index).distance() / 1000.0;
+            cumulativeDurationSeconds += route.legs().get(index).duration();
+            stops.get(index).setDistanceFromOriginKm(round(cumulativeDistanceKm));
+            stops.get(index).setEtaMinutes((int) Math.ceil(cumulativeDurationSeconds / 60.0));
+        }
     }
 
     @Override
@@ -97,7 +168,7 @@ public class RoutingServiceImpl implements RoutingService {
         Vehicle vehicle = resolveVehicle(userId, vehicleId);
         double[] origin = {current.getLatitude(), current.getLongitude()};
         return rankStations(stationService.getAllStations().stream().filter(s -> !s.getId().equals(stationId)).toList(),
-                vehicle, origin, origin, Double.MAX_VALUE, TripPurpose.GENERAL, Map.of()).stream().limit(5).toList();
+                vehicle, origin, origin, Double.MAX_VALUE, TripPurpose.GENERAL, Map.of(), 0.0).stream().limit(5).toList();
     }
 
     @Override
@@ -151,44 +222,229 @@ public class RoutingServiceImpl implements RoutingService {
                 .replacementBooking(replacement).message("Booking moved to " + alternative.getName()).build();
     }
 
-    private List<RouteStationResponse> rankStations(List<StationResponse> stations, Vehicle vehicle, double[] origin,
-                                                    double[] destination, double reachableRange, TripPurpose purpose,
-                                                    Map<Long, List<RouteExperience>> memoryByStation) {
-        return stations.stream()
-                .filter(station -> station.getStatus() == StationStatus.ACTIVE && !station.isEmergencyDisabled())
-                .filter(station -> station.getAvailableSlots() > 0)
-                .filter(station -> connectorMatches(station, vehicle.getConnectorType()))
+    private List<RouteStationResponse> rankStations(
+            List<StationResponse> stations,
+            Vehicle vehicle,
+            double[] origin,
+            double[] destination,
+            double reachableRange,
+            TripPurpose purpose,
+            Map<Long, List<RouteExperience>> memoryByStation,
+            double directRoadDistanceKm
+    ) {
+
+        // 1. First remove stations that are unusable
+        List<StationResponse> eligibleStations = stations.stream()
+                .filter(station ->
+                        station.getStatus() == StationStatus.ACTIVE
+                                && !station.isEmergencyDisabled()
+                )
+                .filter(station ->
+                        station.getAvailableSlots() > 0
+                )
+                .filter(station ->
+                        connectorMatches(
+                                station,
+                                vehicle.getConnectorType()
+                        )
+                )
+                .filter(station -> withinCorridor(
+                        station.getLatitude(), station.getLongitude(), origin, destination))
+                .toList();
+
+        // 2. Ask OSRM for real road distance, travel time and road-based detour
+        Map<Long, StationRouteMetric> routeMetrics =
+                getStationRouteMetrics(
+                        origin,
+                        destination,
+                        eligibleStations,
+                        directRoadDistanceKm
+                );
+
+        // 3. Build ranked station responses
+        return eligibleStations.stream()
                 .map(station -> {
-                    double fromOrigin = distance(origin[0], origin[1], station.getLatitude(), station.getLongitude());
-                    double detour = pointToRouteDetour(origin, destination, station);
-                    double power = station.getConnectors().stream().filter(c -> c.getStatus() == ChargerStatus.ONLINE)
-                            .mapToDouble(ChargingConnector::getPowerKw).max().orElse(7.4);
-                    List<RouteExperience> stationMemory = memoryByStation.getOrDefault(station.getId(), List.of());
-                    long issues = stationMemory.stream().filter(item -> item.getOutcome() != RouteExperienceOutcome.SUCCESS).count();
+                    StationRouteMetric metric = routeMetrics.get(station.getId());
+                    if (metric == null) {
+                        return null;
+                    }
+
+                    // REAL ROAD DISTANCE & DETOUR FROM OSRM
+                    double fromOrigin = metric.distanceFromOriginKm();
+                    double detour = metric.detourKm();
+
+                    // Maximum online charging power
+                    double power = station.getConnectors()
+                            .stream()
+                            .filter(connector -> connector.getStatus() == ChargerStatus.ONLINE)
+                            .mapToDouble(ChargingConnector::getPowerKw)
+                            .max()
+                            .orElse(7.4);
+
+                    // Previous route memory
+                    List<RouteExperience> stationMemory = memoryByStation.getOrDefault(
+                            station.getId(),
+                            List.of()
+                    );
+                    long issues = stationMemory.stream()
+                            .filter(item -> item.getOutcome() != RouteExperienceOutcome.SUCCESS)
+                            .count();
                     long successes = stationMemory.size() - issues;
                     boolean restFriendly = isRestFriendly(station.getAmenities());
-                    double destinationDistance = distance(station.getLatitude(), station.getLongitude(), destination[0], destination[1]);
+
+                    double destinationDistance = metric.distanceToDestinationKm() > 0
+                            ? metric.distanceToDestinationKm()
+                            : distance(
+                                    station.getLatitude(),
+                                    station.getLongitude(),
+                                    destination[0],
+                                    destination[1]
+                            );
+
                     String purposeReason = switch (purpose) {
                         case MALL_VISIT, DESTINATION_CHARGING -> round(destinationDistance) + " km from destination";
                         case REST_STOP -> restFriendly ? "Rest and food amenities available" : "Best reachable route stop";
                         case COMMUTE -> "Low-delay commute option";
                         default -> station.getAvailableSlots() + " compatible connector(s)";
                     };
-                    String memoryReason = stationMemory.isEmpty() ? "" : "; route memory: " + successes
-                            + " success, " + issues + " issue signal(s)";
-                    return RouteStationResponse.builder().station(station).distanceFromOriginKm(round(fromOrigin))
-                            .detourKm(round(detour)).etaMinutes((int) Math.ceil(fromOrigin / 45.0 * 60))
-                            .availableSlots(station.getAvailableSlots()).connectorMatched(true)
+
+                    String memoryReason = stationMemory.isEmpty()
+                            ? ""
+                            : "; route memory: " + successes + " success, " + issues + " issue signal(s)";
+
+                    return RouteStationResponse.builder()
+                            .station(station)
+                            .distanceFromOriginKm(round(fromOrigin))
+                            .detourKm(round(detour))
+                            .etaMinutes(metric.durationFromOriginMinutes())
+                            .availableSlots(station.getAvailableSlots())
+                            .connectorMatched(true)
                             .recommendedChargeMinutes((int) Math.max(15, Math.ceil(20 / power * 60)))
                             .estimatedChargingCost(round(20 * station.getPricePerKwh()))
                             .reason(purposeReason + ", " + round(detour) + " km detour" + memoryReason)
                             .build();
                 })
-                .filter(stop -> stop.getDistanceFromOriginKm() <= reachableRange || reachableRange == Double.MAX_VALUE)
-                .sorted(Comparator.comparingDouble((RouteStationResponse stop) -> purposeScore(stop, purpose, destination, memoryByStation))
-                        .thenComparing(Comparator.comparingInt(RouteStationResponse::getAvailableSlots).reversed())
-                        .thenComparingDouble(stop -> stop.getStation().getPricePerKwh()))
+                // remove stations OSRM couldn't route to
+                .filter(Objects::nonNull)
+
+
+                // important:
+                // range check now uses actual ROAD distance
+                .filter(stop ->
+                        stop.getDistanceFromOriginKm()
+                                <= reachableRange
+
+                                || reachableRange
+                                == Double.MAX_VALUE
+                )
+
+
+                // existing ranking logic stays
+                .sorted(
+
+                        Comparator
+                                .comparingDouble(
+                                        (RouteStationResponse stop) ->
+                                                purposeScore(
+                                                        stop,
+                                                        purpose,
+                                                        destination,
+                                                        memoryByStation
+                                                )
+                                )
+
+                                .thenComparing(
+                                        Comparator
+                                                .comparingInt(
+                                                        RouteStationResponse::
+                                                                getAvailableSlots
+                                                )
+                                                .reversed()
+                                )
+
+                                .thenComparingDouble(
+                                        stop ->
+                                                stop.getStation()
+                                                        .getPricePerKwh()
+                                )
+                )
+
                 .toList();
+    }
+
+    private Map<Long, StationRouteMetric> getStationRouteMetrics(
+            double[] origin,
+            double[] destination,
+            List<StationResponse> stations,
+            double directRoadDistanceKm
+    ) {
+        if (stations.isEmpty()) {
+            return Map.of();
+        }
+        Coordinate originCoordinate = new Coordinate(origin[0], origin[1]);
+        Coordinate destinationCoordinate = new Coordinate(destination[0], destination[1]);
+
+        List<Coordinate> stationCoordinates = stations.stream()
+                .map(station -> new Coordinate(station.getLatitude(), station.getLongitude()))
+                .toList();
+
+        Map<Long, StationRouteMetric> result = new HashMap<>();
+        for (OsrmClient.MatrixBatch batch : osrmClient.getBestMatrixTables(
+                originCoordinate, stationCoordinates, destinationCoordinate,
+                OsrmClient.RouteEngine.PRIMARY)) {
+            OsrmTableResponse table = batch.response();
+            if (table == null || !"Ok".equals(table.code())
+                    || table.distances() == null || table.durations() == null) {
+                throw new BadRequestException("Unable to calculate station routes with the local OSRM service");
+            }
+
+            int batchStationCount = batch.stationCoordinates().size();
+            Double directDistanceMeters = matrixValue(table.distances(), 0, batchStationCount);
+            double effectiveDirectKm = directDistanceMeters == null
+                    ? directRoadDistanceKm
+                    : round(directDistanceMeters / 1000.0);
+
+            for (int localIndex = 0; localIndex < batchStationCount; localIndex++) {
+                int stationIndex = batch.stationIndexes().get(localIndex);
+                Double fromOriginDistanceMeters = matrixValue(table.distances(), 0, localIndex);
+                Double fromOriginDurationSeconds = matrixValue(table.durations(), 0, localIndex);
+                Double toDestDistanceMeters = matrixValue(
+                        table.distances(), localIndex + 1, batchStationCount);
+                Double toDestDurationSeconds = matrixValue(
+                        table.durations(), localIndex + 1, batchStationCount);
+                if (fromOriginDistanceMeters == null || fromOriginDurationSeconds == null
+                        || toDestDistanceMeters == null || toDestDurationSeconds == null) {
+                    continue;
+                }
+
+                double fromOriginKm = round(fromOriginDistanceMeters / 1000.0);
+                int fromOriginMin = (int) Math.ceil(fromOriginDurationSeconds / 60.0);
+                double toDestKm = round(toDestDistanceMeters / 1000.0);
+                int toDestMin = (int) Math.ceil(toDestDurationSeconds / 60.0);
+                double detourKm = round(Math.max(0.0, fromOriginKm + toDestKm - effectiveDirectKm));
+                Long stationId = stations.get(stationIndex).getId();
+                result.put(stationId, new StationRouteMetric(
+                        stationId, fromOriginKm, fromOriginMin,
+                        toDestKm, toDestMin, detourKm));
+            }
+        }
+        return result;
+    }
+
+    private boolean withinCorridor(double latitude, double longitude, double[] origin, double[] destination) {
+        double margin = Math.max(0, corridorMarginDegrees);
+        return latitude >= Math.min(origin[0], destination[0]) - margin
+                && latitude <= Math.max(origin[0], destination[0]) + margin
+                && longitude >= Math.min(origin[1], destination[1]) - margin
+                && longitude <= Math.max(origin[1], destination[1]) + margin;
+    }
+
+    private Double matrixValue(List<List<Double>> matrix, int row, int column) {
+        if (matrix == null || row < 0 || row >= matrix.size()) {
+            return null;
+        }
+        List<Double> values = matrix.get(row);
+        return values == null || column < 0 || column >= values.size() ? null : values.get(column);
     }
 
     private Vehicle resolveVehicle(Long userId, Long vehicleId) {
@@ -220,20 +476,6 @@ public class RoutingServiceImpl implements RoutingService {
         }
         double capacity = parseNumber(vehicle.getBatteryCapacity());
         return capacity > 0 ? capacity * 6.2 : 300;
-    }
-
-    private double[] resolveCoordinates(Double lat, Double lng, String label) {
-        if (lat != null && lng != null) return new double[]{lat, lng};
-        String normalized = label == null ? "" : label.toLowerCase(Locale.ROOT);
-        return KNOWN_LOCATIONS.entrySet().stream().filter(entry -> normalized.contains(entry.getKey()))
-                .map(Map.Entry::getValue).findFirst().orElse(KNOWN_LOCATIONS.get("lucknow"));
-    }
-
-    private double pointToRouteDetour(double[] origin, double[] destination, StationResponse station) {
-        double direct = distance(origin[0], origin[1], destination[0], destination[1]);
-        double via = distance(origin[0], origin[1], station.getLatitude(), station.getLongitude())
-                + distance(station.getLatitude(), station.getLongitude(), destination[0], destination[1]);
-        return Math.max(0, via - direct);
     }
 
     private int requiredStops(double distance, double usableRange) {
@@ -286,7 +528,6 @@ public class RoutingServiceImpl implements RoutingService {
     private String routeKey(String value) {
         String normalized = value == null ? "" : value.toLowerCase(Locale.ROOT)
                 .replaceAll("[^a-z0-9 ]", " ").replaceAll(" +", " ").trim();
-        for (String city : KNOWN_LOCATIONS.keySet()) if (normalized.contains(city)) return city;
         return normalized.isBlank() ? "unknown" : normalized.substring(0, Math.min(120, normalized.length()));
     }
 
@@ -304,5 +545,13 @@ public class RoutingServiceImpl implements RoutingService {
     }
 
     private double round(double value) { return Math.round(value * 10.0) / 10.0; }
-    private String encode(String value) { return URLEncoder.encode(value == null ? "" : value, StandardCharsets.UTF_8); }
+    private String externalMapUrl(List<Coordinate> waypoints) {
+        String baseUrl = externalMapBaseUrl == null ? "" : externalMapBaseUrl.replaceFirst("/+$", "");
+        return baseUrl + "?engine=fossgis_osrm_car&route=" + waypoints.stream()
+                .map(coordinate -> coordinate.latitude() + "," + coordinate.longitude())
+                .collect(java.util.stream.Collectors.joining(";"));
+    }
+
+    private record RoadRouteSelection(OsrmRoute route, OsrmClient.RouteEngine engine) {
+    }
 }

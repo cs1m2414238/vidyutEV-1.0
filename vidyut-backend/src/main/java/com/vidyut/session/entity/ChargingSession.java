@@ -22,6 +22,7 @@ public class ChargingSession {
     private Long bookingId;
     @Column(nullable = false)
     private Long stationId;
+    private Long connectorId;
     private Long vehicleId;
     @Enumerated(EnumType.STRING)
     @Builder.Default

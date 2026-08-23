@@ -16,7 +16,9 @@ public class AutopilotPlanStopResponse {
     private String stationAddress;
     private String connectorType;
     private double powerKw;
+    private double effectivePowerKw;
     private double distanceFromOriginKm;
+    private double routeOffsetKm;
     private String estimatedArrivalTime;
     private String predictedSlotFreeAt;
     private String timingScore;
@@ -25,7 +27,9 @@ public class AutopilotPlanStopResponse {
     private double targetBatteryPercent;
     private int estimatedWaitMinutes;
     private int chargingMinutes;
+    private int connectionMinutes;
     private double estimatedCost;
+    private boolean demoData;
     private int availableConnectors;
     private int queueCount;
     private double rating;

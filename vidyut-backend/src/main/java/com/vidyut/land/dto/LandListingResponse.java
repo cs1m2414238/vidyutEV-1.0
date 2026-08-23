@@ -38,6 +38,8 @@ public class LandListingResponse {
     private double preferredPowerKw;
     private String photoUrls;
     private String ownershipDocumentUrl;
+    private String electricityDocumentUrl;
+    private String videoVerificationUrl;
     private String adminReviewNote;
     private boolean discoverable;
     private LandListingStatus status;

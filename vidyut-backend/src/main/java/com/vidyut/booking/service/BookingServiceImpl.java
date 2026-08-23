@@ -19,6 +19,7 @@ import com.vidyut.outlet.service.OutletAccessService;
 import com.vidyut.outlet.service.OutletRateDecision;
 import com.vidyut.notification.entity.NotificationType;
 import com.vidyut.notification.service.NotificationService;
+import com.vidyut.admin.service.OperationalControlService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -41,6 +42,7 @@ public class BookingServiceImpl implements BookingService {
     private final OutletAccessService outletAccessService;
     private final NotificationService notificationService;
     private final WaitlistService waitlistService;
+    private final OperationalControlService operationalControlService;
 
     @Override
     @Transactional
@@ -52,6 +54,7 @@ public class BookingServiceImpl implements BookingService {
         }
         ChargingStation station = stationRepository.findLockedById(request.getStationId())
                 .orElseThrow(() -> new ResourceNotFoundException("Charging station not found with id: " + request.getStationId()));
+        operationalControlService.assertBookingAllowed(userId, station);
         if (idempotencyKey != null && !idempotencyKey.isBlank()) {
             Booking existing = bookingRepository.findByUserIdAndIdempotencyKey(userId, idempotencyKey).orElse(null);
             if (existing != null) return mapToResponse(existing);

@@ -13,4 +13,5 @@ public interface RoutingService {
     List<RouteStationResponse> alternatives(Long userId, Long stationId, Long vehicleId);
     RouteStatusResponse routeStatus(Long userId, Long bookingId);
     DiversionResponse divert(Long userId, Long bookingId, Long alternativeStationId);
+
 }

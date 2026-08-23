@@ -3,12 +3,16 @@ package com.vidyut.marketplace.service;
 import com.vidyut.common.exception.BadRequestException;
 import com.vidyut.common.exception.DuplicateResourceException;
 import com.vidyut.common.exception.ResourceNotFoundException;
+import com.vidyut.admin.service.OperationalControlService;
 import com.vidyut.company.entity.Company;
 import com.vidyut.company.entity.VerificationStatus;
 import com.vidyut.company.repository.CompanyRepository;
 import com.vidyut.company.service.CompanyVerificationService;
 import com.vidyut.account.repository.AccountRepository;
 import com.vidyut.account.repository.HostProfileRepository;
+import com.vidyut.account.entity.HostProfile;
+import com.vidyut.host.entity.HostReview;
+import com.vidyut.host.repository.HostReviewRepository;
 import com.vidyut.land.entity.LandListing;
 import com.vidyut.land.entity.LandListingStatus;
 import com.vidyut.land.repository.LandListingRepository;
@@ -44,7 +48,9 @@ public class MarketplaceService {
     private final NotificationService notificationService;
     private final CompanyVerificationService verificationService;
     private final HostProfileRepository hostProfileRepository;
+    private final HostReviewRepository hostReviewRepository;
     private final AccountRepository accountRepository;
+    private final OperationalControlService operationalControlService;
 
     public List<ServiceAreaResponse> companyAreas(Long companyAccountId) {
         requireCompany(companyAccountId);
@@ -53,6 +59,7 @@ public class MarketplaceService {
 
     @Transactional
     public ServiceAreaResponse saveArea(Long companyAccountId, Long id, ServiceAreaRequest input) {
+        operationalControlService.assertCompanyMarketplaceAllowed(companyAccountId);
         Company company = requireVerifiedCompany(companyAccountId);
         CompanyServiceArea area = id == null ? CompanyServiceArea.builder().company(company).build()
                 : areaRepository.findByIdAndCompany_Account_Id(id, companyAccountId)
@@ -85,6 +92,7 @@ public class MarketplaceService {
 
     @Transactional
     public ChargerProductResponse saveProduct(Long companyAccountId, Long id, ChargerProductRequest input) {
+        operationalControlService.assertCompanyPublishingAllowed(companyAccountId);
         Company company = requireVerifiedCompany(companyAccountId);
         ChargerProduct product = id == null ? ChargerProduct.builder().company(company).build()
                 : productRepository.findByIdAndCompany_Account_Id(id, companyAccountId)
@@ -118,6 +126,7 @@ public class MarketplaceService {
     }
 
     public List<MarketplaceCompanyResponse> matchingCompanies(Long hostUserId, Long propertyId) {
+        operationalControlService.assertHostCanStartPartnership(hostUserId);
         LandListing owned = ownedProperty(hostUserId, propertyId);
         requireVerifiedHostProperty(hostUserId, owned);
         return companyRepository.findAll().stream()
@@ -130,6 +139,7 @@ public class MarketplaceService {
     }
 
     public List<PropertyOpportunityResponse> matchingOpportunities(Long companyAccountId) {
+        operationalControlService.assertCompanyMarketplaceAllowed(companyAccountId);
         requireVerifiedCompany(companyAccountId);
         return landRepository.findByDiscoverableTrueAndStatusIn(List.of(LandListingStatus.APPROVED, LandListingStatus.ACTIVE)).stream()
                 .filter(property -> isVerifiedHost(property.getHostUserId()))
@@ -141,6 +151,7 @@ public class MarketplaceService {
 
     @Transactional
     public InstallationRequestResponse createRequest(Long hostUserId, InstallationCreateRequest input) {
+        operationalControlService.assertHostCanStartPartnership(hostUserId);
         LandListing property = ownedProperty(hostUserId, input.propertyId());
         requireVerifiedHostProperty(hostUserId, property);
         Company company = companyRepository.findById(input.companyId())
@@ -177,6 +188,7 @@ public class MarketplaceService {
 
     @Transactional
     public InstallationRequestResponse sendProposal(Long companyAccountId, Long requestId, ProposalRequest input) {
+        operationalControlService.assertCompanyMarketplaceAllowed(companyAccountId);
         verificationService.requireMarketplaceVerified(companyAccountId);
         InstallationRequest request = companyRequest(companyAccountId, requestId);
         if (!EnumSet.of(InstallationStatus.UNDER_REVIEW, InstallationStatus.SITE_SURVEY_REQUESTED,
@@ -204,6 +216,9 @@ public class MarketplaceService {
 
     @Transactional
     public InstallationRequestResponse updateStatus(Long companyAccountId, Long requestId, InstallationStatusUpdateRequest input) {
+        if (input.status() == InstallationStatus.LIVE) {
+            operationalControlService.assertCompanyPublishingAllowed(companyAccountId);
+        }
         InstallationRequest request = companyRequest(companyAccountId, requestId);
         if (!allowedCompanyTransition(request.getStatus(), input.status())) {
             throw new BadRequestException("Cannot move installation from " + request.getStatus() + " to " + input.status());
@@ -221,6 +236,7 @@ public class MarketplaceService {
 
     @Transactional
     public InstallationRequestResponse acceptProposal(Long hostUserId, Long requestId) {
+        operationalControlService.assertHostCanStartPartnership(hostUserId);
         InstallationRequest request = hostRequest(hostUserId, requestId);
         if (request.getStatus() != InstallationStatus.PROPOSAL_SENT) throw new BadRequestException("No proposal is awaiting acceptance");
         InstallationProposal proposal = proposalRepository.findByRequest_Id(requestId)
@@ -247,24 +263,40 @@ public class MarketplaceService {
     }
 
     @Transactional
-    public PropertyInterestResponse expressInterest(Long companyAccountId, Long propertyId, PropertyInterestRequest input) {
+    public PropertyInterestResponse saveOpportunity(Long companyAccountId, Long propertyId) {
+        operationalControlService.assertCompanyMarketplaceAllowed(companyAccountId);
         Company company = requireVerifiedCompany(companyAccountId);
-        LandListing property = landRepository.findById(propertyId)
-                .filter(item -> item.isDiscoverable() && (item.getStatus() == LandListingStatus.APPROVED || item.getStatus() == LandListingStatus.ACTIVE))
-                .filter(item -> isVerifiedHost(item.getHostUserId()))
-                .orElseThrow(() -> new ResourceNotFoundException("Published Host property not found"));
-        if (interestRepository.findByCompany_IdAndProperty_Id(company.getId(), propertyId).isPresent()) {
+        LandListing property = publishedVerifiedProperty(propertyId);
+        CompanyPropertyInterest interest = interestRepository
+                .findByCompany_IdAndProperty_Id(company.getId(), propertyId)
+                .orElseGet(() -> interestRepository.save(CompanyPropertyInterest.builder()
+                        .company(company).property(property).status(InterestStatus.SAVED).build()));
+        return interestResponse(interest);
+    }
+
+    @Transactional
+    public PropertyInterestResponse expressInterest(Long companyAccountId, Long propertyId, PropertyInterestRequest input) {
+        operationalControlService.assertCompanyMarketplaceAllowed(companyAccountId);
+        Company company = requireVerifiedCompany(companyAccountId);
+        LandListing property = publishedVerifiedProperty(propertyId);
+        var existing = interestRepository.findByCompany_IdAndProperty_Id(company.getId(), propertyId);
+        if (existing.isPresent() && existing.get().getStatus() != InterestStatus.SAVED) {
             throw new DuplicateResourceException("Your company has already contacted this property");
         }
-        CompanyPropertyInterest interest = interestRepository.save(CompanyPropertyInterest.builder()
-                .company(company).property(property).message(clean(input.message())).build());
+        CompanyPropertyInterest interest = existing.orElseGet(() -> CompanyPropertyInterest.builder()
+                .company(company).property(property).build());
+        interest.setMessage(clean(input.message()));
+        interest.setStatus(InterestStatus.PENDING);
+        interest = interestRepository.save(interest);
         notificationService.sendNotification(property.getHostUserId(), "Company interested in your property",
                 company.getCompanyName() + " wants to discuss charger installation at " + property.getTitle(), NotificationType.SYSTEM_ALERT);
         return interestResponse(interest);
     }
 
     public List<PropertyInterestResponse> hostInterests(Long hostUserId) {
-        return interestRepository.findByProperty_HostUserIdOrderByCreatedAtDesc(hostUserId).stream().map(this::interestResponse).toList();
+        return interestRepository.findByProperty_HostUserIdOrderByCreatedAtDesc(hostUserId).stream()
+                .filter(interest -> interest.getStatus() != InterestStatus.SAVED)
+                .map(this::interestResponse).toList();
     }
 
     public List<PropertyInterestResponse> companyInterests(Long companyAccountId) {
@@ -274,6 +306,7 @@ public class MarketplaceService {
 
     @Transactional
     public PropertyInterestResponse respondToInterest(Long hostUserId, Long interestId, InterestStatus status) {
+        if (status == InterestStatus.ACCEPTED) operationalControlService.assertHostCanStartPartnership(hostUserId);
         if (status != InterestStatus.ACCEPTED && status != InterestStatus.DECLINED) throw new BadRequestException("Host may accept or decline company interest");
         CompanyPropertyInterest interest = interestRepository.findByIdAndProperty_HostUserId(interestId, hostUserId)
                 .orElseThrow(() -> new ResourceNotFoundException("Company interest not found"));
@@ -283,6 +316,13 @@ public class MarketplaceService {
         notificationService.sendNotification(interest.getCompany().getAccount().getId(), "Host response received",
                 interest.getProperty().getTitle() + " " + status.name().toLowerCase() + " your interest", NotificationType.SYSTEM_ALERT);
         return interestResponse(interest);
+    }
+
+    private LandListing publishedVerifiedProperty(Long propertyId) {
+        return landRepository.findById(propertyId)
+                .filter(item -> item.isDiscoverable() && (item.getStatus() == LandListingStatus.APPROVED || item.getStatus() == LandListingStatus.ACTIVE))
+                .filter(item -> isVerifiedHost(item.getHostUserId()))
+                .orElseThrow(() -> new ResourceNotFoundException("Published Host property not found"));
     }
 
     private MarketplaceCompanyResponse companyMatch(Company company) {
@@ -296,11 +336,76 @@ public class MarketplaceService {
     }
 
     private PropertyOpportunityResponse propertyOpportunity(LandListing property) {
+        HostProfile host = hostProfileRepository.findById(property.getHostUserId()).orElse(null);
+        List<HostReview> reviews = hostReviewRepository.findByHostAccountIdOrderByCreatedAtDesc(property.getHostUserId());
+        double hostRating = reviews.isEmpty()
+                ? (host == null ? 0 : host.getReputationScore())
+                : reviews.stream().mapToInt(HostReview::getRating).average().orElse(0);
+        int disputes = (int) reviews.stream().filter(HostReview::isReported).count();
+        int verifiedProperties = (int) landRepository.findByHostUserId(property.getHostUserId()).stream()
+                .filter(item -> item.getStatus() == LandListingStatus.APPROVED || item.getStatus() == LandListingStatus.ACTIVE)
+                .count();
+        int successfulPartnerships = (int) requestRepository.findByHostUserIdOrderByUpdatedAtDesc(property.getHostUserId()).stream()
+                .filter(item -> item.getStatus() == InstallationStatus.COMMISSIONED || item.getStatus() == InstallationStatus.LIVE)
+                .count();
+        boolean identityVerified = host != null && host.isVerified();
+        boolean ownershipVerified = present(property.getOwnershipDocumentUrl());
+        boolean electricityVerified = present(property.getElectricityDocumentUrl());
+        boolean videoVerified = present(property.getVideoVerificationUrl());
+        int hostTrustScore = clamp((identityVerified ? 45 : 0)
+                + (int) Math.round(Math.max(0, Math.min(5, hostRating)) * 7)
+                + Math.min(15, successfulPartnerships * 5) - Math.min(25, disputes * 10));
+        int propertyScore = clamp((identityVerified ? 15 : 0) + (ownershipVerified ? 20 : 0)
+                + (electricityVerified ? 15 : 0) + (videoVerified ? 15 : 0)
+                + Math.min(20, property.getAvailableParkingBays() * 4)
+                + Math.min(15, (int) Math.round(property.getAvailableLoadKw() / 5.0)));
+        int commercialScore = clamp(35 + Math.min(25, property.getAvailableParkingBays() * 5)
+                + Math.min(30, (int) Math.round(property.getAvailableLoadKw() / 3.0))
+                + (present(property.getOperatingHours()) ? 10 : 0));
+        boolean highCapacitySite = property.getPreferredPowerKw() >= 120 || property.getAvailableParkingBays() >= 8;
+        String verificationRisk = !identityVerified || !ownershipVerified || !electricityVerified ? "HIGH"
+                : !videoVerified ? "MEDIUM" : "LOW";
+        boolean physicalInspectionRecommended = "HIGH".equals(verificationRisk) || highCapacitySite;
+        String verificationMethod = physicalInspectionRecommended ? "PHYSICAL_SITE_INSPECTION"
+                : "MEDIUM".equals(verificationRisk) ? "LIVE_VIDEO_SURVEY" : "DOCUMENT_AND_VIDEO_REVIEW";
+        List<HostReviewSummaryResponse> publicReviews = reviews.stream()
+                .filter(review -> !review.isReported())
+                .limit(3)
+                .map(review -> {
+                    ChargingStation reviewedStation = stationRepository.findById(review.getStationId()).orElse(null);
+                    return new HostReviewSummaryResponse(review.getRating(), review.getStationId(),
+                            reviewedStation == null ? "Previous charger" : reviewedStation.getName(),
+                            reviewedStation == null ? null : reviewedStation.getCity(),
+                            publicReviewerName(review.getCustomerName()), review.getComment(), review.getHostReply(),
+                            review.getCreatedAt());
+                })
+                .toList();
         return new PropertyOpportunityResponse(property.getId(), property.getTitle(), property.getAddress(), property.getCity(),
                 property.getState(), property.getPincode(), property.getLatitude(), property.getLongitude(),
                 enumName(property.getPropertyType()), property.getAvailableParkingBays(), enumName(property.getPowerPhase()),
                 property.getAvailableLoadKw(), property.getOperatingHours(), enumName(property.getOwnershipType()),
-                property.getPreferredConnectorType(), property.getPreferredPowerKw(), property.getPhotoUrls(), "Nationwide Host listing", null);
+                property.getPreferredConnectorType(), property.getPreferredPowerKw(), property.getPhotoUrls(),
+                property.getVideoVerificationUrl(), "Nationwide Host listing", null,
+                host == null ? "Verified Host" : host.getDisplayName(), host == null ? null : host.getBio(),
+                host == null || host.getAccount() == null ? null : host.getAccount().getCreatedAt(),
+                round(hostRating), reviews.size(), hostTrustScore,
+                verifiedProperties, successfulPartnerships, disputes, propertyScore, commercialScore,
+                verificationRisk, verificationMethod, identityVerified, ownershipVerified, electricityVerified,
+                videoVerified, physicalInspectionRecommended, publicReviews);
+    }
+
+    private int clamp(int value) {
+        return Math.max(0, Math.min(100, value));
+    }
+
+    private double round(double value) {
+        return Math.round(value * 10.0) / 10.0;
+    }
+
+    private String publicReviewerName(String name) {
+        if (!present(name)) return "Verified driver";
+        String[] parts = name.trim().split("\\s+");
+        return parts.length == 1 ? parts[0] : parts[0] + " " + parts[parts.length - 1].charAt(0) + ".";
     }
 
     private boolean allowedCompanyTransition(InstallationStatus from, InstallationStatus to) {
@@ -321,13 +426,21 @@ public class MarketplaceService {
     private void commission(InstallationRequest request) {
         if (request.getStationId() != null) return;
         LandListing property = request.getProperty();
+        Company company = request.getCompany();
+        String hostName = hostProfileRepository.findById(request.getHostUserId())
+                .map(HostProfile::getDisplayName).orElse("Host partner #" + request.getHostUserId());
         ChargingStation station = ChargingStation.builder()
                 .name(property.getTitle()).address(property.getAddress()).city(property.getCity())
                 .latitude(property.getLatitude()).longitude(property.getLongitude())
                 .pricePerKwh(property.getPricePerKwh() > 0 ? property.getPricePerKwh() : 16)
                 .workingHours(present(property.getOperatingHours()) ? property.getOperatingHours() : "Open 24 hours")
                 .amenities("Parking").hostUserId(request.getHostUserId())
-                .supplierCompanyId(request.getCompany().getId()).sourceInstallationRequestId(request.getId())
+                .propertyOwnerAccountId(request.getHostUserId()).propertyOwnerName(hostName)
+                .operatorCompanyId(company.getId()).operatorCompanyName(company.getCompanyName())
+                .supplierCompanyId(company.getId()).equipmentOwnerName(company.getCompanyName())
+                .ownershipType(StationOwnershipType.HOST_PARTNERED).hostPartnershipId(request.getId())
+                .operatingModel("HOST_PROPERTY_CPO_EQUIPMENT")
+                .sourceInstallationRequestId(request.getId())
                 .status(StationStatus.OFFLINE).availability(StationAvailability.UNAVAILABLE).build();
         for (int index = 1; index <= request.getQuantity(); index++) {
             String code = "VY-INST-" + request.getId() + "-" + index;

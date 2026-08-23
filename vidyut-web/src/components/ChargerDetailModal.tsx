@@ -1,18 +1,28 @@
 import { useEffect, useMemo, useState } from 'react';
-import { CalendarClock, CircleAlert, Gauge, MapPin, PlugZap, Star, X, Zap } from 'lucide-react';
+import { CalendarClock, CheckCircle2, CircleAlert, Gauge, MapPin, PlugZap, Star, X, Zap } from 'lucide-react';
 import type { Charger } from '../types';
+import { apiRequest } from '../services/api';
 import './ChargerDetailModal.css';
 
 interface ChargerDetailModalProps {
   charger: Charger | null;
   onClose: () => void;
-  onConfirmBooking: (charger: Charger, durationMinutes: number) => Promise<void>;
+  onConfirmBooking: (charger: Charger, durationMinutes: number, startTime?: string) => Promise<void>;
+  token: string;
+  vehicleId?: number;
 }
 
-export function ChargerDetailModal({ charger, onClose, onConfirmBooking }: ChargerDetailModalProps) {
+interface BookingSlot { startTime: string; endTime: string; availableConnectors: number; available: boolean }
+
+export function ChargerDetailModal({ charger, onClose, onConfirmBooking, token, vehicleId }: ChargerDetailModalProps) {
   const [duration, setDuration] = useState(60);
   const [isBooking, setIsBooking] = useState(false);
   const [bookingError, setBookingError] = useState('');
+  const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
+  const [slots, setSlots] = useState<BookingSlot[]>([]);
+  const [selectedStart, setSelectedStart] = useState('');
+  const [slotsLoading, setSlotsLoading] = useState(false);
+  const [waitlistNotice, setWaitlistNotice] = useState('');
 
   const durations = useMemo(() => {
     const slot = charger?.bookingSlotMinutes || 30;
@@ -27,7 +37,19 @@ export function ChargerDetailModal({ charger, onClose, onConfirmBooking }: Charg
     setDuration(preferredDuration);
     setBookingError('');
     setIsBooking(false);
+    setSelectedStart(''); setWaitlistNotice('');
   }, [charger]);
+
+  useEffect(() => {
+    if (!charger || !token) return;
+    let ignore = false;
+    setSlotsLoading(true);
+    void apiRequest<BookingSlot[]>(`/ev/bookings/availability?stationId=${charger.id}&date=${date}`, { method: 'GET', headers: { Authorization: `Bearer ${token}` } })
+      .then((items) => { if (!ignore) { setSlots(items); setSelectedStart(items.find((slot) => slot.available)?.startTime || ''); } })
+      .catch(() => { if (!ignore) setSlots([]); })
+      .finally(() => { if (!ignore) setSlotsLoading(false); });
+    return () => { ignore = true; };
+  }, [charger, date, token]);
 
   useEffect(() => {
     if (!charger || isBooking) return undefined;
@@ -47,13 +69,22 @@ export function ChargerDetailModal({ charger, onClose, onConfirmBooking }: Charg
     setIsBooking(true);
     setBookingError('');
     try {
-      await onConfirmBooking(charger, duration);
+      await onConfirmBooking(charger, duration, selectedStart || undefined);
       onClose();
     } catch (error) {
       setBookingError(error instanceof Error ? error.message : 'Unable to confirm this booking.');
     } finally {
       setIsBooking(false);
     }
+  };
+
+  const joinWaitlist = async () => {
+    setIsBooking(true); setBookingError('');
+    try {
+      const result = await apiRequest<{ position: number }>('/ev/bookings/waitlist', { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: JSON.stringify({ stationId: charger.id, vehicleId, preferredStartTime: selectedStart || new Date(`${date}T09:00:00`).toISOString(), durationMinutes: duration }) });
+      setWaitlistNotice(`Joined the waitlist at position ${result.position}. Vidyut will notify you when a slot opens.`);
+    } catch (error) { setBookingError(error instanceof Error ? error.message : 'Unable to join the waitlist.'); }
+    finally { setIsBooking(false); }
   };
 
   return (
@@ -92,16 +123,17 @@ export function ChargerDetailModal({ charger, onClose, onConfirmBooking }: Charg
             </div>
           </div>
 
+          <div className="charger-slot-section"><div><h3>Choose an available start</h3><label>Date<input type="date" min={new Date().toISOString().slice(0, 10)} value={date} onChange={(event) => setDate(event.target.value)} /></label></div>{slotsLoading ? <p>Checking live slots…</p> : <div className="charger-slot-grid">{slots.slice(0, 12).map((slot) => <button type="button" key={slot.startTime} className={selectedStart === slot.startTime ? 'active' : ''} disabled={!slot.available || isBooking} onClick={() => setSelectedStart(slot.startTime)}><strong>{new Date(slot.startTime).toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit' })}</strong><small>{slot.available ? `${slot.availableConnectors} connector${slot.availableConnectors === 1 ? '' : 's'}` : 'Full'}</small></button>)}</div>}{!slotsLoading && !slots.length && <p>Live slot data is temporarily unavailable. You can still request the next opening.</p>}</div>
+
           <div className="charger-cost-summary">
             <span><CalendarClock size={18} /><div><small>Estimated session</small><strong>{energy.toFixed(1)} kWh • {duration} minutes</strong></div></span>
             <div><small>Estimated total</small><strong>₹{totalCost.toFixed(2)}</strong></div>
           </div>
 
           {bookingError && <div className="charger-booking-error" role="alert"><CircleAlert size={16} />{bookingError}</div>}
+          {waitlistNotice && <div className="charger-waitlist-notice"><CheckCircle2 size={16} />{waitlistNotice}</div>}
 
-          <button className="charger-book-button" type="button" disabled={!charger.available || isBooking} onClick={() => void handleBook()}>
-            {isBooking ? 'Confirming securely…' : charger.available ? 'Confirm booking' : 'Currently unavailable'}
-          </button>
+          {charger.available && selectedStart ? <button className="charger-book-button" type="button" disabled={isBooking} onClick={() => void handleBook()}>{isBooking ? 'Confirming securely…' : 'Confirm selected slot'}</button> : <button className="charger-book-button waitlist" type="button" disabled={isBooking || Boolean(waitlistNotice)} onClick={() => void joinWaitlist()}>{isBooking ? 'Joining…' : 'Join waitlist for next opening'}</button>}
         </div>
       </section>
     </div>

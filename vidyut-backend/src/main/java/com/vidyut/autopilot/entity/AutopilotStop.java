@@ -46,12 +46,19 @@ public class AutopilotStop {
     private String connectorType;
 
     private double powerKw;
+    private double effectivePowerKw;
     private double distanceFromOriginKm;
+    private double routeOffsetKm;
     private double arrivalBatteryPercent;
     private double targetBatteryPercent;
     private int estimatedWaitMinutes;
     private int chargingMinutes;
+    private int connectionMinutes;
     private double estimatedCost;
+
+    @Builder.Default
+    @Column(nullable = false)
+    private boolean demoData = false;
 
     @Column(length = 1000)
     private String selectionReason;

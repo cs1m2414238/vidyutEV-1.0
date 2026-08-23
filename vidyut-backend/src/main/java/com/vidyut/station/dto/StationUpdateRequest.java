@@ -32,6 +32,13 @@ public class StationUpdateRequest {
     private String weeklySchedule;
     private String holidaySchedule;
     private String chargingInstructions;
+    @Size(max = 120) private String propertyOwnerName;
+    @Size(max = 160) private String operatorCompanyName;
+    @Size(max = 160) private String equipmentOwnerName;
+    @Size(max = 80) private String operatingModel;
+    @Size(max = 160) private String solarProviderName;
+    @Size(max = 1000) private String siteOwnershipDocumentUrl;
+    @Size(max = 1000) private String electricityConnectionDocumentUrl;
     private Boolean autoAvailability;
     private Boolean emergencyDisabled;
     @Min(15) @Max(480) private Integer bookingSlotMinutes;

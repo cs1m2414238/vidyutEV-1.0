@@ -9,6 +9,7 @@ import com.vidyut.session.entity.*;
 import com.vidyut.session.repository.ChargingSessionRepository;
 import com.vidyut.station.entity.*;
 import com.vidyut.station.repository.ChargingStationRepository;
+import com.vidyut.station.repository.ChargingConnectorRepository;
 import com.vidyut.vehicle.entity.Vehicle;
 import com.vidyut.vehicle.entity.VehicleTelemetrySource;
 import com.vidyut.vehicle.repository.VehicleRepository;
@@ -29,6 +30,7 @@ public class ChargingSessionServiceImpl implements ChargingSessionService {
     private final ChargingSessionRepository sessionRepository;
     private final BookingRepository bookingRepository;
     private final ChargingStationRepository stationRepository;
+    private final ChargingConnectorRepository connectorRepository;
     private final VehicleRepository vehicleRepository;
     private final VehicleWalletService vehicleWalletService;
     private final NotificationService notificationService;
@@ -44,23 +46,27 @@ public class ChargingSessionServiceImpl implements ChargingSessionService {
         }
         ChargingStation station = stationRepository.findById(booking.getStationId())
                 .orElseThrow(() -> new ResourceNotFoundException("Charging station not found"));
-        double powerKw = station.getConnectors().stream()
-                .filter(connector -> connector.getStatus() == ChargerStatus.ONLINE && connector.isAvailable()
-                        && !connector.isMaintenanceMode())
-                .mapToDouble(ChargingConnector::getPowerKw).max()
+        ChargingConnector connector = station.getConnectors().stream()
+                .filter(candidate -> candidate.getStatus() == ChargerStatus.ONLINE && candidate.isAvailable()
+                        && !candidate.isMaintenanceMode())
+                .max(java.util.Comparator.comparingDouble(ChargingConnector::getPowerKw))
                 .orElseThrow(() -> new BadRequestException("No connector is ready to start charging"));
-        int startBattery = booking.getVehicleId() == null ? 20 : vehicleRepository.findByIdAndUserId(
-                booking.getVehicleId(), userId).map(Vehicle::getBatteryPercent).orElse(20);
+        Vehicle vehicle = booking.getVehicleId() == null ? null : vehicleRepository.findByIdAndUserId(
+                booking.getVehicleId(), userId).orElse(null);
+        int startBattery = vehicle == null || vehicle.getBatteryPercent() == null ? 20 : vehicle.getBatteryPercent();
         if (startBattery < 0) startBattery = 20;
+        double powerKw = effectiveBatteryPower(connector, vehicle, startBattery);
         int durationMinutes = booking.getDurationMinutes() > 0 ? booking.getDurationMinutes()
                 : Math.max(1, booking.getDurationHours()) * 60;
         LocalDateTime now = LocalDateTime.now();
         ChargingSession session = ChargingSession.builder()
-                .userId(userId).bookingId(bookingId).stationId(station.getId()).vehicleId(booking.getVehicleId())
+                .userId(userId).bookingId(bookingId).stationId(station.getId()).connectorId(connector.getId())
+                .vehicleId(booking.getVehicleId())
                 .powerKw(powerKw).startBatteryPercent(startBattery).currentBatteryPercent(startBattery)
                 .targetBatteryPercent(80).startedAt(now).estimatedCompletionAt(now.plusMinutes(durationMinutes)).build();
         booking.setStatus(BookingStatus.IN_PROGRESS);
         bookingRepository.save(booking);
+        markConnectorCharging(connector, session);
         updateVehicleCharging(session, station, true);
         ChargingSession saved = sessionRepository.save(session);
         notificationService.sendNotification(userId, "Charging started",
@@ -104,6 +110,7 @@ public class ChargingSessionServiceImpl implements ChargingSessionService {
                 "Charging session #" + session.getId());
         session.setPaymentStatus("PAID");
         session.setUpdatedAt(LocalDateTime.now());
+        syncConnectorTelemetry(session);
         ChargingSession saved = sessionRepository.save(session);
         notificationService.sendNotification(userId, "Charging payment complete",
                 "₹" + saved.getCost() + " was paid from the vehicle wallet.",
@@ -137,6 +144,7 @@ public class ChargingSessionServiceImpl implements ChargingSessionService {
         if (session.getCurrentBatteryPercent() >= session.getTargetBatteryPercent()) {
             complete(session);
         } else {
+            syncConnectorTelemetry(session);
             sessionRepository.save(session);
         }
         return map(session);
@@ -163,6 +171,7 @@ public class ChargingSessionServiceImpl implements ChargingSessionService {
                 vehicleRepository.save(vehicle);
             });
         }
+        syncConnectorTelemetry(session);
         return map(sessionRepository.save(session));
     }
 
@@ -189,6 +198,8 @@ public class ChargingSessionServiceImpl implements ChargingSessionService {
         if (!LocalDateTime.now().isBefore(session.getEstimatedCompletionAt())
                 || session.getCurrentBatteryPercent() >= session.getTargetBatteryPercent()) {
             complete(session);
+        } else {
+            syncConnectorTelemetry(session);
         }
         return sessionRepository.save(session);
     }
@@ -205,6 +216,7 @@ public class ChargingSessionServiceImpl implements ChargingSessionService {
         bookingRepository.save(booking);
         ChargingStation station = stationRepository.findById(session.getStationId()).orElseThrow();
         updateVehicleCharging(session, station, false);
+        releaseConnector(session);
         NotificationType type = session.getVehicleId() != null && vehicleRepository.findById(session.getVehicleId())
                 .map(vehicle -> vehicle.getTelemetrySource() == VehicleTelemetrySource.BLUETOOTH
                         || vehicle.getTelemetrySource() == VehicleTelemetrySource.BLUETOOTH_DEMO)
@@ -230,6 +242,42 @@ public class ChargingSessionServiceImpl implements ChargingSessionService {
         });
     }
 
+    private void markConnectorCharging(ChargingConnector connector, ChargingSession session) {
+        connector.setStatus(ChargerStatus.CHARGING);
+        connector.setAvailable(false);
+        connector.setMaintenanceMode(false);
+        connector.setCurrentPowerKw(session.getPowerKw());
+        connector.setSessionEnergyKwh(0);
+        connector.setSessionStartedAt(session.getStartedAt());
+        connector.setLastHeartbeat(LocalDateTime.now());
+        connectorRepository.save(connector);
+    }
+
+    private void syncConnectorTelemetry(ChargingSession session) {
+        if (session.getConnectorId() == null || session.getStatus() != ChargingSessionStatus.ACTIVE) return;
+        connectorRepository.findById(session.getConnectorId()).ifPresent(connector -> {
+            connector.setStatus(ChargerStatus.CHARGING);
+            connector.setAvailable(false);
+            connector.setCurrentPowerKw(session.getPowerKw());
+            connector.setSessionEnergyKwh(session.getEnergyKwh());
+            connector.setSessionStartedAt(session.getStartedAt());
+            connector.setLastHeartbeat(LocalDateTime.now());
+            connectorRepository.save(connector);
+        });
+    }
+
+    private void releaseConnector(ChargingSession session) {
+        if (session.getConnectorId() == null) return;
+        connectorRepository.findById(session.getConnectorId()).ifPresent(connector -> {
+            connector.setStatus(ChargerStatus.ONLINE);
+            connector.setAvailable(true);
+            connector.setCurrentPowerKw(0);
+            connector.setSessionStartedAt(null);
+            connector.setLastHeartbeat(LocalDateTime.now());
+            connectorRepository.save(connector);
+        });
+    }
+
     private Booking ownedBooking(Long userId, Long bookingId) {
         return bookingRepository.findByIdAndUserId(bookingId, userId)
                 .orElseThrow(() -> new ResourceNotFoundException("Booking not found for this account"));
@@ -246,6 +294,7 @@ public class ChargingSessionServiceImpl implements ChargingSessionService {
                 .map(Vehicle::getMakeAndModel).orElse(null);
         return ChargingSessionResponse.builder()
                 .id(session.getId()).bookingId(session.getBookingId()).stationId(session.getStationId())
+                .connectorId(session.getConnectorId())
                 .stationName(booking.getStationName()).vehicleId(session.getVehicleId()).vehicleName(vehicleName)
                 .status(session.getStatus()).paymentStatus(session.getPaymentStatus()).powerKw(session.getPowerKw())
                 .energyKwh(session.getEnergyKwh()).cost(session.getCost())
@@ -264,6 +313,21 @@ public class ChargingSessionServiceImpl implements ChargingSessionService {
         if (value == null) return 0;
         try { return Double.parseDouble(value.replaceAll("[^0-9.]", "")); }
         catch (NumberFormatException ignored) { return 0; }
+    }
+
+    private double effectiveBatteryPower(ChargingConnector connector, Vehicle vehicle, int batteryPercent) {
+        double vehicleLimit = 50.0;
+        double efficiency = 0.90;
+        if (vehicle != null) {
+            boolean acConnector = connector.getType() == ConnectorType.TYPE1 || connector.getType() == ConnectorType.TYPE2;
+            Double configuredLimit = acConnector ? vehicle.getMaxAcChargePowerKw() : vehicle.getMaxDcChargePowerKw();
+            if (configuredLimit != null && configuredLimit > 0) vehicleLimit = configuredLimit;
+            if (vehicle.getChargingEfficiency() != null && vehicle.getChargingEfficiency() > 0
+                    && vehicle.getChargingEfficiency() <= 1) efficiency = vehicle.getChargingEfficiency();
+        }
+        double curveLimit = batteryPercent < 60 ? vehicleLimit
+                : batteryPercent < 80 ? vehicleLimit * 0.80 : vehicleLimit * 0.40;
+        return round(Math.min(connector.getPowerKw(), Math.min(vehicleLimit, curveLimit)) * efficiency);
     }
 
     private double round(double value) { return Math.round(value * 100.0) / 100.0; }

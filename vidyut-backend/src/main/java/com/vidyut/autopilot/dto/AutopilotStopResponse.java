@@ -19,12 +19,16 @@ public class AutopilotStopResponse {
     private String stationAddress;
     private String connectorType;
     private double powerKw;
+    private double effectivePowerKw;
     private double distanceFromOriginKm;
+    private double routeOffsetKm;
     private double arrivalBatteryPercent;
     private double targetBatteryPercent;
     private int estimatedWaitMinutes;
     private int chargingMinutes;
+    private int connectionMinutes;
     private double estimatedCost;
+    private boolean demoData;
     private String selectionReason;
     private String timingScore;
     private String timingLabel;

@@ -9,6 +9,7 @@ import com.vidyut.wallet.service.WalletService;
 import com.vidyut.booking.entity.Booking;
 import com.vidyut.booking.repository.BookingRepository;
 import com.vidyut.common.exception.ResourceNotFoundException;
+import com.vidyut.admin.service.OperationalControlService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
@@ -23,9 +24,11 @@ public class PaymentServiceImpl implements PaymentService {
     private final PaymentRepository paymentRepository;
     private final WalletService walletService;
     private final BookingRepository bookingRepository;
+    private final OperationalControlService operationalControlService;
 
     @Override
     public PaymentResponse processPayment(Long userId, PaymentRequest request) {
+        operationalControlService.assertPaymentAllowed(userId);
         Booking booking = bookingRepository.findByIdAndUserId(request.getBookingId(), userId)
                 .orElseThrow(() -> new ResourceNotFoundException("Booking not found for this account"));
 

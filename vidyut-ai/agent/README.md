@@ -1,47 +1,90 @@
 # Vidyut Autopilot agent
 
-This service runs Google ADK locally and uses the Gemini Developer API while
-Spring Boot remains responsible for authentication, authorization, and data.
-The user's bearer token is forwarded only to the Vidyut backend tools; it is
-never included in the Gemini prompt.
+FastAPI service built on Google ADK. It adds conversational planning and tool orchestration while Spring Boot remains the source of truth for authentication, authorization, vehicles, chargers, routes, bookings, trips, and wallet state.
 
-## Gemini Developer API setup
+The user bearer token is forwarded only to Vidyut backend tools. It is not included in Gemini or OpenRouter prompts.
 
-1. Create an API key at <https://aistudio.google.com/app/apikey>.
-2. Copy `vidyut_agent/.env.example` to `vidyut_agent/.env` if needed.
-3. Put the key in the ignored `.env` file:
+## Responsibilities
 
-   ```env
-   GOOGLE_API_KEY=your-private-key
-   VIDYUT_AGENT_MODEL=gemini-3.5-flash
-   VIDYUT_BACKEND_BASE_URL=http://localhost:8080
-   ```
+The agent can:
 
-4. Install and run from this directory:
+- Read vehicle status and supported connectors.
+- Find compatible chargers and request road-aware trip plans.
+- Produce read-only Autopilot previews from natural-language requests.
+- Launch a confirmed trip according to its autonomy mode.
+- Recover and monitor the current ongoing trip.
+- Handle charger-unavailable events, release failed reservations, locate compatible replacements, and return the updated route timeline.
+- List and swap charging-stop alternatives.
+- Simulate delay, complete charging, summarize a trip, reroute, or cancel a booking.
+- Read wallet status and perform an explicitly requested top-up.
 
-   ```powershell
-   .\.venv\Scripts\Activate.ps1
-   pip install -r requirements.txt
-   python -m vidyut_agent
-   ```
+Spring Boot results override model assumptions. The agent must not claim that an action succeeded unless the corresponding tool returns `ok=true`.
 
-The service listens on `http://127.0.0.1:8001`. Check `/health`, then send chat
-requests through Spring Boot at `POST /api/ev/agent/chat` so the verified Vidyut
-JWT is forwarded to the agent.
+## Action safety
 
-The ADK tool set covers read-only trip preview plus confirmed launch, journey
-monitoring, charger-failure recovery, reservation cancellation, stop swapping,
-charging completion/AutoPay, wallet status, and wallet top-up. A
-`CHARGER_UNAVAILABLE` event can therefore demonstrate the full backend flow:
-release the failed booking, select and reserve a compatible replacement,
-recalculate the route, and return the updated trip action timeline.
+- Planning and preview requests are read-only.
+- Recommend-only mode must never invoke booking, payment, cancellation, or rerouting mutations.
+- Ask-before-actions requires explicit approval before mutation.
+- Full Autopilot may act only inside the trip’s reserve, budget, connector, deadline, and configured execution limits.
+- A provider fallback is never allowed to replay a state-changing tool call whose outcome may already have been applied.
 
-For ADK's development UI, run `adk web` from this directory. The `root_agent`
-uses the same Gemini model and tools.
+## Provider order and degradation
 
-## Later: switch to Vertex AI
+1. Gemini primary model.
+2. Configured Gemini fallback models.
+3. OpenRouter model and fallback models, when configured and no state mutation has already been attempted.
+4. Deterministic backend trip-preview fallback for planning when both LLM providers are unavailable.
 
-Remove `GOOGLE_API_KEY` and configure Google's standard environment variables:
+This means an LLM outage does not have to break a structured route preview, but mutation safety takes precedence over retrying with another provider.
+
+## Configuration
+
+Copy `vidyut_agent/.env.example` to the ignored `vidyut_agent/.env` file when needed:
+
+```env
+GOOGLE_API_KEY=your-private-key
+VIDYUT_AGENT_MODEL=gemini-3.5-flash
+VIDYUT_AGENT_FALLBACK_MODELS=gemini-3.5-flash-lite
+VIDYUT_AGENT_DISABLE_GEMINI=false
+
+OPENROUTER_API_KEY=
+OPENROUTER_MODEL=meta-llama/llama-3.3-70b-instruct
+OPENROUTER_FALLBACK_MODELS=
+OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+
+VIDYUT_BACKEND_BASE_URL=http://localhost:8080
+VIDYUT_BACKEND_TIMEOUT_SECONDS=15
+```
+
+Do not commit `.env`, API keys, bearer tokens, or model-provider credentials.
+
+## Run locally
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+python -m vidyut_agent
+```
+
+The service listens on `http://127.0.0.1:8001`.
+
+- `GET /health` reports provider configuration and fallback models.
+- `POST /v1/chat` is the internal agent endpoint.
+- Client applications should normally call Spring Boot at `POST /api/ev/agent/chat`; the backend verifies the Vidyut JWT before forwarding the request.
+
+For the ADK development UI, run `adk web` from this directory. The exported `root_agent` uses the same instructions and tools.
+
+## Tests
+
+The current suite covers backend tools, OpenRouter tool execution/fallback, Gemini quota fallback, deterministic planning fallback, and mutation replay protection.
+
+```powershell
+.\.venv\Scripts\python -m unittest discover -s tests -v
+```
+
+## Vertex AI migration
+
+To use Vertex AI, remove `GOOGLE_API_KEY` and set Google’s standard variables:
 
 ```env
 GOOGLE_GENAI_USE_VERTEXAI=TRUE
@@ -50,5 +93,4 @@ GOOGLE_CLOUD_LOCATION=us-central1
 VIDYUT_AGENT_MODEL=your-Vertex-supported-model-id
 ```
 
-No Python tool or agent workflow changes are required. Verify the chosen model
-is available in the selected Vertex region before deployment.
+No tool workflow change is required. Confirm that the selected model is available in the configured region.

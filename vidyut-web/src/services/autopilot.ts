@@ -4,6 +4,8 @@ export type AutopilotTripStatus =
   | 'RESERVED'
   | 'MONITORING'
   | 'REROUTED'
+  | 'REROUTE_APPROVAL_REQUIRED'
+  | 'REPLAN_REQUIRED'
   | 'PAYMENT_REQUIRED'
   | 'COMPLETED'
   | 'CANCELLED';
@@ -20,6 +22,13 @@ export interface AutopilotVehicle {
   registrationNumber: string;
   batteryCapacity: string;
   connectorType: string;
+  supportedConnectors?: string[];
+  efficiencyWhPerKm?: number;
+  maxAcChargePowerKw?: number;
+  maxDcChargePowerKw?: number;
+  chargingEfficiency?: number;
+  batteryPercent?: number;
+  remainingRangeKm?: number;
 }
 
 export interface AutopilotTripRequest {
@@ -46,14 +55,76 @@ export interface AutopilotStop {
   stationAddress: string;
   connectorType: string;
   powerKw: number;
+  effectivePowerKw: number;
   distanceFromOriginKm: number;
+  routeOffsetKm: number;
   arrivalBatteryPercent: number;
   targetBatteryPercent: number;
   estimatedWaitMinutes: number;
   chargingMinutes: number;
+  connectionMinutes: number;
   estimatedCost: number;
+  demoData: boolean;
   selectionReason?: string;
   status: AutopilotStopStatus;
+}
+
+export interface VehicleRecommendationRequest {
+  origin: string;
+  destination: string;
+  goal: string;
+  tripPurpose: TripPurpose;
+  arrivalDeadline: string;
+  optimizeFor: AutopilotTripRequest['optimizeFor'];
+  autonomyMode: AutopilotMode;
+  fallbackBatteryPercent: number;
+  minimumArrivalBatteryPercent: number;
+  maximumChargingBudget: number;
+}
+
+export interface VehicleRecommendationOption {
+  vehicleId: number;
+  vehicleName: string;
+  registrationNumber: string;
+  supportedConnectors: string[];
+  batteryCapacityKwh: number;
+  currentBatteryPercent: number;
+  efficiencyWhPerKm: number;
+  maximumChargingPowerKw: number;
+  feasible: boolean;
+  reason: string;
+  compatibleChargersEvaluated: number;
+  chargingStops: number;
+  journeyMinutes: number;
+  chargingMinutes: number;
+  estimatedCost: number;
+  arrivalBatteryPercent: number;
+  withinBudget: boolean;
+  deadlineFeasible: boolean;
+}
+
+export interface VehicleRecommendation {
+  recommendedVehicleId?: number | null;
+  recommendedVehicleName?: string | null;
+  reason: string;
+  origin: string;
+  destination: string;
+  optimizeFor: AutopilotTripRequest['optimizeFor'];
+  recommendedPlan?: AutopilotPlan | null;
+  vehicles: VehicleRecommendationOption[];
+}
+
+export interface JourneyIntent {
+  origin?: string | null;
+  destination?: string | null;
+  currentBatteryPercent?: number | null;
+  minimumArrivalBatteryPercent?: number | null;
+  maximumChargingBudget?: number | null;
+  arrivalDeadline?: string | null;
+  optimizeFor?: AutopilotTripRequest['optimizeFor'] | null;
+  autonomyMode?: AutopilotMode | null;
+  tripPurpose?: TripPurpose | null;
+  recognizedFields: string[];
 }
 
 export interface AutopilotPlanStop {
@@ -63,13 +134,17 @@ export interface AutopilotPlanStop {
   stationAddress: string;
   connectorType: string;
   powerKw: number;
+  effectivePowerKw: number;
   distanceFromOriginKm: number;
+  routeOffsetKm: number;
   estimatedArrivalTime: string;
   arrivalBatteryPercent: number;
   targetBatteryPercent: number;
   estimatedWaitMinutes: number;
   chargingMinutes: number;
+  connectionMinutes: number;
   estimatedCost: number;
+  demoData: boolean;
   availableConnectors: number;
   queueCount: number;
   rating: number;
@@ -95,14 +170,32 @@ export interface AutopilotPlan {
   minimumArrivalBatteryPercent: number;
   maximumChargingBudget: number;
   totalDistanceKm: number;
+  baseRouteDistanceKm: number;
+  chargingDetourDistanceKm: number;
   estimatedDriveMinutes: number;
+  baseDriveMinutes: number;
+  chargingDetourMinutes: number;
+  estimatedChargingMinutes: number;
+  estimatedQueueMinutes: number;
+  connectionOverheadMinutes: number;
   totalDurationMinutes: number;
   estimatedChargingCost: number;
   budgetRemaining: number;
   estimatedArrivalBatteryPercent: number;
+  batteryCapacityKwh: number;
+  availableEnergyKwh: number;
+  energyConsumptionKwhPer100Km: number;
+  vehicleMaxChargingPowerKw: number;
+  chargingEfficiencyPercent: number;
   compatibleChargersEvaluated: number;
+  feasibleAlternativesCompared: number;
+  optimizationSummary: string;
+  routeEngine: string;
   withinBudget: boolean;
   safeArrivalReserve: boolean;
+  deadlineFeasible: boolean;
+  overallFeasible: boolean;
+  deadlineMinutesLate: number;
   liveAvailabilityChecked: boolean;
   confirmationRequired: boolean;
   stops: AutopilotPlanStop[];
@@ -130,10 +223,20 @@ export interface AutopilotTrip {
   minimumArrivalBatteryPercent: number;
   maximumChargingBudget: number;
   totalDistanceKm: number;
+  baseRouteDistanceKm: number;
+  chargingDetourDistanceKm: number;
   estimatedDriveMinutes: number;
+  baseDriveMinutes: number;
+  chargingDetourMinutes: number;
+  estimatedChargingMinutes: number;
+  estimatedQueueMinutes: number;
+  connectionOverheadMinutes: number;
   totalDurationMinutes: number;
   estimatedChargingCost: number;
   estimatedArrivalBatteryPercent: number;
+  feasibleAlternativesCompared: number;
+  optimizationSummary: string;
+  routeEngine: string;
   activeStationId?: number;
   activeBookingId?: number;
   status: AutopilotTripStatus;
@@ -210,6 +313,25 @@ export function previewAutopilotTrip(token: string, request: AutopilotTripReques
   });
 }
 
+export function recommendAutopilotVehicle(
+  token: string,
+  request: VehicleRecommendationRequest,
+): Promise<VehicleRecommendation> {
+  return apiRequest<VehicleRecommendation>('/ev/autopilot/vehicles/recommend', {
+    method: 'POST',
+    headers: authorized(token),
+    body: JSON.stringify(request),
+  });
+}
+
+export function parseAutopilotJourneyIntent(token: string, text: string): Promise<JourneyIntent> {
+  return apiRequest<JourneyIntent>('/ev/autopilot/intent/parse', {
+    method: 'POST',
+    headers: authorized(token),
+    body: JSON.stringify({ text }),
+  });
+}
+
 export function startAutopilotTrip(token: string, tripId: number): Promise<AutopilotTrip> {
   return apiRequest<AutopilotTrip>(`/ev/autopilot/trips/${tripId}/start`, {
     method: 'POST',
@@ -231,6 +353,13 @@ export function completeAutopilotCharging(token: string, tripId: number): Promis
     method: 'POST',
     headers: authorized(token),
     body: '{}',
+  });
+}
+
+export function approveAutopilotReroute(token: string, tripId: number): Promise<AutopilotTrip> {
+  return apiRequest<AutopilotTrip>(`/ev/autopilot/trips/${tripId}/approve-reroute`, {
+    method: 'POST',
+    headers: authorized(token),
   });
 }
 
@@ -264,6 +393,7 @@ export function sendAutopilotAgentMessage(
   token: string,
   message: string,
   sessionId?: string,
+  tripContext?: AutopilotTripRequest,
 ): Promise<AutopilotAgentResponse> {
   return apiRequest<AutopilotAgentResponse>('/ev/agent/chat', {
     method: 'POST',
@@ -271,6 +401,7 @@ export function sendAutopilotAgentMessage(
     body: JSON.stringify({
       message,
       sessionId,
+      tripContext,
       requestId: `web-agent-${Date.now()}`,
     }),
   });

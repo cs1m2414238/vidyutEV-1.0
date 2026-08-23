@@ -17,34 +17,8 @@ interface LoginPageProps {
   onRegister?: () => void;
 }
 
-// INLINE HIGH-RESOLUTION VECTOR SVG LOGO (CENTER-ALIGNED ABOVE VIDYUT)
 const VidyutLogoSvg: React.FC = () => (
-  <svg
-    width="96"
-    height="96"
-    viewBox="0 0 200 200"
-    fill="none"
-    xmlns="http://www.w3.org/2000/svg"
-    className="brand-logo-img"
-  >
-    <defs>
-      <linearGradient id="vidyutVGradient" x1="0%" y1="0%" x2="100%" y2="100%">
-        <stop offset="0%" stopColor="#d9f99d" />
-        <stop offset="25%" stopColor="#a3e635" />
-        <stop offset="60%" stopColor="#22c55e" />
-        <stop offset="100%" stopColor="#15803d" />
-      </linearGradient>
-      <filter id="vGlow" x="-30%" y="-30%" width="160%" height="160%">
-        <feGaussianBlur stdDeviation="7" result="blur" />
-        <feComposite in="SourceGraphic" in2="blur" operator="over" />
-      </filter>
-    </defs>
-    <path
-      d="M 38,30 L 65,36 L 100,165 L 128,75 L 114,80 L 165,15 L 142,58 L 158,58 L 100,185 Z"
-      fill="url(#vidyutVGradient)"
-      filter="url(#vGlow)"
-    />
-  </svg>
+  <img src="/vidyut-logo.svg" className="brand-logo-img" alt="" />
 );
 
 export default function LoginPage({ onLogin, onBack, onRegister }: LoginPageProps) {
@@ -289,7 +263,7 @@ export default function LoginPage({ onLogin, onBack, onRegister }: LoginPageProp
                     d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"
                   />
                 </svg>
-                <span>Continue with Google</span>
+                <span>Login with Google</span>
               </button>
             </div>
           </div>

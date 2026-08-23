@@ -63,6 +63,23 @@ public class Company {
     @Builder.Default
     private String timezone = "Asia/Kolkata";
 
+    @Enumerated(EnumType.STRING)
+    @Builder.Default
+    @Column(name = "agent_mode", nullable = false, length = 30)
+    private CompanyAgentMode agentMode = CompanyAgentMode.ASK_BEFORE_ACTIONS;
+
+    @Builder.Default
+    @Column(name = "agent_max_price_change_percent", nullable = false)
+    private double agentMaxPriceChangePercent = 10;
+
+    @Builder.Default
+    @Column(name = "agent_auto_disable_faulty_chargers", nullable = false)
+    private boolean agentAutoDisableFaultyChargers = true;
+
+    @Builder.Default
+    @Column(name = "agent_auto_create_maintenance_tickets", nullable = false)
+    private boolean agentAutoCreateMaintenanceTickets = true;
+
     private LocalDateTime verificationRequestedAt;
 
     private String emailVerificationCodeHash;

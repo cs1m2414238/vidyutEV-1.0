@@ -2,7 +2,10 @@
   "name": "ev-vidyut-app",
   "version": "1.0.0",
   "scripts": {
-    "dev": "npx concurrently -k \"cd vidyut-backend && mvn spring-boot:run\" \"cd vidyut-web && npm run dev\" \"cd vidyut-ai/agent && .venv\\Scripts\\python -m vidyut_agent\""
+    "osrm:start": "docker start vidyut-osrm",
+    "osrm:stop": "docker stop vidyut-osrm",
+    "osrm:logs": "docker logs -f vidyut-osrm",
+    "dev": "npm run osrm:start && npx concurrently -k \"cd vidyut-backend && mvn spring-boot:run\" \"cd vidyut-web && npm run dev\" \"cd vidyut-ai/agent && .venv\\Scripts\\python -m vidyut_agent\""
   },
   "dependencies": {
     "@types/react": "~19.2.4",

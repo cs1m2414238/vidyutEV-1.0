@@ -6,7 +6,11 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import com.vidyut.station.entity.ConnectorType;
+
 import java.time.LocalDateTime;
+import java.util.LinkedHashSet;
+import java.util.Set;
 
 @Entity
 @Table(name = "vehicles")
@@ -31,6 +35,26 @@ public class Vehicle {
 
     private String batteryCapacity;
     private String connectorType;
+
+    @ElementCollection(fetch = FetchType.EAGER)
+    @CollectionTable(name = "vehicle_supported_connectors",
+            joinColumns = @JoinColumn(name = "vehicle_id"))
+    @Enumerated(EnumType.STRING)
+    @Column(name = "connector_type", nullable = false, length = 20)
+    @Builder.Default
+    private Set<ConnectorType> supportedConnectors = new LinkedHashSet<>();
+
+    @Builder.Default
+    private Double efficiencyWhPerKm = 140.0;
+
+    @Builder.Default
+    private Double maxAcChargePowerKw = 7.2;
+
+    @Builder.Default
+    private Double maxDcChargePowerKw = 50.0;
+
+    @Builder.Default
+    private Double chargingEfficiency = 0.90;
 
     @Enumerated(EnumType.STRING)
     @Builder.Default

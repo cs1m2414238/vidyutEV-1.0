@@ -36,6 +36,7 @@ public class HostOperationsController {
     @GetMapping("/dashboard") public ResponseEntity<ApiResponse<Map<String, Object>>> dashboard() { return ok(hostService.dashboard(id())); }
     @PutMapping("/stations/{stationId}/availability") public ResponseEntity<ApiResponse<StationResponse>> availability(@PathVariable Long stationId, @Valid @RequestBody HostAvailabilityRequest request) { return ok(hostService.updateAvailability(id(), stationId, request)); }
     @GetMapping("/monitoring") public ResponseEntity<ApiResponse<List<Map<String, Object>>>> monitoring() { return ok(hostService.monitoring(id())); }
+    @GetMapping("/connectors/{connectorId}/maintenance-impact") public ResponseEntity<ApiResponse<Map<String, Object>>> maintenanceImpact(@PathVariable Long connectorId) { return ok(hostService.maintenanceImpact(id(), connectorId)); }
     @PutMapping("/connectors/{connectorId}/status") public ResponseEntity<ApiResponse<Map<String, Object>>> chargerStatus(@PathVariable Long connectorId, @Valid @RequestBody HostChargerStatusRequest request) { return ok(hostService.updateChargerStatus(id(), connectorId, request)); }
 
     @GetMapping("/bookings") public ResponseEntity<ApiResponse<List<HostBookingResponse>>> bookings() { return ok(hostService.bookings(id())); }
@@ -48,6 +49,7 @@ public class HostOperationsController {
     @PatchMapping("/reviews/{reviewId}/reply") public ResponseEntity<ApiResponse<HostReview>> reply(@PathVariable Long reviewId, @Valid @RequestBody HostReviewActionRequest request) { return ok(hostService.replyReview(id(), reviewId, request.getMessage())); }
     @PatchMapping("/reviews/{reviewId}/report") public ResponseEntity<ApiResponse<HostReview>> report(@PathVariable Long reviewId, @Valid @RequestBody HostReviewActionRequest request) { return ok(hostService.reportReview(id(), reviewId, request.getMessage())); }
     @PostMapping("/ai/ask") public ResponseEntity<ApiResponse<Map<String, Object>>> assistant(@Valid @RequestBody HostAiRequest request) { return ok(hostService.assistant(id(), request.getQuestion())); }
+    @PostMapping("/ai/actions") public ResponseEntity<ApiResponse<Map<String, Object>>> agentAction(@Valid @RequestBody HostAgentActionRequest request) { return ok(hostService.executeAgentAction(id(), request)); }
     @GetMapping("/notifications") public ResponseEntity<ApiResponse<List<Notification>>> notifications() { return ok(notificationService.getNotificationsForUser(id())); }
     @PatchMapping("/notifications/{notificationId}/read") public ResponseEntity<ApiResponse<Notification>> markNotificationRead(@PathVariable Long notificationId) { return ok(notificationService.markRead(id(), notificationId)); }
     @PatchMapping("/notifications/read-all") public ResponseEntity<ApiResponse<Void>> markAllNotificationsRead() {

@@ -157,8 +157,27 @@ public class CompanyOperationsController {
     }
 
     @PostMapping("/ai/ask")
-    public ResponseEntity<ApiResponse<Map<String, Object>>> ask(@Valid @RequestBody AiAssistantRequest request) {
+    public ResponseEntity<ApiResponse<CompanyAgentResponse>> ask(@Valid @RequestBody AiAssistantRequest request) {
         return ResponseEntity.ok(ApiResponse.success(operationsService.askAssistant(accountId(), request.getQuestion())));
+    }
+
+    @GetMapping("/ai/settings")
+    public ResponseEntity<ApiResponse<CompanyAgentSettingsResponse>> agentSettings() {
+        return ResponseEntity.ok(ApiResponse.success(operationsService.agentSettings(accountId())));
+    }
+
+    @PutMapping("/ai/settings")
+    public ResponseEntity<ApiResponse<CompanyAgentSettingsResponse>> updateAgentSettings(
+            @Valid @RequestBody CompanyAgentSettingsRequest request) {
+        return ResponseEntity.ok(ApiResponse.success("Company Assistant settings updated",
+                operationsService.updateAgentSettings(accountId(), request)));
+    }
+
+    @PostMapping("/ai/actions")
+    public ResponseEntity<ApiResponse<CompanyAgentActionResponse>> executeAgentAction(
+            @Valid @RequestBody CompanyAgentActionRequest request) {
+        return ResponseEntity.ok(ApiResponse.success("Company Assistant action processed",
+                operationsService.executeAgentAction(accountId(), request)));
     }
 
     @GetMapping("/payouts")

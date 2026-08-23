@@ -75,10 +75,24 @@ public class AutopilotTrip {
     private double minimumArrivalBatteryPercent;
     private double maximumChargingBudget;
     private double totalDistanceKm;
+    private double baseRouteDistanceKm;
+    private double chargingDetourDistanceKm;
     private int estimatedDriveMinutes;
+    private int baseDriveMinutes;
+    private int chargingDetourMinutes;
+    private int estimatedChargingMinutes;
+    private int estimatedQueueMinutes;
+    private int connectionOverheadMinutes;
     private int totalDurationMinutes;
     private double estimatedChargingCost;
     private double estimatedArrivalBatteryPercent;
+    private int feasibleAlternativesCompared;
+
+    @Column(length = 1000)
+    private String optimizationSummary;
+
+    @Column(length = 40)
+    private String routeEngine;
     private Long activeStationId;
     private Long activeBookingId;
 

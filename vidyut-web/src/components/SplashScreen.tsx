@@ -40,38 +40,9 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({ onComplete }) => {
 
       {/* Centered cinematic content layout */}
       <div className="splash-content">
-        {/* V logo with glowing filter */}
+        {/* Canonical Vidyut logo */}
         <div className="splash-logo-container">
-          <svg
-            className="splash-logo-svg"
-            viewBox="0 0 200 200"
-            fill="none"
-            xmlns="http://www.w3.org/2000/svg"
-          >
-            <defs>
-              <linearGradient
-                id="splashVGradient"
-                x1="0%"
-                y1="0%"
-                x2="100%"
-                y2="100%"
-              >
-                <stop offset="0%" stopColor="#d9f99d" />
-                <stop offset="25%" stopColor="#a3e635" />
-                <stop offset="60%" stopColor="#22c55e" />
-                <stop offset="100%" stopColor="#15803d" />
-              </linearGradient>
-              <filter id="splashVGlow" x="-30%" y="-30%" width="160%" height="160%">
-                <feGaussianBlur stdDeviation="8" result="blur" />
-                <feComposite in="SourceGraphic" in2="blur" operator="over" />
-              </filter>
-            </defs>
-            <path
-              d="M 38,30 L 65,36 L 100,165 L 128,75 L 114,80 L 165,15 L 142,58 L 158,58 L 100,185 Z"
-              fill="url(#splashVGradient)"
-              filter="url(#splashVGlow)"
-            />
-          </svg>
+          <img className="splash-logo-svg" src="/vidyut-logo.svg" alt="" />
         </div>
 
         {/* VIDYUT Title */}

@@ -46,6 +46,13 @@ public class StationCreateRequest {
     private String weeklySchedule;
     private String holidaySchedule;
     private String chargingInstructions;
+    @Size(max = 120) private String propertyOwnerName;
+    @Size(max = 160) private String operatorCompanyName;
+    @Size(max = 160) private String equipmentOwnerName;
+    @Size(max = 80) private String operatingModel;
+    @Size(max = 160) private String solarProviderName;
+    @Size(max = 1000) private String siteOwnershipDocumentUrl;
+    @Size(max = 1000) private String electricityConnectionDocumentUrl;
     private boolean autoAvailability;
     @Min(0) @Max(480) private int bookingSlotMinutes;
 }

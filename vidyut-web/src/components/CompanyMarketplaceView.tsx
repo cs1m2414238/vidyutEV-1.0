@@ -2,9 +2,11 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { LucideIcon } from 'lucide-react';
 import {
   ArrowRight,
+  BookmarkCheck,
   Building2,
   CheckCircle2,
   CircleAlert,
+  ClipboardCheck,
   Clock3,
   Handshake,
   Mail,
@@ -17,8 +19,10 @@ import {
   Route,
   Search,
   ShieldCheck,
+  Star,
   Trash2,
   X,
+  Video,
   Zap,
 } from 'lucide-react';
 import {
@@ -30,6 +34,7 @@ import {
   getCompanyProducts,
   getMarketplaceStations,
   saveCompanyProduct,
+  savePropertyOpportunity,
   sendInstallationProposal,
   updateInstallationStatus,
 } from '../services/marketplace';
@@ -50,6 +55,7 @@ type ModalState =
   | { kind: 'product'; product?: ChargerProduct }
   | { kind: 'archive'; product: ChargerProduct }
   | { kind: 'interest'; property: PropertyOpportunity }
+  | { kind: 'review'; property: PropertyOpportunity }
   | { kind: 'proposal'; request: InstallationRequest }
   | { kind: 'status'; request: InstallationRequest; status: InstallationStatus }
   | null;
@@ -76,6 +82,14 @@ const supportedBusinessModels = ['PURCHASE', 'LEASE', 'REVENUE_SHARE', 'COMPANY_
 const money = (value?: number) => new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(value ?? 0);
 const readable = (value?: string) => value ? value.replaceAll('_', ' ').toLowerCase().replace(/\b\w/g, letter => letter.toUpperCase()) : 'Not specified';
 const shortDate = (value?: string) => value ? new Intl.DateTimeFormat('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }).format(new Date(value)) : 'Not scheduled';
+const mediaUrls = (value?: string) => {
+  if (!value) return [];
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (Array.isArray(parsed)) return parsed.filter((item): item is string => typeof item === 'string' && /^https?:\/\//i.test(item));
+  } catch { /* Hosts may save a comma/newline separated list instead of JSON. */ }
+  return value.split(/[\n,]+/).map(item => item.trim().replace(/^[\s'"]+|[\s'"]+$/g, '').replace(/^\[|\]$/g, '')).filter(item => /^https?:\/\//i.test(item));
+};
 
 const nextAction: Partial<Record<InstallationStatus, { status: InstallationStatus; label: string }>> = {
   REQUESTED: { status: 'UNDER_REVIEW', label: 'Start review' },
@@ -92,6 +106,7 @@ const nextAction: Partial<Record<InstallationStatus, { status: InstallationStatu
 interface CompanyMarketplaceViewProps {
   tab: CompanyMarketplaceTab;
   token: string;
+  savedOnly?: boolean;
   marketplaceEnabled?: boolean;
   verificationStatus?: string;
   onOpenVerification?: () => void;
@@ -100,6 +115,7 @@ interface CompanyMarketplaceViewProps {
 export function CompanyMarketplaceView({
   tab,
   token,
+  savedOnly = false,
   marketplaceEnabled = true,
   verificationStatus,
   onOpenVerification,
@@ -168,6 +184,12 @@ export function CompanyMarketplaceView({
 
   const submitModal = async () => {
     if (!modal) return;
+    if (modal.kind === 'review') {
+      setForm({ message: `We reviewed ${modal.property.title}. Please arrange the recommended ${readable(modal.property.verificationMethod).toLowerCase()} so we can confirm charger and commercial terms.` });
+      setModal({ kind: 'interest', property: modal.property });
+      setError('');
+      return;
+    }
     setSaving(true);
     setError('');
     try {
@@ -243,11 +265,26 @@ export function CompanyMarketplaceView({
     setError('');
   };
 
-  const title = tab === 'catalog' ? 'Charger product catalogue' : tab === 'host_opportunities' ? 'Nationwide Host opportunities' : 'Installation pipeline';
+  const saveProperty = async (property: PropertyOpportunity) => {
+    setSaving(true);
+    setError('');
+    try {
+      await savePropertyOpportunity(token, property.id);
+      setNotice(`${property.title} was saved privately. The Host was not notified.`);
+      setModal(null);
+      await loadAll();
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : 'Unable to save this property.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const title = tab === 'catalog' ? 'Charger product catalogue' : tab === 'host_opportunities' ? (savedOnly ? 'Saved Host properties' : 'Nationwide Host opportunities') : 'Installation pipeline';
   const description = tab === 'catalog'
     ? 'Publish approved AC and DC equipment for purchase, lease or revenue share.'
     : tab === 'host_opportunities'
-      ? 'Discover verified installation-ready land anywhere in India.'
+      ? savedOnly ? 'Revisit shortlisted properties privately before requesting a survey.' : 'Discover verified installation-ready land anywhere in India.'
       : 'Move every Host request from survey through commissioning and go-live.';
 
   return <section className="marketplace-page company-marketplace-page">
@@ -257,9 +294,9 @@ export function CompanyMarketplaceView({
       {error && <div className="marketplace-message error"><CircleAlert size={17} />{error}</div>}
       {notice && <div className="marketplace-message success"><CheckCircle2 size={17} />{notice}</div>}
       {tab === 'catalog' && <ProductCatalogue products={products} onAdd={() => openProduct()} onEdit={openProduct} onRemove={product => setModal({ kind: 'archive', product })} />}
-      {tab === 'host_opportunities' && <HostOpportunities opportunities={opportunities} stations={stations} interests={interests} loading={loading} onInterest={property => { setForm({ message: `We would like to survey ${property.title} and discuss a suitable charger and commercial model.` }); setModal({ kind: 'interest', property }); }} />}
-      {tab === 'installation_pipeline' && <CompanyPipeline requests={requests} onProposal={openProposal} onStatus={startStatus} onDecline={request => startStatus(request, 'DECLINED')} />}
-      {modal && <CompanyMarketplaceModal modal={modal} form={form} setForm={setForm} saving={saving} error={error} onClose={() => setModal(null)} onSubmit={() => void submitModal()} />}
+      {tab === 'host_opportunities' && <HostOpportunities opportunities={opportunities} stations={stations} interests={interests} loading={loading} savedOnly={savedOnly} onReview={property => { setForm({}); setModal({ kind: 'review', property }); }} onInterest={property => { setForm({ message: `We would like to survey ${property.title} and discuss a suitable charger and commercial model.` }); setModal({ kind: 'interest', property }); }} />}
+      {tab === 'installation_pipeline' && <CompanyPipeline requests={requests} opportunities={opportunities} onReview={property => { setForm({}); setModal({ kind: 'review', property }); }} onProposal={openProposal} onStatus={startStatus} onDecline={request => startStatus(request, 'DECLINED')} />}
+      {modal && <CompanyMarketplaceModal modal={modal} form={form} setForm={setForm} saving={saving} error={error} onClose={() => setModal(null)} onSave={property => void saveProperty(property)} onSubmit={() => void submitModal()} />}
     </>}
   </section>;
 }
@@ -283,30 +320,56 @@ function ProductCatalogue({ products, onAdd, onEdit, onRemove }: { products: Cha
   </div>;
 }
 
-function HostOpportunities({ opportunities, stations, interests, loading, onInterest }: { opportunities: PropertyOpportunity[]; stations: MarketplaceStation[]; interests: PropertyInterest[]; loading: boolean; onInterest: (property: PropertyOpportunity) => void }) {
+function HostOpportunities({ opportunities, stations, interests, loading, savedOnly, onReview, onInterest }: { opportunities: PropertyOpportunity[]; stations: MarketplaceStation[]; interests: PropertyInterest[]; loading: boolean; savedOnly: boolean; onReview: (property: PropertyOpportunity) => void; onInterest: (property: PropertyOpportunity) => void }) {
   const [query, setQuery] = useState('');
   const [minimumLoad, setMinimumLoad] = useState(0);
+  const savedPropertyIds = useMemo(() => new Set(interests.filter(item => item.status === 'SAVED').map(item => item.propertyId)), [interests]);
   const filtered = useMemo(() => opportunities.filter(property => {
     const haystack = `${property.title} ${property.address} ${property.city ?? ''} ${property.state ?? ''}`.toLowerCase();
-    return haystack.includes(query.trim().toLowerCase()) && property.availableLoadKw >= minimumLoad;
-  }), [minimumLoad, opportunities, query]);
+    return (!savedOnly || savedPropertyIds.has(property.id)) && haystack.includes(query.trim().toLowerCase()) && property.availableLoadKw >= minimumLoad;
+  }), [minimumLoad, opportunities, query, savedOnly, savedPropertyIds]);
   const unlocked = interests.filter(interest => interest.contactUnlocked);
   if (loading) return <div className="marketplace-loading"><RefreshCw className="spinning" /> Matching Host properties…</div>;
   return <div className="marketplace-stack">
-    <div className="marketplace-section-head"><div><h2>Installation sites across India</h2><p>Search verified Host properties without artificial service-area restrictions.</p></div><Handshake size={21} /></div>
+    <div className="marketplace-section-head"><div><h2>{savedOnly ? 'Your private shortlist' : 'Installation sites across India'}</h2><p>{savedOnly ? 'Saving does not reveal company interest or unlock Host contact.' : 'Search verified Host properties without artificial service-area restrictions.'}</p></div>{savedOnly ? <BookmarkCheck size={21} /> : <Handshake size={21} />}</div>
     {unlocked.length > 0 && <section className="company-contact-leads"><header><div><strong>Accepted Host conversations</strong><span>Contact details unlock only after Host approval.</span></div><CheckCircle2 size={19} /></header><div>{unlocked.map(interest => <article key={interest.id}><span><Building2 size={18} /></span><div><strong>{interest.propertyTitle}</strong><small>{interest.propertyCity || 'India'} · {interest.hostEmail || 'Email unavailable'}</small></div><aside>{interest.hostEmail && <a href={`mailto:${interest.hostEmail}`}><Mail size={14} /> Email</a>}{interest.hostPhone && <a href={`tel:${interest.hostPhone}`}><Phone size={14} /> Call</a>}</aside></article>)}</div></section>}
     <div className="opportunity-toolbar"><label><Search size={16} /><input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search city, state, route or property" /></label><select value={minimumLoad} onChange={event => setMinimumLoad(Number(event.target.value))}><option value={0}>Any grid load</option><option value={30}>30+ kW</option><option value={60}>60+ kW</option><option value={120}>120+ kW</option></select><span>{filtered.length} verified sites</span></div>
-    <ChargerDensityMap opportunities={filtered} stations={stations} onContact={onInterest} />
-    <div className="opportunity-grid">{filtered.map(property => { const interest = interests.find(item => item.propertyId === property.id); return <article className="opportunity-card" key={property.id}><header><span><Building2 size={21} /></span><i>{property.matchedBy}{property.distanceKm != null ? ` · ${property.distanceKm} km` : ''}</i></header><h3>{property.title}</h3><p><MapPin size={13} /> {property.address}, {property.city}</p><div className="opportunity-specs"><span><strong>{property.parkingBays}</strong><small>parking bays</small></span><span><strong>{property.availableLoadKw} kW</strong><small>available load</small></span><span><strong>{readable(property.powerPhase)}</strong><small>power supply</small></span></div><section><Zap size={17} /><span><small>Host preference</small><strong>{property.preferredConnectorType || 'Flexible'} · {property.preferredPowerKw || 'Any'} kW</strong></span></section><footer><span>{readable(property.ownershipType)} property</span>{interest ? <i className={`interest-${interest.status.toLowerCase()}`}>{interest.contactUnlocked ? 'CONTACT UNLOCKED' : readable(interest.status)}</i> : <button className="marketplace-primary" onClick={() => onInterest(property)}>Contact Host <ArrowRight size={14} /></button>}</footer></article>; })}{!filtered.length && <MarketplaceEmpty icon={Building2} title="No matching Host sites" text="Try a broader search or lower the required grid load." />}</div>
+    <ChargerDensityMap opportunities={filtered} stations={stations} onContact={onReview} />
+    <div className="opportunity-grid">{filtered.map(property => { const interest = interests.find(item => item.propertyId === property.id); return <article className="opportunity-card" key={property.id}><header><span><Building2 size={21} /></span><i>{property.matchedBy}{property.distanceKm != null ? ` · ${property.distanceKm} km` : ''}</i></header><h3>{property.title}</h3><p><MapPin size={13} /> {property.address}, {property.city}</p><div className="opportunity-host"><span>{property.hostDisplayName.slice(0, 1).toUpperCase()}</span><div><strong>{property.hostDisplayName}</strong><small>Verified Host · {property.hostReviewCount ?? 0} reviews</small></div></div><div className="opportunity-trust"><span><ShieldCheck size={14} /> Host trust {property.hostTrustScore}/100</span><span><Star size={14} /> {property.hostRating.toFixed(1)}</span><i className={`risk-${property.verificationRisk.toLowerCase()}`}>{property.verificationRisk} RISK</i></div><div className="opportunity-specs"><span><strong>{property.parkingBays}</strong><small>parking bays</small></span><span><strong>{property.availableLoadKw} kW</strong><small>available load</small></span><span><strong>{readable(property.powerPhase)}</strong><small>power supply</small></span></div><section><Zap size={17} /><span><small>Host preference</small><strong>{property.preferredConnectorType || 'Flexible'} · {property.preferredPowerKw || 'Any'} kW</strong></span></section><footer><button onClick={() => onReview(property)}><ClipboardCheck size={14} /> View property &amp; Host</button>{interest && <i className={`interest-${interest.status.toLowerCase()}`}>{interest.contactUnlocked ? 'CONTACT UNLOCKED' : readable(interest.status)}</i>}{(!interest || interest.status === 'SAVED') && <button className="marketplace-primary" onClick={() => onInterest(property)}>Request site visit <ArrowRight size={14} /></button>}</footer></article>; })}{!filtered.length && <MarketplaceEmpty icon={savedOnly ? BookmarkCheck : Building2} title={savedOnly ? 'No saved properties yet' : 'No matching Host sites'} text={savedOnly ? 'Save a property from the marketplace to build a private shortlist.' : 'Try a broader search or lower the required grid load.'} />}</div>
   </div>;
 }
 
-function CompanyPipeline({ requests, onProposal, onStatus, onDecline }: { requests: InstallationRequest[]; onProposal: (request: InstallationRequest) => void; onStatus: (request: InstallationRequest, status: InstallationStatus) => void; onDecline: (request: InstallationRequest) => void }) {
-  return <section className="marketplace-panel"><div className="marketplace-section-head"><div><h2>Host installation requests</h2><p>Every survey, proposal and field milestone is recorded for both parties.</p></div><Route size={21} /></div><div className="pipeline-list company-pipeline-list">{requests.map(request => { const next = nextAction[request.status]; return <article key={request.id}><header><div><span>{readable(request.status)}</span><h3>{request.propertyTitle}</h3><p>{request.productName} × {request.quantity} · {request.connectorType} · {request.powerKw} kW</p></div><strong>{readable(request.businessModel)}</strong></header><div className="request-detail-grid"><span><small>Location</small><strong>{request.propertyCity || request.propertyAddress}</strong></span><span><small>Host budget</small><strong>{request.budget ? money(request.budget) : 'Open'}</strong></span><span><small>Target date</small><strong>{shortDate(request.targetInstallationDate)}</strong></span><span><small>Last update</small><strong>{shortDate(request.updatedAt)}</strong></span></div>{request.hostMessage && <blockquote>“{request.hostMessage}”</blockquote>}<div className="pipeline-progress">{request.history.map((item, index) => <span className="done" key={item.id}><i>{index + 1}</i><small>{readable(item.status)}</small></span>)}</div>{request.proposal && <div className="proposal-summary"><div><small>Total commercial value</small><strong>{money(request.proposal.equipmentTotal + request.proposal.installationTotal)}</strong></div><div><small>Valid until</small><strong>{shortDate(request.proposal.validUntil)}</strong></div><p>{request.proposal.terms}</p></div>}<footer><span><Clock3 size={14} /> Request #{request.id}</span><div>{['REQUESTED', 'UNDER_REVIEW', 'SITE_SURVEY_REQUESTED'].includes(request.status) && <button onClick={() => onDecline(request)}>Decline</button>}{request.status === 'SURVEY_COMPLETED' && <button className="marketplace-primary" onClick={() => onProposal(request)}>Send proposal</button>}{next && <button className="marketplace-primary" onClick={() => onStatus(request, next.status)}>{next.label} <ArrowRight size={14} /></button>}{request.status === 'PROPOSAL_SENT' && <i>Awaiting Host approval</i>}{request.status === 'LIVE' && <i className="live"><CheckCircle2 size={14} /> Live station created</i>}</div></footer></article>; })}{!requests.length && <MarketplaceEmpty icon={Route} title="No installation requests yet" text="Verified Hosts can request any Admin-approved charger from your catalogue." />}</div></section>;
+function CompanyPipeline({ requests, opportunities, onReview, onProposal, onStatus, onDecline }: { requests: InstallationRequest[]; opportunities: PropertyOpportunity[]; onReview: (property: PropertyOpportunity) => void; onProposal: (request: InstallationRequest) => void; onStatus: (request: InstallationRequest, status: InstallationStatus) => void; onDecline: (request: InstallationRequest) => void }) {
+  return <section className="marketplace-panel"><div className="marketplace-section-head"><div><h2>Host installation requests</h2><p>Open the property and Host profile before starting review or requesting a survey.</p></div><Route size={21} /></div><div className="pipeline-list company-pipeline-list">{requests.map(request => { const next = nextAction[request.status]; const property = opportunities.find(item => item.id === request.propertyId); return <article key={request.id}><header><div><span>{readable(request.status)}</span><h3>{request.propertyTitle}</h3><p>{request.productName} × {request.quantity} · {request.connectorType} · {request.powerKw} kW</p></div><strong>{readable(request.businessModel)}</strong></header><div className="request-detail-grid"><span><small>Location</small><strong>{request.propertyCity || request.propertyAddress}</strong></span><span><small>Host budget</small><strong>{request.budget ? money(request.budget) : 'Open'}</strong></span><span><small>Target date</small><strong>{shortDate(request.targetInstallationDate)}</strong></span><span><small>Last update</small><strong>{shortDate(request.updatedAt)}</strong></span></div>{request.hostMessage && <blockquote>“{request.hostMessage}”</blockquote>}<div className="pipeline-progress">{request.history.map((item, index) => <span className="done" key={item.id}><i>{index + 1}</i><small>{readable(item.status)}</small></span>)}</div>{request.proposal && <div className="proposal-summary"><div><small>Total commercial value</small><strong>{money(request.proposal.equipmentTotal + request.proposal.installationTotal)}</strong></div><div><small>Valid until</small><strong>{shortDate(request.proposal.validUntil)}</strong></div><p>{request.proposal.terms}</p></div>}<footer><span><Clock3 size={14} /> Request #{request.id}</span><div>{property && <button onClick={() => onReview(property)}><ClipboardCheck size={14} /> View property &amp; Host</button>}{['REQUESTED', 'UNDER_REVIEW', 'SITE_SURVEY_REQUESTED'].includes(request.status) && <button onClick={() => onDecline(request)}>Decline</button>}{request.status === 'SURVEY_COMPLETED' && <button className="marketplace-primary" onClick={() => onProposal(request)}>Send proposal</button>}{next && <button className="marketplace-primary" onClick={() => onStatus(request, next.status)}>{next.label} <ArrowRight size={14} /></button>}{request.status === 'PROPOSAL_SENT' && <i>Awaiting Host approval</i>}{request.status === 'LIVE' && <i className="live"><CheckCircle2 size={14} /> Live station created</i>}</div></footer></article>; })}{!requests.length && <MarketplaceEmpty icon={Route} title="No installation requests yet" text="Verified Hosts can request any Admin-approved charger from your catalogue." />}</div></section>;
 }
 
-function CompanyMarketplaceModal({ modal, form, setForm, saving, error, onClose, onSubmit }: { modal: Exclude<ModalState, null>; form: Record<string, string | number | boolean>; setForm: React.Dispatch<React.SetStateAction<Record<string, string | number | boolean>>>; saving: boolean; error: string; onClose: () => void; onSubmit: () => void }) {
+function CompanyMarketplaceModal({ modal, form, setForm, saving, error, onClose, onSave, onSubmit }: { modal: Exclude<ModalState, null>; form: Record<string, string | number | boolean>; setForm: React.Dispatch<React.SetStateAction<Record<string, string | number | boolean>>>; saving: boolean; error: string; onClose: () => void; onSave: (property: PropertyOpportunity) => void; onSubmit: () => void }) {
   if (modal.kind === 'archive') return <div className="marketplace-modal-backdrop" onMouseDown={onClose}><section className="marketplace-modal marketplace-confirm" role="alertdialog" aria-modal="true" onMouseDown={event => event.stopPropagation()}><span><Trash2 size={24} /></span><h2>Archive {modal.product.modelName}?</h2><p>Hosts will no longer see this charger, while existing proposals and installations remain in the audit trail.</p><footer><button onClick={onClose}>Keep product</button><button className="marketplace-danger" onClick={onSubmit} disabled={saving}>{saving ? 'Archiving…' : 'Archive product'}</button></footer></section></div>;
+  if (modal.kind === 'review') {
+    const property = modal.property;
+    const checks = [
+      ['Host identity', property.identityVerified],
+      ['Ownership evidence', property.ownershipVerified],
+      ['Electricity / sanctioned load', property.electricityVerified],
+      ['Site walkthrough video', property.videoVerified],
+    ] as const;
+    const photos = mediaUrls(property.photoUrls);
+    const recentReviews = property.recentHostReviews ?? [];
+    return <div className="marketplace-modal-backdrop" onMouseDown={onClose}>
+      <section className="marketplace-modal property-review-modal" role="dialog" aria-modal="true" onMouseDown={event => event.stopPropagation()}>
+        <header><div><span>PRE-SURVEY PROPERTY &amp; HOST REVIEW</span><h2>{property.title}</h2><p>{property.address}, {property.city}{property.state ? `, ${property.state}` : ''}</p></div><button onClick={onClose} aria-label="Close property review"><X size={18} /></button></header>
+        <div className="property-score-grid"><article><small>PROPERTY SCORE</small><strong>{property.propertyScore}<i>/100</i></strong><span>Site readiness</span></article><article><small>HOST TRUST</small><strong>{property.hostTrustScore}<i>/100</i></strong><span><Star size={13} /> {property.hostRating.toFixed(1)} from {property.hostReviewCount ?? 0} reviews</span></article><article><small>COMMERCIAL FIT</small><strong>{property.commercialScore}<i>/100</i></strong><span>{property.availableLoadKw} kW · {property.parkingBays} bays</span></article></div>
+        {photos.length > 0 && <section className="property-photo-gallery" aria-label="Property photos">{photos.slice(0, 5).map((url, index) => <a href={url} target="_blank" rel="noreferrer" key={url}><img src={url} alt={`${property.title} property view ${index + 1}`} /></a>)}</section>}
+        <div className="property-profile-grid">
+          <section className="property-fact-card"><h3>Property details</h3><div><span><small>Property type</small><strong>{readable(property.propertyType)}</strong></span><span><small>Ownership</small><strong>{readable(property.ownershipType)}</strong></span><span><small>Parking</small><strong>{property.parkingBays} bays</strong></span><span><small>Electrical capacity</small><strong>{property.availableLoadKw} kW · {readable(property.powerPhase)}</strong></span><span><small>Operating hours</small><strong>{property.operatingHours || 'Confirm with Host'}</strong></span><span><small>Preferred charger</small><strong>{property.preferredConnectorType || 'Flexible'} · {property.preferredPowerKw || 'Any'} kW</strong></span></div>{property.siteVideoUrl && <a className="property-video-link" href={property.siteVideoUrl} target="_blank" rel="noreferrer"><Video size={16} /> Watch verified site walkthrough</a>}</section>
+          <section className="host-public-profile"><div className="host-public-head"><span>{property.hostDisplayName.slice(0, 1).toUpperCase()}</span><div><small>VERIFIED MARKETPLACE HOST</small><h3>{property.hostDisplayName}</h3><p>{property.hostMemberSince ? `Member since ${shortDate(property.hostMemberSince)}` : 'Identity verified by Vidyut'}</p></div><ShieldCheck size={21} /></div><p>{property.hostBio || 'This Host has completed Vidyut identity and property verification. Contact details unlock only after the Host accepts company interest.'}</p><div className="host-public-stats"><span><strong>{property.verifiedProperties}</strong><small>verified properties</small></span><span><strong>{property.successfulPartnerships}</strong><small>commissioned sites</small></span><span><strong>{property.disputes}</strong><small>reported disputes</small></span></div></section>
+        </div>
+        <div className="property-review-columns"><section><h3>Site verification</h3>{checks.map(([label, passed]) => <div className={passed ? 'passed' : 'missing'} key={label}>{passed ? <CheckCircle2 size={17} /> : <CircleAlert size={17} />}<span><strong>{label}</strong><small>{passed ? 'Evidence recorded by Vidyut' : 'Required before commitment'}</small></span></div>)}</section><section><h3>Ratings from previous chargers</h3>{recentReviews.length ? recentReviews.map((review, index) => <article className="host-review-summary" key={`${review.createdAt}-${index}`}><div><span><strong>{review.stationName || 'Previous charger'}</strong><small><MapPin size={10} /> {review.stationCity || 'Location unavailable'} · by {review.reviewerName}</small></span><i>{'★'.repeat(Math.max(0, Math.min(5, review.rating)))}</i></div><p>{review.comment}</p>{review.hostReply && <small>Host reply: {review.hostReply}</small>}</article>) : <div><Star size={17} /><span><strong>No public charger ratings yet</strong><small>Use verification evidence and a survey before commitment.</small></span></div>}</section></div>
+        <div className={`verification-recommendation risk-${property.verificationRisk.toLowerCase()}`}><Video size={21} /><span><small>{property.verificationRisk} VERIFICATION RISK</small><strong>{readable(property.verificationMethod)}</strong><p>{property.physicalInspectionRecommended ? 'A field verifier should confirm access, electrical infrastructure and the charger bay before a commercial offer.' : 'Documents and recorded video are sufficient for initial review; request a live video if conditions change.'}</p></span></div>
+        <footer><button onClick={onClose}>Close</button><button onClick={() => onSave(property)} disabled={saving}><BookmarkCheck size={14} /> {saving ? 'Saving…' : 'Save property'}</button><button className="marketplace-primary" onClick={onSubmit}>Request site visit / contact <ArrowRight size={14} /></button></footer>
+      </section>
+    </div>;
+  }
   const field = (name: string, label: string, type = 'text') => <label>{label}<input type={type} value={String(form[name] ?? '')} onChange={event => setForm(current => ({ ...current, [name]: event.target.value }))} /></label>;
   const select = (name: string, label: string, options: string[]) => <label>{label}<select value={String(form[name] ?? '')} onChange={event => setForm(current => ({ ...current, [name]: event.target.value }))}>{options.map(option => <option key={option} value={option}>{readable(option)}</option>)}</select></label>;
   const check = (name: string, label: string) => <label className="marketplace-check"><input type="checkbox" checked={Boolean(form[name])} onChange={event => setForm(current => ({ ...current, [name]: event.target.checked }))} /> {label}</label>;

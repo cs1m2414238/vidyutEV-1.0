@@ -1,6 +1,7 @@
 package com.vidyut.common.exception;
 
 import com.vidyut.common.response.ApiErrorResponse;
+import com.vidyut.routing.exception.OsrmException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.validation.FieldError;
@@ -48,6 +49,16 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ApiErrorResponse> handleAgentUnavailable(AgentServiceUnavailableException ex) {
         return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
                 .body(ApiErrorResponse.of(ex.getMessage(), "AGENT_UNAVAILABLE", List.of()));
+    }
+
+    @ExceptionHandler(OsrmException.class)
+    public ResponseEntity<ApiErrorResponse> handleRoutingUnavailable(OsrmException ex) {
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                .body(ApiErrorResponse.of(
+                        "The configured routing or location service is currently unavailable",
+                        "ROUTING_UNAVAILABLE",
+                        List.of()
+                ));
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)

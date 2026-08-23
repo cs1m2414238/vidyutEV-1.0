@@ -13,4 +13,5 @@ public class HostChargerStatusRequest {
     @Min(0) private double sessionEnergyKwh;
     @Min(0) @Max(100) private int healthScore = 100;
     private String faultCode;
+    private boolean impactApproved;
 }

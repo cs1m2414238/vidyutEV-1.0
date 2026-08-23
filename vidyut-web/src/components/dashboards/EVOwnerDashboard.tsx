@@ -1,8 +1,11 @@
-import { MapPin, Calendar, Wallet, AlertCircle, Info, Navigation, Sparkles, BatteryCharging, Bluetooth, Route, ChevronRight } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { MapPin, Calendar, Wallet, AlertCircle, Info, Navigation, Sparkles, BatteryCharging, Bluetooth, Route, ChevronRight, ArrowRight, Clock3, IndianRupee, ShieldCheck, RefreshCw, Zap } from 'lucide-react';
 import type { User, Charger } from '../../types';
 import type { Vehicle } from '../../services/vehicles';
+import { getCurrentAutopilotTrip, type AutopilotTrip, type AutopilotTripStatus } from '../../services/autopilot';
 
 interface EVOwnerDashboardProps {
+  token: string;
   user: User;
   chargers: Charger[];
   onSelectCharger?: (charger: Charger) => void;
@@ -16,6 +19,7 @@ interface EVOwnerDashboardProps {
 }
 
 export function EVOwnerDashboard({
+  token,
   user,
   chargers,
   onSelectCharger,
@@ -27,6 +31,40 @@ export function EVOwnerDashboard({
   vehicle,
   onOpenVehicle,
 }: EVOwnerDashboardProps) {
+  const [activeJourney, setActiveJourney] = useState<AutopilotTrip | null>(null);
+  const [journeyRefreshError, setJourneyRefreshError] = useState('');
+
+  useEffect(() => {
+    let mounted = true;
+
+    const refreshJourney = async () => {
+      try {
+        const current = await getCurrentAutopilotTrip(token);
+        if (!mounted) return;
+        setActiveJourney(current);
+        setJourneyRefreshError('');
+      } catch (error) {
+        if (!mounted) return;
+        // Keep the most recent snapshot on screen when a poll fails. A transient
+        // API/network issue must not make an active journey appear to disappear.
+        setJourneyRefreshError(error instanceof Error ? error.message : 'Live journey refresh is temporarily unavailable.');
+      }
+    };
+
+    void refreshJourney();
+    const intervalId = window.setInterval(() => {
+      if (document.visibilityState === 'visible') void refreshJourney();
+    }, 15_000);
+    const refreshOnFocus = () => void refreshJourney();
+    window.addEventListener('focus', refreshOnFocus);
+
+    return () => {
+      mounted = false;
+      window.clearInterval(intervalId);
+      window.removeEventListener('focus', refreshOnFocus);
+    };
+  }, [token]);
+
   const selectedStation = chargers[0] || {
     id: 1,
     name: 'Green Park Station',
@@ -59,14 +97,22 @@ export function EVOwnerDashboard({
 
       </div>
 
-      <button type="button" className="ev-autopilot-banner" onClick={onOpenAutopilot}>
-        <span className="ev-autopilot-banner-icon"><Navigation size={22} /></span>
-        <span className="ev-autopilot-banner-copy">
-          <small><Sparkles size={12} /> NEW · VIDYUT AUTOPILOT</small>
-          <strong>Tell us where you’re going. We’ll plan, reserve, reroute and pay.</strong>
-        </span>
-        <span className="ev-autopilot-banner-action">Plan a journey →</span>
-      </button>
+      {activeJourney ? (
+        <ActiveJourneyAnalytics
+          trip={activeJourney}
+          refreshWarning={journeyRefreshError}
+          onContinue={onOpenAutopilot}
+        />
+      ) : (
+        <button type="button" className="ev-autopilot-banner" onClick={onOpenAutopilot}>
+          <span className="ev-autopilot-banner-icon"><Navigation size={22} /></span>
+          <span className="ev-autopilot-banner-copy">
+            <small><Sparkles size={12} /> NEW · VIDYUT AUTOPILOT</small>
+            <strong>Tell us where you’re going. We’ll plan, reserve, reroute and pay.</strong>
+          </span>
+          <span className="ev-autopilot-banner-action">Plan a journey →</span>
+        </button>
+      )}
 
       {/* Main Top 3 Cards Grid */}
       <div className="ev-top-grid">
@@ -321,4 +367,150 @@ export function EVOwnerDashboard({
       </div>
     </div>
   );
+}
+
+const journeyStatus: Record<AutopilotTripStatus, { label: string; detail: string }> = {
+  RESERVED: { label: 'Confirmed', detail: 'Reservations are protected and ready to start.' },
+  MONITORING: { label: 'Journey live', detail: 'Telemetry, charger availability, battery and budget are being monitored.' },
+  REROUTED: { label: 'Route updated', detail: 'Vidyut recovered the plan and reserved a compatible replacement.' },
+  REROUTE_APPROVAL_REQUIRED: { label: 'Approve reroute', detail: 'A compatible replacement is ready and waiting for your permission.' },
+  REPLAN_REQUIRED: { label: 'Safe stop needed', detail: 'No compatible replacement currently satisfies every journey limit.' },
+  PAYMENT_REQUIRED: { label: 'Action needed', detail: 'The journey remains active, but charging payment needs attention.' },
+  COMPLETED: { label: 'Completed', detail: 'The journey is complete.' },
+  CANCELLED: { label: 'Cancelled', detail: 'The journey was cancelled.' },
+};
+
+function ActiveJourneyAnalytics({
+  trip,
+  refreshWarning,
+  onContinue,
+}: {
+  trip: AutopilotTrip;
+  refreshWarning: string;
+  onContinue?: () => void;
+}) {
+  const status = journeyStatus[trip.status];
+  const usableStops = trip.stops.filter((stop) => stop.status !== 'CANCELLED');
+  const completedStops = usableStops.filter((stop) => stop.status === 'COMPLETED').length;
+  const nextStop = usableStops.find((stop) => stop.status === 'RESERVED' || stop.status === 'PLANNED');
+  const progress = usableStops.length > 0 ? Math.round((completedStops / usableStops.length) * 100) : 0;
+  const batteryPoints = journeyBatteryPoints(trip);
+  const svgPoints = batteryPoints.map((value, index) => {
+    const x = batteryPoints.length === 1 ? 250 : 28 + (index * 444) / (batteryPoints.length - 1);
+    return `${x.toFixed(1)},${batteryY(value).toFixed(1)}`;
+  }).join(' ');
+  const timeParts = [
+    { label: 'Driving', value: trip.estimatedDriveMinutes, className: 'drive' },
+    { label: 'Charging', value: trip.estimatedChargingMinutes, className: 'charge' },
+    { label: 'Queue', value: trip.estimatedQueueMinutes, className: 'queue' },
+    { label: 'Setup', value: trip.connectionOverheadMinutes, className: 'setup' },
+  ];
+  const timeTotal = Math.max(1, timeParts.reduce((sum, part) => sum + Math.max(0, part.value), 0));
+
+  return (
+    <section className={`dashboard-card active-journey-card status-${trip.status.toLowerCase()}`} aria-label="Active Autopilot journey">
+      <div className="active-journey-head">
+        <div className="active-journey-heading">
+          <div className="active-journey-kicker"><Sparkles size={13} /> ACTIVE AUTOPILOT JOURNEY</div>
+          <h2><span>{trip.origin}</span><ArrowRight size={18} /><span>{trip.destination}</span></h2>
+          <p>{trip.telemetry.vehicleName} · {trip.telemetry.registrationNumber} · {status.detail}</p>
+        </div>
+        <div className="active-journey-actions">
+          <span className={`active-journey-status status-${trip.status.toLowerCase()}`}><i />{status.label}</span>
+          <button type="button" onClick={onContinue}><Navigation size={16} /> Continue journey <ChevronRight size={15} /></button>
+        </div>
+      </div>
+
+      {refreshWarning && (
+        <div className="active-journey-refresh-warning" role="status">
+          <RefreshCw size={13} /> Showing the last saved journey snapshot while live refresh reconnects.
+        </div>
+      )}
+
+      <div className="active-journey-metrics">
+        <JourneyMetric icon={<Route />} label="Charging stops" value={`${completedStops}/${usableStops.length}`} detail={`${Math.max(0, usableStops.length - completedStops)} remaining on this route`} />
+        <JourneyMetric icon={<BatteryCharging />} label="Live battery" value={`${trip.telemetry.batteryPercent}%`} detail={`${trip.estimatedArrivalBatteryPercent}% planned at arrival`} />
+        <JourneyMetric icon={<Clock3 />} label="Planned duration" value={formatJourneyMinutes(trip.totalDurationMinutes)} detail={`${formatJourneyMinutes(trip.estimatedChargingMinutes)} charging`} />
+        <JourneyMetric icon={<IndianRupee />} label="Charging budget" value={`₹${trip.estimatedChargingCost.toFixed(0)}`} detail={`of ₹${trip.maximumChargingBudget.toFixed(0)}`} />
+      </div>
+
+      <div className="active-journey-progress" aria-label={`${completedStops} of ${usableStops.length} charging stops complete`}>
+        <span style={{ width: `${progress}%` }} />
+      </div>
+
+      <div className="active-journey-analysis">
+        <div className="journey-battery-chart">
+          <div className="journey-analysis-head">
+            <div><strong>Battery plan</strong><span>Current SoC through remaining stops</span></div>
+            <span><ShieldCheck size={13} /> {trip.minimumArrivalBatteryPercent}% reserve</span>
+          </div>
+          <svg viewBox="0 0 500 145" role="img" aria-label="Planned battery percentage through the remaining journey">
+            <defs>
+              <linearGradient id={`journey-battery-${trip.id}`} x1="0" x2="1">
+                <stop offset="0%" stopColor="#10b981" />
+                <stop offset="100%" stopColor="#4f46e5" />
+              </linearGradient>
+            </defs>
+            <line x1="28" y1={batteryY(100)} x2="472" y2={batteryY(100)} className="chart-grid" />
+            <line x1="28" y1={batteryY(50)} x2="472" y2={batteryY(50)} className="chart-grid" />
+            <line x1="28" y1={batteryY(trip.minimumArrivalBatteryPercent)} x2="472" y2={batteryY(trip.minimumArrivalBatteryPercent)} className="reserve-line" />
+            <text x="2" y={batteryY(100) + 4}>100</text>
+            <text x="8" y={batteryY(50) + 4}>50</text>
+            <text x="8" y={batteryY(trip.minimumArrivalBatteryPercent) - 5}>RESERVE</text>
+            <polyline points={svgPoints} fill="none" stroke={`url(#journey-battery-${trip.id})`} strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" />
+            {batteryPoints.map((value, index) => {
+              const x = batteryPoints.length === 1 ? 250 : 28 + (index * 444) / (batteryPoints.length - 1);
+              return <circle key={`${value}-${index}`} cx={x} cy={batteryY(value)} r="4" />;
+            })}
+          </svg>
+          <div className="journey-chart-axis"><span>Now · {trip.telemetry.batteryPercent}%</span><span>{nextStop ? `${usableStops.length - completedStops} stop${usableStops.length - completedStops === 1 ? '' : 's'} left` : 'Final leg'}</span><span>Arrive · {trip.estimatedArrivalBatteryPercent}%</span></div>
+        </div>
+
+        <div className="journey-time-analysis">
+          <div className="journey-analysis-head">
+            <div><strong>Time composition</strong><span>What makes up the door-to-door plan</span></div>
+            <span>{formatJourneyMinutes(trip.totalDurationMinutes)}</span>
+          </div>
+          <div className="journey-time-stack" aria-label="Journey time composition">
+            {timeParts.map((part) => <i key={part.label} className={part.className} style={{ width: `${(Math.max(0, part.value) / timeTotal) * 100}%` }} />)}
+          </div>
+          <div className="journey-time-legend">
+            {timeParts.map((part) => (
+              <span key={part.label}><i className={part.className} /><small>{part.label}</small><strong>{formatJourneyMinutes(part.value)}</strong></span>
+            ))}
+          </div>
+          <div className={`journey-next-stop ${trip.status === 'PAYMENT_REQUIRED' ? 'warning' : ''}`}>
+            <span><Zap size={17} /></span>
+            <div><small>{trip.status === 'PAYMENT_REQUIRED' ? 'ACTION NEEDED' : 'NEXT CHARGING STOP'}</small><strong>{nextStop?.stationName ?? 'Destination is the next milestone'}</strong><p>{nextStop ? `${nextStop.connectorType} · ${nextStop.chargingMinutes} min charge · ₹${nextStop.estimatedCost.toFixed(0)}` : 'No more charging stops are required.'}</p></div>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function JourneyMetric({ icon, label, value, detail }: { icon: React.ReactNode; label: string; value: string; detail: string }) {
+  return <div className="active-journey-metric"><span>{icon}</span><div><small>{label}</small><strong>{value}</strong><p>{detail}</p></div></div>;
+}
+
+function journeyBatteryPoints(trip: AutopilotTrip) {
+  const points = [trip.telemetry.batteryPercent];
+  trip.stops
+    .filter((stop) => stop.status !== 'COMPLETED' && stop.status !== 'CANCELLED')
+    .forEach((stop) => points.push(stop.arrivalBatteryPercent, stop.targetBatteryPercent));
+  points.push(trip.estimatedArrivalBatteryPercent);
+  return points.map((point) => Math.max(0, Math.min(100, point)));
+}
+
+function batteryY(percent: number) {
+  return 12 + ((100 - Math.max(0, Math.min(100, percent))) / 100) * 108;
+}
+
+function formatJourneyMinutes(minutes: number) {
+  const rounded = Math.max(0, Math.round(minutes));
+  const hours = Math.floor(rounded / 60);
+  const remaining = rounded % 60;
+  if (!hours) return `${remaining}m`;
+  if (!remaining) return `${hours}h`;
+  return `${hours}h ${remaining}m`;
 }

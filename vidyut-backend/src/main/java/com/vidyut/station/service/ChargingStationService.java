@@ -6,6 +6,8 @@ import java.util.List;
 
 public interface ChargingStationService {
     StationResponse createStation(StationCreateRequest request, Long hostUserId);
+    StationResponse createCompanyStation(StationCreateRequest request, Long companyAccountId,
+                                         Long companyId, String companyName);
     StationResponse getStationById(Long id);
     List<StationResponse> getAllStations();
     List<NearbyStationResponse> getNearbyStations(double latitude, double longitude, double radiusKm);

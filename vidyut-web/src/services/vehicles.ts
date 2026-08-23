@@ -10,6 +10,10 @@ export interface Vehicle {
   registrationNumber: string;
   batteryCapacity?: string | null;
   connectorType?: string | null;
+  supportedConnectors?: string[];
+  efficiencyWhPerKm?: number | null;
+  maxAcChargePowerKw?: number | null;
+  maxDcChargePowerKw?: number | null;
   connectionStatus: VehicleConnectionStatus;
   batteryPercent?: number | null;
   remainingRangeKm?: number | null;
@@ -30,6 +34,10 @@ export interface VehicleCreatePayload {
   registrationNumber: string;
   batteryCapacity?: string;
   connectorType: string;
+  supportedConnectors?: string[];
+  efficiencyWhPerKm?: number;
+  maxAcChargePowerKw?: number;
+  maxDcChargePowerKw?: number;
 }
 
 export interface VehicleUpdatePayload {

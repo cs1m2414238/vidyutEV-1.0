@@ -17,6 +17,9 @@ public class AdminAnnouncement {
     @Column(nullable = false, length = 2000) private String message;
     @Column(nullable = false, length = 30) private String audience;
     @Column(nullable = false, length = 20) private String severity;
+    @Column(length = 120) private String targetState;
+    @Column(length = 120) private String targetCity;
+    private Long targetAccountId;
     @Builder.Default private boolean active = true;
     private Long createdByAdminId;
     @Builder.Default private LocalDateTime createdAt = LocalDateTime.now();

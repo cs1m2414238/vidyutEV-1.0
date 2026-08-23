@@ -1,5 +1,7 @@
 export type AccessMode = 'EV_USER' | 'HOST' | 'COMPANY' | 'ADMIN';
 
+export const AUTH_SESSION_EXPIRED_EVENT = 'vidyut:auth-session-expired';
+
 export interface ApiUser {
   id: number | string;
   email: string;
@@ -44,6 +46,18 @@ interface ApiErrorBody {
   details?: string[];
 }
 
+function errorMessage(response: Response, body: unknown): string {
+  const errorBody = typeof body === 'object' && body !== null ? body as ApiErrorBody : null;
+  const apiMessage = errorBody?.details?.[0] || errorBody?.message;
+  if (apiMessage) return apiMessage;
+
+  if (response.status === 401) return 'Your login session has expired. Sign in again to continue.';
+  if (response.status === 403) return 'This account is not authorized for the requested action.';
+  if (response.status === 429) return 'The service is temporarily busy. Try again shortly.';
+  if (response.status >= 500) return 'The Vidyut server could not complete the request. Try again shortly.';
+  return `The request could not be completed (HTTP ${response.status}).`;
+}
+
 const API_BASE_URL = (
   import.meta.env.VITE_API_BASE_URL?.trim() || '/api'
 ).replace(/\/+$/, '');
@@ -67,8 +81,15 @@ export async function apiRequest<T>(path: string, init: RequestInit): Promise<T>
   const contentType = response.headers.get('content-type') ?? '';
   const body = contentType.includes('application/json') ? await response.json() : await response.text();
   if (!response.ok) {
-    const errorBody = typeof body === 'object' && body !== null ? body as ApiErrorBody : null;
-    throw new Error(errorBody?.details?.[0] || errorBody?.message || String(body) || 'Request failed.');
+    const message = errorMessage(response, body);
+    const isSignInRequest = /^\/auth\/(?:login|google|register)/.test(path);
+    if (response.status === 401 && !isSignInRequest && !path.startsWith('/admin/')) {
+      clearAuthSession();
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent(AUTH_SESSION_EXPIRED_EVENT, { detail: { message } }));
+      }
+    }
+    throw new Error(message);
   }
 
   const envelope = body as ApiEnvelope<T>;

@@ -10,6 +10,7 @@ import com.vidyut.land.entity.PropertyType;
 import com.vidyut.land.repository.LandListingRepository;
 import com.vidyut.account.repository.HostProfileRepository;
 import com.vidyut.common.exception.ResourceNotFoundException;
+import com.vidyut.admin.service.OperationalControlService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
@@ -22,9 +23,11 @@ public class LandListingServiceImpl implements LandListingService {
 
     private final LandListingRepository landListingRepository;
     private final HostProfileRepository hostProfileRepository;
+    private final OperationalControlService operationalControlService;
 
     @Override
     public LandListingResponse createListing(Long hostUserId, LandListingCreateRequest request) {
+        operationalControlService.assertHostCanCreateListing(hostUserId);
         LandListing listing = LandListing.builder()
                 .hostUserId(hostUserId)
                 .status(LandListingStatus.PENDING_APPROVAL)
@@ -80,6 +83,8 @@ public class LandListingServiceImpl implements LandListingService {
                 .preferredPowerKw(l.getPreferredPowerKw())
                 .photoUrls(l.getPhotoUrls())
                 .ownershipDocumentUrl(l.getOwnershipDocumentUrl())
+                .electricityDocumentUrl(l.getElectricityDocumentUrl())
+                .videoVerificationUrl(l.getVideoVerificationUrl())
                 .adminReviewNote(l.getAdminReviewNote())
                 .discoverable(l.isDiscoverable())
                 .status(l.getStatus())
@@ -108,6 +113,8 @@ public class LandListingServiceImpl implements LandListingService {
         listing.setPreferredPowerKw(request.getPreferredPowerKw() == null ? 0 : Math.max(0, request.getPreferredPowerKw()));
         listing.setPhotoUrls(clean(request.getPhotoUrls()));
         listing.setOwnershipDocumentUrl(clean(request.getOwnershipDocumentUrl()));
+        listing.setElectricityDocumentUrl(clean(request.getElectricityDocumentUrl()));
+        listing.setVideoVerificationUrl(clean(request.getVideoVerificationUrl()));
         listing.setAdminReviewNote(null);
         boolean hostVerified = hostProfileRepository.findById(listing.getHostUserId())
                 .map(profile -> profile.isVerified() && profile.getVerificationStatus()

@@ -24,5 +24,8 @@ vidyut:
       name: ${VIDYUT_ADMIN_NAME:Vidyut Super Admin}
   demo-data:
     enabled: ${VIDYUT_DEMO_DATA_ENABLED:true}
+  routing:
+    osrm:
+      reference-base-url: ${VIDYUT_OSRM_REFERENCE_BASE_URL:https://router.project-osrm.org}
   payments:
     demo-enabled: ${VIDYUT_DEMO_PAYMENTS_ENABLED:true}

@@ -1,5 +1,7 @@
 package com.vidyut.agent.dto;
 
+import com.vidyut.autopilot.dto.AutopilotTripRequest;
+import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 import lombok.AllArgsConstructor;
@@ -22,4 +24,7 @@ public class EvAgentChatRequest {
 
     @Size(min = 8, max = 100, message = "Request ID must be between 8 and 100 characters")
     private String requestId;
+
+    @Valid
+    private AutopilotTripRequest tripContext;
 }

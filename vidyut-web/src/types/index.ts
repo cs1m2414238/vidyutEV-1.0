@@ -15,6 +15,10 @@ export interface Charger {
   imageUrl: string;
   description?: string;
   bookingSlotMinutes?: number;
+  status?: string;
+  availability?: string;
+  outletPartner?: boolean;
+  outletInstitutionName?: string;
 }
 
 export interface User {
