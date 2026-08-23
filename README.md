@@ -27,27 +27,51 @@ Python ADK agent ─── Gemini or OpenRouter
 
 ## System flow diagrams
 
-### Platform architecture
+All diagrams use one semantic palette: **Vidyut green** for healthy platform flow and successful outcomes, **sky blue** for people and inputs, **violet** for AI and governance, **amber** for decisions, **orange** for degraded fallbacks, and **rose** for faults or blocked actions.
+
+### 1. Platform architecture and responsibility boundaries
+
+This view shows which workspace owns each action, which backend domain performs it, and where live infrastructure and external intelligence enter the system.
 
 ```mermaid
-%%{init: {"theme":"base","themeVariables":{"primaryColor":"#dcfce7","primaryTextColor":"#10233d","primaryBorderColor":"#16a34a","lineColor":"#64748b","secondaryColor":"#dbeafe","tertiaryColor":"#fef3c7"}}}%%
+%%{init: {"theme":"base","themeVariables":{"background":"#ffffff","fontFamily":"Inter, ui-sans-serif, system-ui, sans-serif","fontSize":"15px","primaryColor":"#ecfdf5","primaryTextColor":"#0f172a","primaryBorderColor":"#059669","lineColor":"#475569","secondaryColor":"#e0f2fe","tertiaryColor":"#f5f3ff","clusterBkg":"#f8fafc","clusterBorder":"#cbd5e1","edgeLabelBackground":"#ffffff"}}}%%
 flowchart TB
-    OWNER[EV Owner workspace]
-    HOST[Host workspace]
-    COMPANY[Company workspace]
-    ADMIN[Admin control plane]
+    subgraph EXPERIENCE["Role-scoped experiences"]
+        OWNER["EV Owner<br/>garage • route plan • booking • live journey"]
+        HOST["Property Host<br/>listings • occupancy • revenue • maintenance"]
+        COMPANY["Charging Company<br/>stations • partnerships • pricing • service"]
+        ADMIN["Admin control plane<br/>verification • incidents • scoped intervention"]
+    end
 
-    API[Spring Boot API]
-    AUTH[JWT and mode authority]
-    AUTOPILOT[Autopilot and routing]
-    OPERATIONS[Booking, charging and payments]
-    MARKETPLACE[Property and charger marketplace]
-    GOVERNANCE[Verification and scoped controls]
-    DB[(PostgreSQL)]
-    AGENT[Python ADK agent]
-    MODEL[Gemini / OpenRouter]
-    OSRM[Primary / reference OSRM]
-    GEOCODER[Geocoder]
+    subgraph CORE["Spring Boot domain API"]
+        API["REST API<br/>validation • authorization • safe error responses"]
+        AUTH["Identity and access<br/>JWT • role • account state"]
+        AUTOPILOT["Autopilot<br/>intent • route • charging • feasibility"]
+        OPERATIONS["Operations<br/>booking • session • wallet • payment"]
+        MARKETPLACE["Marketplace<br/>property • survey • proposal • installation"]
+        GOVERNANCE["Governance<br/>evidence • audit • support • operational controls"]
+        NOTIFY["Notifications<br/>trip • booking • fault • review updates"]
+    end
+
+    subgraph INTELLIGENCE["AI and routing integrations"]
+        AGENT["Python ADK agent<br/>read-only tools + confirmed actions"]
+        MODEL["Model provider<br/>Gemini → OpenRouter → deterministic fallback"]
+        OSRM["Road intelligence<br/>primary OSRM → reference OSRM"]
+        GEOCODER["Location resolution<br/>known aliases → geocoder"]
+    end
+
+    subgraph DATA_LAYER["Persistent and seeded data"]
+        DB[("PostgreSQL<br/>accounts • assets • trips • money • audit")]
+        MIGRATIONS["Flyway migrations<br/>schema and operational controls"]
+        DEMO["Demo network<br/>112 corridor + 777 district stations"]
+    end
+
+    subgraph FIELD["Live charging infrastructure"]
+        STATION["Charging station<br/>property hosted • company operated"]
+        CONNECTOR["Connector<br/>CCS2 • CHAdeMO • GB/T • Type 2"]
+        TELEMETRY["Live status<br/>available • occupied • load • queue • fault"]
+        SESSION["Charging session<br/>energy • cost • payment • receipt"]
+    end
 
     OWNER --> API
     HOST --> API
@@ -58,226 +82,572 @@ flowchart TB
     API --> OPERATIONS
     API --> MARKETPLACE
     API --> GOVERNANCE
+    API --> NOTIFY
+    API <--> AGENT
+    AGENT --> MODEL
+    AUTOPILOT --> OSRM
+    AUTOPILOT --> GEOCODER
     AUTH --> DB
     AUTOPILOT --> DB
     OPERATIONS --> DB
     MARKETPLACE --> DB
     GOVERNANCE --> DB
-    AUTOPILOT --> OSRM
-    AUTOPILOT --> GEOCODER
-    API --> AGENT
-    AGENT --> MODEL
-    AGENT --> API
+    NOTIFY --> DB
+    MIGRATIONS --> DB
+    DEMO --> DB
+    DB --> STATION
+    STATION --> CONNECTOR
+    CONNECTOR --> TELEMETRY
+    TELEMETRY --> OPERATIONS
+    OPERATIONS --> SESSION
+    TELEMETRY --> AUTOPILOT
 
-    classDef actor fill:#dbeafe,stroke:#2563eb,color:#10233d,stroke-width:2px
-    classDef platform fill:#dcfce7,stroke:#16a34a,color:#14532d,stroke-width:2px
-    classDef intelligence fill:#ede9fe,stroke:#7c3aed,color:#4c1d95,stroke-width:2px
-    classDef data fill:#fef3c7,stroke:#d97706,color:#78350f,stroke-width:2px
+    classDef actor fill:#e0f2fe,stroke:#0284c7,color:#0c4a6e,stroke-width:2px
+    classDef platform fill:#ecfdf5,stroke:#059669,color:#064e3b,stroke-width:2px
+    classDef intelligence fill:#f5f3ff,stroke:#7c3aed,color:#4c1d95,stroke-width:2px
+    classDef data fill:#ecfccb,stroke:#65a30d,color:#365314,stroke-width:2px
+    classDef field fill:#fff7ed,stroke:#ea580c,color:#7c2d12,stroke-width:2px
     class OWNER,HOST,COMPANY,ADMIN actor
-    class API,AUTH,AUTOPILOT,OPERATIONS,MARKETPLACE,GOVERNANCE platform
+    class API,AUTH,AUTOPILOT,OPERATIONS,MARKETPLACE,GOVERNANCE,NOTIFY platform
     class AGENT,MODEL intelligence
-    class DB,OSRM,GEOCODER data
+    class DB,MIGRATIONS,DEMO,OSRM,GEOCODER data
+    class STATION,CONNECTOR,TELEMETRY,SESSION field
 ```
 
-### Natural-language Autopilot planning
+### 2. Natural-language Autopilot planning and authority
+
+The optimization strategy selects the best safe plan; the autonomy mode independently decides whether Vidyut may execute it.
 
 ```mermaid
-%%{init: {"theme":"base","themeVariables":{"primaryColor":"#dcfce7","primaryTextColor":"#10233d","primaryBorderColor":"#16a34a","lineColor":"#64748b","secondaryColor":"#dbeafe","tertiaryColor":"#fef3c7"}}}%%
+%%{init: {"theme":"base","themeVariables":{"background":"#ffffff","fontFamily":"Inter, ui-sans-serif, system-ui, sans-serif","fontSize":"15px","primaryColor":"#ecfdf5","primaryTextColor":"#0f172a","primaryBorderColor":"#059669","lineColor":"#475569","secondaryColor":"#e0f2fe","tertiaryColor":"#f5f3ff","clusterBkg":"#f8fafc","clusterBorder":"#cbd5e1","edgeLabelBackground":"#ffffff"}}}%%
 flowchart TD
-    TEXT[Journey text bar] --> PARSE[Parse supported intent]
-    FORM[Explicit journey controls] --> MERGE[Merge and validate]
-    PARSE --> MERGE
-    MERGE --> VEHICLE[Load vehicle battery, efficiency and connectors]
-    VEHICLE --> GEOCODE[Resolve origin and destination]
-    GEOCODE --> ROAD[Calculate base road route]
-    ROAD --> CORRIDOR[Filter compatible corridor chargers]
-    CORRIDOR --> MATRIX[Calculate station matrix]
-    MATRIX --> OPTIMIZE[Optimize SoC and stops]
-    OPTIMIZE --> CHARGE[Apply vehicle charging curve and losses]
-    CHARGE --> CHECKS[Check reserve, budget and deadline]
-    CHECKS --> PREVIEW[Return read-only plan]
+    subgraph REQUEST["Journey request"]
+        TEXT["Natural-language text<br/>route • reserve • budget • arrival • priorities"]
+        PARSE["Parse supported intent<br/>without inventing missing locations or limits"]
+        FORM["Explicit controls<br/>vehicle • SoC • reserve • budget • arrive-by"]
+        STRATEGY["Optimization strategy<br/>Fastest • Balanced • Lowest cost"]
+        TEXT --> PARSE
+        PARSE --> MERGE["Merge parsed values with explicit controls<br/>explicit fields remain authoritative"]
+        FORM --> MERGE
+    end
 
-    PREVIEW --> MODE{Autonomy mode}
-    MODE -->|Recommend only| RECOMMEND[Show recommendation; no action]
-    MODE -->|Ask before actions| ASK[Request confirmation]
-    MODE -->|Full Autopilot| LIMITS{Inside all limits?}
-    ASK -->|Approved| EXECUTE[Reserve and launch]
-    ASK -->|Declined| EDIT[Edit journey]
+    subgraph CONTEXT["Verified planning context"]
+        VEHICLE["Vehicle profile<br/>usable kWh • Wh/km • charging loss"]
+        CURVE["Charging capability<br/>connector • max DC kW • SoC curve"]
+        ROAD["Road route<br/>distance • duration • geometry • provenance"]
+        STATIONS["Compatible corridor stations<br/>price • power • queue • reliability • status"]
+        MATRIX["Station route matrix<br/>detour distance and time for each candidate"]
+    end
+
+    MERGE --> VEHICLE
+    VEHICLE --> CURVE
+    MERGE --> ROAD
+    ROAD --> STATIONS
+    STATIONS --> MATRIX
+    CURVE --> OPTIMIZE["Optimize reachable charging sequence<br/>drive + detour + queue + setup + charge"]
+    MATRIX --> OPTIMIZE
+    STRATEGY --> OPTIMIZE
+
+    OPTIMIZE --> CHARGE["Integrate energy across charging-curve segments<br/>effective kW = min(charger, vehicle, curve)"]
+    CHARGE --> COST["Calculate complete cost<br/>energy + detour energy + booking/platform fees"]
+    COST --> CHECKS["Evaluate constraints independently"]
+    CHECKS --> RESERVE{"Arrival SoC ≥ reserve?"}
+    CHECKS --> BUDGET{"Total cost ≤ budget?"}
+    CHECKS --> DEADLINE{"ETA ≤ arrive-by?"}
+    RESERVE --> OVERALL{"All hard constraints pass?"}
+    BUDGET --> OVERALL
+    DEADLINE --> OVERALL
+
+    OVERALL -->|No| INFEASIBLE["Return safe explanation<br/>battery • budget • deadline shown separately"]
+    OVERALL -->|Yes| PREVIEW["Return read-only preview<br/>route • stops • SoC graph • cost • ETA • evidence"]
+    PREVIEW --> MODE{"How may Vidyut act?"}
+    MODE -->|Recommend only| RECOMMEND["Recommend the complete plan<br/>user performs every action"]
+    MODE -->|Ask before actions| ASK["Ask for explicit approval<br/>before reservation, payment, or reroute"]
+    MODE -->|Full Autopilot| LIMITS{"Still inside approved limits?"}
+    ASK -->|Approved| EXECUTE["Reserve compatible charger<br/>launch persisted ongoing journey"]
+    ASK -->|Declined| EDIT["Keep preview editable<br/>perform no external action"]
     LIMITS -->|Yes| EXECUTE
-    LIMITS -->|No| HOLD[Stop and request a decision]
+    LIMITS -->|No| HOLD["Pause execution<br/>explain change and request a decision"]
 
-    classDef input fill:#dbeafe,stroke:#2563eb,color:#10233d,stroke-width:2px
-    classDef process fill:#dcfce7,stroke:#16a34a,color:#14532d,stroke-width:2px
+    classDef input fill:#e0f2fe,stroke:#0284c7,color:#0c4a6e,stroke-width:2px
+    classDef process fill:#ecfdf5,stroke:#059669,color:#064e3b,stroke-width:2px
     classDef decision fill:#fef3c7,stroke:#d97706,color:#78350f,stroke-width:2px
-    classDef action fill:#ede9fe,stroke:#7c3aed,color:#4c1d95,stroke-width:2px
-    classDef blocked fill:#fee2e2,stroke:#dc2626,color:#7f1d1d,stroke-width:2px
-    class TEXT,FORM input
-    class PARSE,MERGE,VEHICLE,GEOCODE,ROAD,CORRIDOR,MATRIX,OPTIMIZE,CHARGE,CHECKS,PREVIEW process
-    class MODE,LIMITS,ASK decision
+    classDef action fill:#f5f3ff,stroke:#7c3aed,color:#4c1d95,stroke-width:2px
+    classDef blocked fill:#ffe4e6,stroke:#e11d48,color:#881337,stroke-width:2px
+    class TEXT,FORM,STRATEGY input
+    class PARSE,MERGE,VEHICLE,CURVE,ROAD,STATIONS,MATRIX,OPTIMIZE,CHARGE,COST,CHECKS,PREVIEW process
+    class RESERVE,BUDGET,DEADLINE,OVERALL,MODE,ASK,LIMITS decision
     class RECOMMEND,EXECUTE,EDIT action
-    class HOLD blocked
+    class INFEASIBLE,HOLD blocked
 ```
 
-### Road-route and station-matrix degradation
+### 3. Real-road routing and safe degradation
+
+Routing outages reduce precision, never safety: estimated legs are labeled, constraints remain enforced, and service failure is not misreported as “no chargers exist.”
 
 ```mermaid
-%%{init: {"theme":"base","themeVariables":{"primaryColor":"#dcfce7","primaryTextColor":"#10233d","primaryBorderColor":"#16a34a","lineColor":"#64748b","secondaryColor":"#dbeafe","tertiaryColor":"#fef3c7"}}}%%
+%%{init: {"theme":"base","themeVariables":{"background":"#ffffff","fontFamily":"Inter, ui-sans-serif, system-ui, sans-serif","fontSize":"15px","primaryColor":"#ecfdf5","primaryTextColor":"#0f172a","primaryBorderColor":"#059669","lineColor":"#475569","secondaryColor":"#e0f2fe","tertiaryColor":"#f5f3ff","clusterBkg":"#f8fafc","clusterBorder":"#cbd5e1","edgeLabelBackground":"#ffffff"}}}%%
 flowchart TD
-    REQUEST[Road-route request] --> PRIMARY[Primary OSRM]
-    PRIMARY --> PVALID{Valid route?}
-    PVALID -->|Yes| PROUTE[Use primary road route]
-    PVALID -->|No| REFERENCE[Reference OSRM]
-    REFERENCE --> RVALID{Valid route?}
-    RVALID -->|Yes| RROUTE[Use reference road route]
-    RVALID -->|No| ESTIMATE[Use labeled conservative road estimate]
+    REQUEST["Origin, destination, vehicle and constraints"] --> RESOLVE["Resolve locations<br/>known India aliases → geocoder"]
+    RESOLVE --> LOCATION_OK{"Both coordinates valid?"}
+    LOCATION_OK -->|No| LOCATION_FAIL["Return actionable location error<br/>do not fabricate a route"]
+    LOCATION_OK -->|Yes| PRIMARY["Call primary OSRM route service"]
+    PRIMARY --> PVALID{"Route has valid geometry,<br/>distance and duration?"}
+    PVALID -->|Yes| PROUTE["Use measured primary road route"]
+    PVALID -->|No / timeout / 5xx| REFERENCE["Call reference OSRM service"]
+    REFERENCE --> RVALID{"Reference route valid?"}
+    RVALID -->|Yes| RROUTE["Use measured reference road route"]
+    RVALID -->|No| ESTIMATE["Use conservative labeled road estimate<br/>never present straight-line distance as measured road data"]
 
-    PROUTE --> TABLE[Request station matrix]
-    RROUTE --> TABLE
-    ESTIMATE --> TABLE
-    TABLE --> COMPLETE{All legs available?}
-    COMPLETE -->|Yes| MEASURED[Optimize with measured legs]
-    COMPLETE -->|No| PARTIAL[Estimate only missing legs]
-    MEASURED --> CONSTRAINTS[Enforce connector, reserve, budget and deadline]
+    PROUTE --> CORRIDOR["Build route corridor and order stations by progress"]
+    RROUTE --> CORRIDOR
+    ESTIMATE --> CORRIDOR
+    CORRIDOR --> FILTER["Filter candidates<br/>reachable • compatible • open • safe • available"]
+    FILTER --> CANDIDATES{"At least one usable candidate?"}
+    CANDIDATES -->|No| NO_SEQUENCE["Return no safe charger sequence<br/>with battery/budget evidence"]
+    CANDIDATES -->|Yes| TABLE["Request station-to-station OSRM table"]
+    TABLE --> COMPLETE{"Every required matrix leg available?"}
+    COMPLETE -->|Yes| MEASURED["Optimize with measured road legs"]
+    COMPLETE -->|Partially| PARTIAL["Keep measured legs<br/>estimate only missing cells"]
+    COMPLETE -->|Service unavailable| FALLBACK["Create conservative matrix estimate<br/>retain stations and mark provenance"]
+    MEASURED --> CONSTRAINTS["Recheck connector, reachability,<br/>reserve, budget and deadline"]
     PARTIAL --> CONSTRAINTS
-    CONSTRAINTS --> RESULT[Return plan with measured/estimated provenance]
+    FALLBACK --> CONSTRAINTS
+    CONSTRAINTS --> FEASIBLE{"Safe sequence remains feasible?"}
+    FEASIBLE -->|Yes| RESULT["Return plan with per-leg<br/>MEASURED / ESTIMATED evidence"]
+    FEASIBLE -->|No| NO_SEQUENCE
 
-    classDef request fill:#dbeafe,stroke:#2563eb,color:#10233d,stroke-width:2px
-    classDef success fill:#dcfce7,stroke:#16a34a,color:#14532d,stroke-width:2px
+    classDef request fill:#e0f2fe,stroke:#0284c7,color:#0c4a6e,stroke-width:2px
+    classDef success fill:#ecfdf5,stroke:#059669,color:#064e3b,stroke-width:2px
     classDef decision fill:#fef3c7,stroke:#d97706,color:#78350f,stroke-width:2px
     classDef fallback fill:#ffedd5,stroke:#ea580c,color:#7c2d12,stroke-width:2px
-    classDef validation fill:#ede9fe,stroke:#7c3aed,color:#4c1d95,stroke-width:2px
-    class REQUEST,PRIMARY,REFERENCE,TABLE request
+    classDef validation fill:#f5f3ff,stroke:#7c3aed,color:#4c1d95,stroke-width:2px
+    classDef blocked fill:#ffe4e6,stroke:#e11d48,color:#881337,stroke-width:2px
+    class REQUEST,RESOLVE,PRIMARY,REFERENCE,TABLE request
     class PROUTE,RROUTE,MEASURED,RESULT success
-    class PVALID,RVALID,COMPLETE decision
-    class ESTIMATE,PARTIAL fallback
-    class CONSTRAINTS validation
+    class LOCATION_OK,PVALID,RVALID,CANDIDATES,COMPLETE,FEASIBLE decision
+    class ESTIMATE,PARTIAL,FALLBACK fallback
+    class CORRIDOR,FILTER,CONSTRAINTS validation
+    class LOCATION_FAIL,NO_SEQUENCE blocked
 ```
 
-### Ongoing journey and charger-failure recovery
+### 4. Ongoing journey and charger-failure recovery
+
+The live trip remains on the Owner dashboard for up to 72 hours, while a charger failure triggers a mode-aware and constraint-aware recovery instead of deleting the journey.
 
 ```mermaid
-%%{init: {"theme":"base","themeVariables":{"actorBkg":"#dbeafe","actorBorder":"#2563eb","actorTextColor":"#10233d","signalColor":"#475569","signalTextColor":"#10233d","activationBkgColor":"#dcfce7","activationBorderColor":"#16a34a","labelBoxBkgColor":"#fef3c7","labelBoxBorderColor":"#d97706","labelTextColor":"#78350f","noteBkgColor":"#ede9fe","noteBorderColor":"#7c3aed","noteTextColor":"#4c1d95"}}}%%
+%%{init: {"theme":"base","themeVariables":{"background":"#ffffff","fontFamily":"Inter, ui-sans-serif, system-ui, sans-serif","fontSize":"15px","actorBkg":"#e0f2fe","actorBorder":"#0284c7","actorTextColor":"#0c4a6e","actorLineColor":"#94a3b8","signalColor":"#475569","signalTextColor":"#0f172a","activationBkgColor":"#ecfdf5","activationBorderColor":"#059669","labelBoxBkgColor":"#fef3c7","labelBoxBorderColor":"#d97706","labelTextColor":"#78350f","loopTextColor":"#4c1d95","loopLineColor":"#a78bfa","noteBkgColor":"#f5f3ff","noteBorderColor":"#7c3aed","noteTextColor":"#4c1d95","sequenceNumberColor":"#ffffff"}}}%%
 sequenceDiagram
     actor Driver
     participant App as Owner dashboard
     participant API as Vidyut backend
-    participant Host as Host/Company operations
+    participant Booking as Booking service
+    participant Ops as Host / Company operations
     participant Router as Route optimizer
+    participant Notify as Notifications
 
-    Driver->>App: Confirm and start journey
-    App->>API: Launch trip
-    API-->>App: Persisted live journey and timeline
-    Host->>API: Charger enters fault or maintenance
-    API->>Router: Find reachable compatible replacement
-    Router-->>API: Replacement, impact and new route
-    alt Recommend only
-        API-->>App: Explain disruption; driver acts
-    else Ask before actions
-        API-->>App: Request reroute approval
-        Driver->>App: Approve
-        App->>API: Approve reroute
-    else Full Autopilot inside limits
-        API->>API: Release failed reservation and reserve replacement
-        API-->>App: Publish automatic reroute
+    Driver->>App: Confirm feasible plan and start journey
+    App->>API: Launch trip with selected vehicle and authority mode
+    API->>Booking: Reserve planned compatible charging stops
+    Booking-->>API: Reservation identifiers and prices
+    API-->>App: Persist trip, stop timeline, ETA, cost and SoC graph
+    Note over App,API: Active journey remains recoverable on the dashboard for 72 hours
+
+    loop While journey is active
+        Ops-->>API: Publish live availability, occupancy, queue and charger health
+        API-->>App: Refresh progress, arrival estimate and stop status
     end
-    App-->>Driver: Updated graph, ETA, cost and charging stop
+
+    Ops->>API: Selected charger enters FAULT or MAINTENANCE
+    API->>Booking: Protect session and release unusable future reservation
+    API->>Router: Find reachable connector-compatible replacement
+    Router->>Router: Recheck reserve, budget, deadline, detour and charging curve
+    Router-->>API: Replacement candidate + ETA/cost/SoC impact, or safe failure reason
+
+    alt Safe replacement exists
+        alt Recommend only
+            API-->>App: Explain disruption and recommend replacement without taking action
+        else Ask before actions
+            API-->>App: Request reroute and booking approval with exact impact
+            Driver->>App: Approve proposed replacement
+            App->>API: Confirm reroute action
+            API->>Booking: Reserve replacement charger
+        else Full Autopilot and still inside limits
+            API->>Booking: Reserve replacement automatically
+            API-->>App: Publish automatic reroute and audit explanation
+        end
+        API->>Notify: Send charger-change and updated-arrival notice
+        Notify-->>Driver: New stop, navigation, ETA and cost
+    else No safe replacement exists
+        API-->>App: Keep journey visible and show battery-safe stop guidance with the unmet constraint
+        API->>Notify: Escalate assistance instead of inventing a route
+    end
 ```
 
-### Host property to live station
+### 5. Host property, Company partnership, solar and live operations
+
+This is the complete Host-to-station lifecycle used by the Prince Host and TATA-operated demo assets.
 
 ```mermaid
-%%{init: {"theme":"base","themeVariables":{"primaryColor":"#dcfce7","primaryTextColor":"#10233d","primaryBorderColor":"#16a34a","lineColor":"#64748b","secondaryColor":"#dbeafe","tertiaryColor":"#fef3c7"}}}%%
-flowchart LR
-    HOST[Host creates property] --> EVIDENCE[Ownership, electricity and site evidence]
-    EVIDENCE --> ADMIN[Admin verification workflow]
-    ADMIN -->|Needs information| HOST
-    ADMIN -->|Verified and published| MARKET[Company property marketplace]
-    MARKET --> PROFILE[Company reviews property and Host profile]
-    PROFILE --> SURVEY[Request video or physical survey]
-    SURVEY --> PROPOSAL[Company sends equipment proposal]
-    PROPOSAL --> APPROVAL{Host approves?}
-    APPROVAL -->|No| REVISE[Revise or decline]
-    APPROVAL -->|Yes| INSTALL[Installation project]
-    INSTALL --> LIVE[Company-operated chargers at Host property]
-    LIVE --> MONITOR[Host, Company and Admin monitoring]
-
-    classDef host fill:#dbeafe,stroke:#2563eb,color:#10233d,stroke-width:2px
-    classDef governance fill:#ede9fe,stroke:#7c3aed,color:#4c1d95,stroke-width:2px
-    classDef decision fill:#fef3c7,stroke:#d97706,color:#78350f,stroke-width:2px
-    classDef live fill:#dcfce7,stroke:#16a34a,color:#14532d,stroke-width:2px
-    classDef blocked fill:#fee2e2,stroke:#dc2626,color:#7f1d1d,stroke-width:2px
-    class HOST,EVIDENCE,PROFILE,SURVEY,PROPOSAL host
-    class ADMIN,MARKET governance
-    class APPROVAL decision
-    class INSTALL,LIVE,MONITOR live
-    class REVISE blocked
-```
-
-### Charging-session state
-
-```mermaid
-%%{init: {"theme":"base","themeVariables":{"primaryColor":"#dcfce7","primaryTextColor":"#10233d","primaryBorderColor":"#16a34a","lineColor":"#64748b","secondaryColor":"#dbeafe","tertiaryColor":"#fef3c7"}}}%%
-stateDiagram-v2
-    [*] --> Available
-    Available --> Reserved: booking confirmed
-    Reserved --> Charging: session starts
-    Reserved --> Available: cancellation or timeout
-    Charging --> Available: charging completes
-    Available --> Maintenance: planned service
-    Charging --> Fault: safety or hardware fault
-    Fault --> Maintenance: ticket opened
-    Fault --> Available: issue cleared
-    Maintenance --> Available: service completed
-
-    classDef healthy fill:#dcfce7,stroke:#16a34a,color:#14532d,stroke-width:2px
-    classDef active fill:#dbeafe,stroke:#2563eb,color:#10233d,stroke-width:2px
-    classDef caution fill:#fef3c7,stroke:#d97706,color:#78350f,stroke-width:2px
-    classDef danger fill:#fee2e2,stroke:#dc2626,color:#7f1d1d,stroke-width:2px
-    class Available healthy
-    class Reserved,Charging active
-    class Maintenance caution
-    class Fault danger
-```
-
-### Least-disruptive Admin intervention
-
-```mermaid
-%%{init: {"theme":"base","themeVariables":{"primaryColor":"#dcfce7","primaryTextColor":"#10233d","primaryBorderColor":"#16a34a","lineColor":"#64748b","secondaryColor":"#dbeafe","tertiaryColor":"#fef3c7"}}}%%
+%%{init: {"theme":"base","themeVariables":{"background":"#ffffff","fontFamily":"Inter, ui-sans-serif, system-ui, sans-serif","fontSize":"15px","primaryColor":"#ecfdf5","primaryTextColor":"#0f172a","primaryBorderColor":"#059669","lineColor":"#475569","secondaryColor":"#e0f2fe","tertiaryColor":"#f5f3ff","clusterBkg":"#f8fafc","clusterBorder":"#cbd5e1","edgeLabelBackground":"#ffffff"}}}%%
 flowchart TD
-    ISSUE[Risk, fraud, fault or compliance issue] --> SCOPE{Smallest affected scope}
-    SCOPE --> BOOKING[Booking: cancel or restrict]
-    SCOPE --> PAYMENT[Payment: freeze or refund]
-    SCOPE --> PROPERTY[Property: hide or require reverification]
-    SCOPE --> CHARGER[Charger: offline or maintenance]
-    SCOPE --> COMPANY[Company: pause publishing, bookings or settlements]
-    SCOPE --> USER[User: warn, verify, restrict booking/payment]
-    BOOKING --> AUDIT[Record reason and before/after state]
-    PAYMENT --> AUDIT
-    PROPERTY --> AUDIT
-    CHARGER --> AUDIT
-    COMPANY --> AUDIT
-    USER --> AUDIT
-    ISSUE --> EMERGENCY{Serious identity/security emergency?}
-    EMERGENCY -->|Yes; Super Admin only| IDENTITY[Temporary identity restriction]
-    IDENTITY --> AUDIT
+    subgraph ONBOARDING["Host onboarding"]
+        HOST["Prince creates property listing<br/>location • access • parking • opening hours"]
+        EVIDENCE["Upload evidence<br/>ownership • electricity bill • photos/video • coordinates"]
+        HOST --> EVIDENCE
+    end
 
-    classDef issue fill:#fee2e2,stroke:#dc2626,color:#7f1d1d,stroke-width:2px
+    subgraph VERIFY["Admin verification and publishing"]
+        ADMIN["Review identity, ownership and site evidence"]
+        HISTORY["Review Host history<br/>old-station rating • reliability • disputes"]
+        METHOD["Select verification<br/>video call or physical site visit"]
+        VERIFIED{"Evidence and site verified?"}
+        ADMIN --> HISTORY --> METHOD --> VERIFIED
+        VERIFIED -->|No| REWORK["Request missing evidence<br/>keep property unpublished"]
+        REWORK --> EVIDENCE
+        VERIFIED -->|Yes| PUBLISH["Publish property opportunity<br/>without transferring charger ownership"]
+    end
+
+    EVIDENCE --> ADMIN
+
+    subgraph PARTNERSHIP["Company marketplace and agreement"]
+        MARKET["Verified companies discover property"]
+        PROFILE["TATA reviews Host profile<br/>location • rating • power • traffic • documents"]
+        SURVEY["Request video or physical survey<br/>record survey outcome"]
+        PROPOSAL["Company proposal<br/>charger mix • capex • revenue share • SLA • timeline"]
+        APPROVE{"Host approves proposal?"}
+        NEGOTIATE["Decline or request revised commercial terms"]
+        PROJECT["Create installation project<br/>TATA owns/operates charger; Prince hosts property"]
+        MARKET --> PROFILE --> SURVEY --> PROPOSAL --> APPROVE
+        APPROVE -->|No| NEGOTIATE --> PROPOSAL
+        APPROVE -->|Yes| PROJECT
+    end
+
+    PUBLISH --> MARKET
+
+    subgraph LIVE_OPS["Live operation and business assistance"]
+        INSTALL["Install, inspect and commission connectors"]
+        LIVE["Station goes live<br/>availability and booking enabled"]
+        TELEMETRY["Monitor occupied chargers and active cars<br/>energy • queue • load • fault • session value"]
+        HOST_AI["Host Assistant<br/>revenue • servicing • opening-hour recommendations"]
+        COMPANY_AI["Company Assistant<br/>network health • tickets • pricing • station actions"]
+        DEALS["Compare equipment, service and energy-company offers"]
+        SOLAR["Solar and government-support pathway<br/>eligibility • estimate • documents • financing"]
+        CONSENT{"Host approval required<br/>before applications or financial actions"}
+        INSTALL --> LIVE --> TELEMETRY
+        TELEMETRY --> HOST_AI
+        TELEMETRY --> COMPANY_AI
+        HOST_AI --> DEALS
+        HOST_AI --> SOLAR --> CONSENT
+    end
+
+    PROJECT --> INSTALL
+
+    classDef host fill:#e0f2fe,stroke:#0284c7,color:#0c4a6e,stroke-width:2px
+    classDef governance fill:#f5f3ff,stroke:#7c3aed,color:#4c1d95,stroke-width:2px
     classDef decision fill:#fef3c7,stroke:#d97706,color:#78350f,stroke-width:2px
-    classDef control fill:#dbeafe,stroke:#2563eb,color:#10233d,stroke-width:2px
-    classDef governance fill:#ede9fe,stroke:#7c3aed,color:#4c1d95,stroke-width:2px
-    classDef audit fill:#dcfce7,stroke:#16a34a,color:#14532d,stroke-width:2px
-    class ISSUE issue
-    class SCOPE,EMERGENCY decision
-    class BOOKING,PAYMENT,PROPERTY,CHARGER,COMPANY,USER control
-    class IDENTITY governance
-    class AUDIT audit
+    classDef live fill:#ecfdf5,stroke:#059669,color:#064e3b,stroke-width:2px
+    classDef blocked fill:#ffe4e6,stroke:#e11d48,color:#881337,stroke-width:2px
+    classDef business fill:#ecfccb,stroke:#65a30d,color:#365314,stroke-width:2px
+    class HOST,EVIDENCE,PROFILE,SURVEY,PROPOSAL,NEGOTIATE host
+    class ADMIN,HISTORY,METHOD,MARKET,HOST_AI,COMPANY_AI governance
+    class VERIFIED,APPROVE,CONSENT decision
+    class PUBLISH,PROJECT,INSTALL,LIVE,TELEMETRY live
+    class REWORK blocked
+    class DEALS,SOLAR business
 ```
 
-### Core data relationships
+### 6. Booking and charging-session lifecycle
+
+The charger is reserved and paid through a traceable session lifecycle; faults and tamper events leave it only through inspection or maintenance.
 
 ```mermaid
-%%{init: {"theme":"base","themeVariables":{"primaryColor":"#dbeafe","primaryTextColor":"#10233d","primaryBorderColor":"#2563eb","lineColor":"#64748b","secondaryColor":"#dcfce7","tertiaryColor":"#ede9fe"}}}%%
+%%{init: {"theme":"base","themeVariables":{"background":"#ffffff","fontFamily":"Inter, ui-sans-serif, system-ui, sans-serif","fontSize":"15px","primaryColor":"#ecfdf5","primaryTextColor":"#0f172a","primaryBorderColor":"#059669","lineColor":"#475569","secondaryColor":"#e0f2fe","tertiaryColor":"#f5f3ff","clusterBkg":"#f8fafc","clusterBorder":"#cbd5e1","edgeLabelBackground":"#ffffff"}}}%%
+stateDiagram-v2
+    state "Available<br/>discoverable and bookable" as Available
+    state "Reserved<br/>slot + price held" as Reserved
+    state "Charging<br/>occupied + metering" as Charging
+    state "Completed<br/>receipt + settlement" as Completed
+    state "Fault isolated<br/>new bookings disabled" as Isolated
+    state "Security lock<br/>tamper response" as SecurityLock
+    state "Inspection<br/>operator verification" as Inspection
+    state "Maintenance<br/>ticket + repair" as Maintenance
+
+    [*] --> Available
+    Available --> Reserved: compatible booking confirmed
+    Reserved --> Charging: driver authenticates and plugs in
+    Reserved --> Available: cancellation or reservation timeout
+    Charging --> Completed: stop request or target SoC reached
+    Completed --> Available: payment and connector release complete
+    Available --> Maintenance: planned service window
+    Charging --> Isolated: electrical or hardware fault
+    Available --> Isolated: health check fails
+    Available --> SecurityLock: tamper sensor event
+    Charging --> SecurityLock: cable or enclosure tamper
+    SecurityLock --> Inspection: notify Company and Admin
+    Inspection --> Available: evidence confirms safe operation
+    Inspection --> Maintenance: repair required
+    Isolated --> Maintenance: maintenance ticket assigned
+    Maintenance --> Inspection: repair completed
+
+    classDef healthy fill:#ecfdf5,stroke:#059669,color:#064e3b,stroke-width:2px
+    classDef active fill:#e0f2fe,stroke:#0284c7,color:#0c4a6e,stroke-width:2px
+    classDef caution fill:#fef3c7,stroke:#d97706,color:#78350f,stroke-width:2px
+    classDef danger fill:#ffe4e6,stroke:#e11d48,color:#881337,stroke-width:2px
+    class Available,Completed healthy
+    class Reserved,Charging active
+    class Inspection,Maintenance caution
+    class Isolated,SecurityLock danger
+```
+
+### 7. Charger fault, tamper and customer-protection response
+
+This separates the infrastructure repair workflow from the trip rerouting workflow while keeping both coordinated through one auditable incident.
+
+```mermaid
+%%{init: {"theme":"base","themeVariables":{"background":"#ffffff","fontFamily":"Inter, ui-sans-serif, system-ui, sans-serif","fontSize":"15px","primaryColor":"#ecfdf5","primaryTextColor":"#0f172a","primaryBorderColor":"#059669","lineColor":"#475569","secondaryColor":"#e0f2fe","tertiaryColor":"#f5f3ff","clusterBkg":"#f8fafc","clusterBorder":"#cbd5e1","edgeLabelBackground":"#ffffff"}}}%%
+flowchart TD
+    SIGNAL["Health telemetry or tamper sensor<br/>fault code • load • temperature • cable state"] --> DETECT{"Safety or availability issue?"}
+    DETECT -->|No| MONITOR["Continue live monitoring"]
+    DETECT -->|Yes| INCIDENT["Create timestamped incident<br/>station • charger • evidence • severity"]
+    INCIDENT --> ISOLATE["Isolate only affected charger<br/>stop new bookings; keep healthy chargers online"]
+    ISOLATE --> ACTIVE{"Active session or future bookings affected?"}
+    ACTIVE -->|Yes| PROTECT["Stop safely or preserve session state<br/>calculate refund and delay impact"]
+    ACTIVE -->|No| TICKET["Open Company maintenance ticket"]
+    PROTECT --> REROUTE["Run connector-aware replacement search<br/>reserve • budget • deadline rechecked"]
+    REROUTE --> ALTERNATIVE{"Safe alternative available?"}
+    ALTERNATIVE -->|Yes| MODE["Apply Owner autonomy rule<br/>recommend • ask • autopilot"]
+    ALTERNATIVE -->|No| ASSIST["Keep journey visible<br/>send safe-stop and support guidance"]
+    MODE --> NOTIFY["Notify affected drivers, Host, Company and Admin"]
+    ASSIST --> NOTIFY
+    NOTIFY --> TICKET
+    TICKET --> REPAIR["Technician diagnosis<br/>repair cost • parts • SLA • expected reopening"]
+    REPAIR --> VERIFY{"Inspection and telemetry healthy?"}
+    VERIFY -->|No| TICKET
+    VERIFY -->|Yes| RESTORE["Return charger online<br/>restore bookings and record downtime"]
+    RESTORE --> AUDIT["Close incident with evidence<br/>customer impact • revenue loss • actions taken"]
+
+    classDef input fill:#e0f2fe,stroke:#0284c7,color:#0c4a6e,stroke-width:2px
+    classDef process fill:#ecfdf5,stroke:#059669,color:#064e3b,stroke-width:2px
+    classDef decision fill:#fef3c7,stroke:#d97706,color:#78350f,stroke-width:2px
+    classDef danger fill:#ffe4e6,stroke:#e11d48,color:#881337,stroke-width:2px
+    classDef governance fill:#f5f3ff,stroke:#7c3aed,color:#4c1d95,stroke-width:2px
+    class SIGNAL input
+    class MONITOR,PROTECT,REROUTE,MODE,NOTIFY,REPAIR,RESTORE process
+    class DETECT,ACTIVE,ALTERNATIVE,VERIFY decision
+    class INCIDENT,ISOLATE,ASSIST danger
+    class TICKET,AUDIT governance
+```
+
+### 8. Least-disruptive Admin intervention
+
+The Admin Assistant recommends the smallest effective control and leaves full identity restriction as an exceptional Super Admin action.
+
+```mermaid
+%%{init: {"theme":"base","themeVariables":{"background":"#ffffff","fontFamily":"Inter, ui-sans-serif, system-ui, sans-serif","fontSize":"15px","primaryColor":"#ecfdf5","primaryTextColor":"#0f172a","primaryBorderColor":"#059669","lineColor":"#475569","secondaryColor":"#e0f2fe","tertiaryColor":"#f5f3ff","clusterBkg":"#f8fafc","clusterBorder":"#cbd5e1","edgeLabelBackground":"#ffffff"}}}%%
+flowchart TD
+    ISSUE["Risk, fraud, fault, dispute or compliance signal"] --> EVIDENCE["Collect evidence<br/>account history • asset state • bookings • payments • incidents"]
+    EVIDENCE --> AGENT["Admin Assistant recommends<br/>least-disruptive scope, duration and reason"]
+    AGENT --> SCOPE{"Smallest affected scope"}
+    SCOPE --> USER["EV User capability<br/>warn • verify • restrict booking • freeze payment"]
+    SCOPE --> HOST["Host asset<br/>hide property • pause listing • freeze payout • reverify site"]
+    SCOPE --> COMPANY["Company capability<br/>pause publishing • bookings • marketplace • settlement"]
+    SCOPE --> CHARGER["Station / charger<br/>offline • maintenance • emergency isolation"]
+    SCOPE --> TRANSACTION["Booking / payment<br/>cancel • refund • hold • dispute review"]
+    USER --> REVIEW{"Admin approves recommendation?"}
+    HOST --> REVIEW
+    COMPANY --> REVIEW
+    CHARGER --> REVIEW
+    TRANSACTION --> REVIEW
+    REVIEW -->|No| CLOSE["Record review; apply no control"]
+    REVIEW -->|Yes| APPLY["Apply scoped control<br/>preserve unrelated accounts and assets"]
+    APPLY --> NOTICE["Notify affected party<br/>reason • impact • appeal • expiry"]
+    NOTICE --> AUDIT["Immutable audit trail<br/>actor • before/after • evidence • timestamp"]
+    AUDIT --> EXPIRY["Scheduled review or automatic expiry"]
+    EXPIRY --> RESTORE["Restore capability when conditions pass"]
+
+    AGENT --> EMERGENCY{"Severe identity fraud or security compromise?"}
+    EMERGENCY -->|No| SCOPE
+    EMERGENCY -->|Yes; Super Admin only| IDENTITY["Temporary identity restriction<br/>explicit reason and review deadline"]
+    IDENTITY --> NOTICE
+
+    classDef issue fill:#ffe4e6,stroke:#e11d48,color:#881337,stroke-width:2px
+    classDef decision fill:#fef3c7,stroke:#d97706,color:#78350f,stroke-width:2px
+    classDef control fill:#e0f2fe,stroke:#0284c7,color:#0c4a6e,stroke-width:2px
+    classDef governance fill:#f5f3ff,stroke:#7c3aed,color:#4c1d95,stroke-width:2px
+    classDef audit fill:#ecfdf5,stroke:#059669,color:#064e3b,stroke-width:2px
+    class ISSUE issue
+    class SCOPE,REVIEW,EMERGENCY decision
+    class USER,HOST,COMPANY,CHARGER,TRANSACTION control
+    class EVIDENCE,AGENT,IDENTITY governance
+    class APPLY,NOTICE,AUDIT,EXPIRY,RESTORE,CLOSE audit
+```
+
+### 9. Role access and agent execution authority
+
+Role access decides what data and assets are visible; agent mode separately decides whether a permitted action is only recommended, approved first, or automated inside limits.
+
+```mermaid
+%%{init: {"theme":"base","themeVariables":{"background":"#ffffff","fontFamily":"Inter, ui-sans-serif, system-ui, sans-serif","fontSize":"15px","primaryColor":"#ecfdf5","primaryTextColor":"#0f172a","primaryBorderColor":"#059669","lineColor":"#475569","secondaryColor":"#e0f2fe","tertiaryColor":"#f5f3ff","clusterBkg":"#f8fafc","clusterBorder":"#cbd5e1","edgeLabelBackground":"#ffffff"}}}%%
+flowchart TB
+    LOGIN["Authenticate<br/>JWT + account status"] --> ROLE{"Authorized workspace role"}
+    ROLE --> OWNER["EV Owner"]
+    ROLE --> HOST["Host"]
+    ROLE --> COMPANY["Company"]
+    ROLE --> ADMIN["Admin / Super Admin"]
+
+    OWNER --> O_CAP["Own garage and wallet<br/>discover • plan • book • charge • view live trips"]
+    HOST --> H_CAP["Own properties and host revenue<br/>publish evidence • review proposals • monitor hosted sites"]
+    COMPANY --> C_CAP["Own network operations<br/>stations • chargers • pricing • tickets • partnerships"]
+    ADMIN --> A_CAP["Platform governance<br/>verification • incidents • support • scoped controls • audit"]
+
+    O_CAP --> MODE{"Assistant execution mode"}
+    H_CAP --> MODE
+    C_CAP --> MODE
+    MODE --> RECOMMEND["Recommend only<br/>analyze and explain; human executes"]
+    MODE --> ASK["Ask before actions<br/>prepare action; wait for explicit approval"]
+    MODE --> AUTO["Autopilot<br/>execute low-risk actions within saved limits"]
+    RECOMMEND --> AUDIT["Role-scoped response and audit context"]
+    ASK --> AUDIT
+    AUTO --> LIMITS{"Permission, asset ownership,<br/>risk and monetary limits still pass?"}
+    LIMITS -->|Yes| AUDIT
+    LIMITS -->|No| BLOCK["Block cross-boundary or over-limit action<br/>request authorized human decision"]
+
+    A_CAP --> ADMIN_AGENT["Admin Assistant proposes governance action<br/>Admin approval remains explicit"]
+    ADMIN_AGENT --> AUDIT
+
+    classDef actor fill:#e0f2fe,stroke:#0284c7,color:#0c4a6e,stroke-width:2px
+    classDef process fill:#ecfdf5,stroke:#059669,color:#064e3b,stroke-width:2px
+    classDef decision fill:#fef3c7,stroke:#d97706,color:#78350f,stroke-width:2px
+    classDef intelligence fill:#f5f3ff,stroke:#7c3aed,color:#4c1d95,stroke-width:2px
+    classDef blocked fill:#ffe4e6,stroke:#e11d48,color:#881337,stroke-width:2px
+    class LOGIN,OWNER,HOST,COMPANY,ADMIN actor
+    class O_CAP,H_CAP,C_CAP,A_CAP,AUDIT process
+    class ROLE,MODE,LIMITS decision
+    class RECOMMEND,ASK,AUTO,ADMIN_AGENT intelligence
+    class BLOCK blocked
+```
+
+### 10. Core data relationships and operational evidence
+
+The ER view includes the fields that make route decisions, ownership boundaries, charging sessions, payments, and Admin actions explainable.
+
+```mermaid
+%%{init: {"theme":"base","themeVariables":{"background":"#ffffff","fontFamily":"Inter, ui-sans-serif, system-ui, sans-serif","fontSize":"15px","primaryColor":"#ecfdf5","primaryTextColor":"#0f172a","primaryBorderColor":"#059669","lineColor":"#475569","secondaryColor":"#e0f2fe","tertiaryColor":"#f5f3ff","attributeBackgroundColorEven":"#f8fafc","attributeBackgroundColorOdd":"#ffffff"}}}%%
 erDiagram
+    ACCOUNT {
+        UUID id PK
+        string email
+        string role
+        string account_status
+    }
+    EV_PROFILE {
+        UUID id PK
+        UUID account_id FK
+        decimal wallet_balance
+    }
+    VEHICLE {
+        UUID id PK
+        string model
+        decimal battery_kwh
+        decimal efficiency_wh_km
+        decimal max_dc_kw
+        string connectors
+    }
+    HOST_PROFILE {
+        UUID id PK
+        UUID account_id FK
+        decimal rating
+        string verification_status
+    }
+    PROPERTY {
+        UUID id PK
+        UUID host_id FK
+        string city
+        string ownership_status
+        string publication_status
+    }
+    COMPANY {
+        UUID id PK
+        UUID account_id FK
+        string verification_status
+        string agent_mode
+    }
+    INSTALLATION_PROJECT {
+        UUID id PK
+        UUID property_id FK
+        UUID company_id FK
+        string proposal_status
+        decimal revenue_share
+    }
+    STATION {
+        UUID id PK
+        UUID property_id FK
+        UUID operator_id FK
+        string ownership_type
+        string availability
+    }
+    CONNECTOR {
+        UUID id PK
+        UUID station_id FK
+        string connector_type
+        decimal rated_power_kw
+        decimal price_per_kwh
+        string status
+    }
+    AUTOPILOT_TRIP {
+        UUID id PK
+        UUID vehicle_id FK
+        string autonomy_mode
+        string optimization_mode
+        datetime requested_arrival
+        datetime expected_arrival
+        boolean deadline_feasible
+    }
+    AUTOPILOT_STOP {
+        UUID id PK
+        UUID trip_id FK
+        UUID station_id FK
+        decimal arrival_soc
+        decimal target_soc
+        int charge_minutes
+        string route_evidence
+    }
+    BOOKING {
+        UUID id PK
+        UUID connector_id FK
+        UUID account_id FK
+        string status
+        datetime reserved_at
+    }
+    CHARGING_SESSION {
+        UUID id PK
+        UUID booking_id FK
+        decimal energy_kwh
+        decimal total_cost
+        string session_status
+    }
+    PAYMENT {
+        UUID id PK
+        UUID booking_id FK
+        decimal amount
+        string payment_status
+    }
+    NOTIFICATION {
+        UUID id PK
+        UUID account_id FK
+        string type
+        string delivery_status
+    }
+    ADMIN_AUDIT_LOG {
+        UUID id PK
+        UUID admin_account_id FK
+        string target_scope
+        string action
+        string reason
+        datetime created_at
+    }
+
     ACCOUNT ||--o| EV_PROFILE : owns
     ACCOUNT ||--o| HOST_PROFILE : owns
     ACCOUNT ||--o| COMPANY : administers
@@ -290,11 +660,13 @@ erDiagram
     STATION ||--o{ CONNECTOR : contains
     VEHICLE ||--o{ AUTOPILOT_TRIP : uses
     AUTOPILOT_TRIP ||--o{ AUTOPILOT_STOP : plans
+    STATION ||--o{ AUTOPILOT_STOP : selected_for
+    ACCOUNT ||--o{ BOOKING : creates
     CONNECTOR ||--o{ BOOKING : accepts
     BOOKING ||--o| CHARGING_SESSION : starts
     BOOKING ||--o{ PAYMENT : charges
     ACCOUNT ||--o{ NOTIFICATION : receives
-    ADMIN_ACCOUNT ||--o{ ADMIN_AUDIT_LOG : records
+    ACCOUNT ||--o{ ADMIN_AUDIT_LOG : records
 ```
 
 ## Implemented workspaces
