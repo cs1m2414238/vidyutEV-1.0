@@ -17,6 +17,9 @@ public record CompanyAgentResponse(
         List<SiteRecommendation> siteRecommendations,
         List<RecommendedAction> actions,
         Map<String, Object> offerDraft,
+        String assistantModel,
+        String assistantProvider,
+        boolean assistantFallback,
         LocalDateTime generatedAt
 ) {
     public record NetworkSummary(

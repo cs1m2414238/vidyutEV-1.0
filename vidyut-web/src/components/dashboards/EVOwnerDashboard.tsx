@@ -1,5 +1,8 @@
 import { useEffect, useState } from 'react';
 import { MapPin, Calendar, Wallet, AlertCircle, Info, Navigation, Sparkles, BatteryCharging, Bluetooth, Route, ChevronRight, ArrowRight, Clock3, IndianRupee, ShieldCheck, RefreshCw, Zap } from 'lucide-react';
+import { MapContainer, TileLayer, Marker as LeafletMarker, Popup as LeafletPopup, useMap } from 'react-leaflet';
+import L from 'leaflet';
+import 'leaflet/dist/leaflet.css';
 import type { User, Charger } from '../../types';
 import type { Vehicle } from '../../services/vehicles';
 import { getCurrentAutopilotTrip, type AutopilotTrip, type AutopilotTripStatus } from '../../services/autopilot';
@@ -16,6 +19,16 @@ interface EVOwnerDashboardProps {
   onOpenAutopilot?: () => void;
   vehicle?: Vehicle | null;
   onOpenVehicle?: (vehicleId: number) => void;
+}
+
+function MiniMapResizer() {
+  const map = useMap();
+  useEffect(() => {
+    map.invalidateSize();
+    const timer = setTimeout(() => map.invalidateSize(), 250);
+    return () => clearTimeout(timer);
+  }, [map]);
+  return null;
 }
 
 export function EVOwnerDashboard({
@@ -118,58 +131,51 @@ export function EVOwnerDashboard({
       <div className="ev-top-grid">
         {/* Card 1: Interactive Map Card */}
         <div className="dashboard-card map-card-container">
-          <div className="map-view-canvas">
-            <div className="map-card-caption">
-              <small>NEARBY NETWORK</small>
-              <strong>Nearest available charger</strong>
-            </div>
-            {/* Soft Map SVG Graphic with Location Pins */}
-            <svg width="100%" height="100%" viewBox="0 0 600 340" preserveAspectRatio="none" className="map-svg-bg">
-              <defs>
-                <pattern id="gridPattern" width="40" height="40" patternUnits="userSpaceOnUse">
-                  <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#e2e8f0" strokeWidth="1" opacity="0.6" />
-                </pattern>
-              </defs>
-              <rect width="100%" height="100%" fill="#f8fafc" />
-              <rect width="100%" height="100%" fill="url(#gridPattern)" />
-              {/* Roads / Paths */}
-              <path d="M 0 100 Q 200 80 400 120 T 600 90" stroke="#cbd5e1" strokeWidth="12" fill="none" />
-              <path d="M 120 0 L 140 340" stroke="#e2e8f0" strokeWidth="16" fill="none" />
-              <path d="M 380 0 L 360 340" stroke="#e2e8f0" strokeWidth="14" fill="none" />
-              <path d="M 0 240 Q 300 220 600 260" stroke="#cbd5e1" strokeWidth="10" fill="none" />
-
-              {/* Station Pins */}
-              <g className="map-pin-group">
-                {/* Pin 1 */}
-                <circle cx="160" cy="90" r="18" fill="#dcfce7" />
-                <circle cx="160" cy="90" r="12" fill="#22c55e" />
-                <path d="M 158 84 L 155 91 L 160 91 L 158 97 L 165 89 L 160 89 Z" fill="#ffffff" />
-
-                {/* Pin 2 */}
-                <circle cx="275" cy="70" r="18" fill="#dcfce7" />
-                <circle cx="275" cy="70" r="12" fill="#22c55e" />
-                <path d="M 273 64 L 270 71 L 275 71 L 273 77 L 280 69 L 275 69 Z" fill="#ffffff" />
-
-                {/* Pin 3 - User Dot (Blue) */}
-                <circle cx="270" cy="160" r="22" fill="rgba(59, 130, 246, 0.2)" />
-                <circle cx="270" cy="160" r="12" fill="#3b82f6" stroke="#ffffff" strokeWidth="3" />
-
-                {/* Pin 4 */}
-                <circle cx="430" cy="120" r="18" fill="#dcfce7" />
-                <circle cx="430" cy="120" r="12" fill="#22c55e" />
-                <path d="M 428 114 L 425 121 L 430 121 L 428 127 L 435 119 L 430 119 Z" fill="#ffffff" />
-
-                {/* Pin 5 */}
-                <circle cx="160" cy="220" r="18" fill="#dcfce7" />
-                <circle cx="160" cy="220" r="12" fill="#22c55e" />
-                <path d="M 158 214 L 155 221 L 160 221 L 158 227 L 165 219 L 160 219 Z" fill="#ffffff" />
-
-                {/* Pin 6 */}
-                <circle cx="360" cy="230" r="18" fill="#dcfce7" />
-                <circle cx="360" cy="230" r="12" fill="#22c55e" />
-                <path d="M 358 224 L 355 231 L 360 231 L 358 237 L 365 229 L 360 229 Z" fill="#ffffff" />
-              </g>
-            </svg>
+          <div className="map-view-canvas" style={{ position: 'relative', height: '100%', minHeight: 260, borderRadius: 16, overflow: 'hidden' }}>
+            <MapContainer
+              center={[selectedStation.latitude || 26.8467, selectedStation.longitude || 80.9462]}
+              zoom={13}
+              scrollWheelZoom={false}
+              style={{ height: '100%', width: '100%', borderRadius: 16 }}
+            >
+              <TileLayer
+                attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/">CARTO</a>'
+                url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
+                subdomains="abcd"
+                maxZoom={19}
+              />
+              <MiniMapResizer />
+              {chargers.slice(0, 10).map((c) => (
+                <LeafletMarker
+                  key={c.id}
+                  position={[c.latitude, c.longitude]}
+                  icon={L.divIcon({
+                    className: 'dashboard-station-pin',
+                    html: `<div style="width: 28px; height: 28px; background: ${c.available ? '#00A86B' : '#F97316'}; border: 2.5px solid #fff; border-radius: 50%; display: flex; align-items: center; justify-content: center; box-shadow: 0 2px 8px rgba(0,0,0,0.3); color: #fff; font-size: 11px; font-weight: 800; cursor: pointer;">⚡</div>`,
+                    iconSize: [28, 28],
+                    iconAnchor: [14, 14],
+                  })}
+                  eventHandlers={{
+                    click: () => onSelectCharger?.(c),
+                  }}
+                >
+                  <LeafletPopup>
+                    <div style={{ padding: 4, fontFamily: "'Plus Jakarta Sans', sans-serif" }}>
+                      <strong style={{ fontSize: 13, color: '#0F172A' }}>{c.name}</strong>
+                      <div style={{ fontSize: 11, color: '#64748B', margin: '2px 0' }}>{c.address}</div>
+                      <div style={{ fontSize: 11, fontWeight: 700, color: '#00A86B' }}>⚡ {c.powerKw} kW · ₹{c.pricePerKwh}/kWh</div>
+                      <button
+                        type="button"
+                        style={{ marginTop: 6, width: '100%', background: '#00A86B', color: '#fff', border: 'none', borderRadius: 6, padding: '4px 8px', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}
+                        onClick={() => onSelectCharger?.(c)}
+                      >
+                        ⚡ Select Charger
+                      </button>
+                    </div>
+                  </LeafletPopup>
+                </LeafletMarker>
+              ))}
+            </MapContainer>
 
             {/* Selected Floating Station Card Overlay */}
             <div className="map-overlay-card">
@@ -185,13 +191,22 @@ export function EVOwnerDashboard({
                 </div>
                 <p className="overlay-sub">{selectedStation.distance || '1.2 km away'}</p>
                 <p className="overlay-power">DC Fast • {selectedStation.powerKw || 150} kW</p>
-                <button
-                  type="button"
-                  className="btn-overlay-details"
-                  onClick={() => onSelectCharger?.(selectedStation)}
-                >
-                  View Details
-                </button>
+                <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
+                  <button
+                    type="button"
+                    className="btn-overlay-details"
+                    onClick={() => onSelectCharger?.(selectedStation)}
+                  >
+                    View Details
+                  </button>
+                  <button
+                    type="button"
+                    style={{ background: '#0F172A', color: '#fff', border: 'none', borderRadius: 8, padding: '6px 10px', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}
+                    onClick={onExploreChargers}
+                  >
+                    Full Map →
+                  </button>
+                </div>
               </div>
             </div>
           </div>

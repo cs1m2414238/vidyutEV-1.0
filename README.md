@@ -28,6 +28,7 @@
 ## 📑 Table of Contents
 
 - [⚡ System Overview & Architecture](#-system-overview--architecture)
+- [🤖 Three-Agent Multi-Tier AI Architecture](#-three-agent-multi-tier-ai-architecture)
 - [🧩 Core Subsystems & Repository Structure](#-core-subsystems--repository-structure)
 - [📊 Deep-Dive Architectural & Protocol Flowcharts](#-deep-dive-architectural--protocol-flowcharts)
   - [1. Enterprise Architecture & System Boundaries](#1-enterprise-architecture--system-boundaries)
@@ -79,6 +80,84 @@ Vidyut orchestrates four distinct stakeholders through dedicated role-scoped coc
 │  • Active Sessions    │                  │  • 1.3x Geo Fallback │ │  • Scoped Tools    │
 └───────────────────────┘                  └──────────────────────┘ └────────────────────┘
 ```
+
+---
+
+## 🤖 Three-Agent Multi-Tier AI Architecture
+
+Vidyut employs a **tri-agent decoupled architecture** where distinct specialized AI agents operate with domain-scoped context, cryptographic security boundaries, and graduated action policies:
+
+```mermaid
+%%{init: {
+  "theme": "base",
+  "themeVariables": {
+    "darkMode": true,
+    "background": "#0b0f19",
+    "primaryColor": "#111827",
+    "primaryTextColor": "#f8fafc",
+    "primaryBorderColor": "#0ea5e9",
+    "lineColor": "#38bdf8",
+    "clusterBkg": "#0f172a90",
+    "clusterBorder": "#334155",
+    "fontFamily": "Inter, sans-serif"
+  }
+}}%%
+flowchart TD
+    subgraph AGENT_1["🚗 Agent 1: EV Driver Autopilot Agent (Python ADK + Gemini)"]
+        A1_NLP["🗣️ Natural-Language Parser<br/>Extracts destination, SoC, budget & deadline"]
+        A1_SOLVE["🔋 Multi-Stop SoC Solver<br/>Non-linear battery curve integration & detour calculation"]
+        A1_HEAL["🔄 Self-Healing Dispatcher<br/>Detects charger outages & reroutes active journey"]
+        A1_TOOLS["🛠️ Scoped Tools:<br/>preview_trip, book_charger, reroute, top_up_wallet"]
+        A1_NLP --> A1_SOLVE --> A1_HEAL --> A1_TOOLS
+    end
+
+    subgraph AGENT_2["🏢 Agent 2: Property Host Agent (Gemini → OpenRouter → Spring fallback)"]
+        A2_OCC["📊 Occupancy & Peak Analyzer<br/>Analyzes session history to predict demand surges"]
+        A2_PRICE["💰 Dynamic Pricing Advisor<br/>Recommends time-of-day tariffs within statutory bounds"]
+        A2_SOLAR["☀️ Solar RESCO & Subsidy Engine<br/>Matches property load with PM Surya Ghar & PPA schemes"]
+        A2_TOOLS["🔒 Read-Only Model Boundary<br/>Spring executes separately after Host approval"]
+        A2_OCC --> A2_PRICE --> A2_SOLAR --> A2_TOOLS
+    end
+
+    subgraph AGENT_3["⚡ Agent 3: CPO Company Agent (Gemini → OpenRouter → Spring fallback)"]
+        A3_FAULT["🚨 Grounded Fault Triage<br/>Explains impact and proposes scoped recovery"]
+        A3_GROWTH["📈 Expansion Intelligence<br/>Ranks unserved corridor gaps based on grid traffic"]
+        A3_AUDIT["🛡️ Company-Scoped Decisions<br/>Uses only the authenticated operator’s network data"]
+        A3_TOOLS["🔒 Read-Only Model Boundary<br/>Spring executes separately under Company policy"]
+        A3_FAULT --> A3_GROWTH --> A3_AUDIT --> A3_TOOLS
+    end
+
+    subgraph AUTONOMY_GOVERNANCE["🛡️ Multi-Tier Execution Guardrails"]
+        G_REC["Tier 1: Recommend Only (Read-Only Explanations)"]
+        G_ASK["Tier 2: Ask Before Actions (Explicit Human Confirmation)"]
+        G_AUTO["Tier 3: Autopilot Execution (Automated Inside Saved Limits)"]
+    end
+
+    A1_TOOLS --> AUTONOMY_GOVERNANCE
+    A2_TOOLS --> AUTONOMY_GOVERNANCE
+    A3_TOOLS --> AUTONOMY_GOVERNANCE
+
+    classDef a1 fill:#082f49,stroke:#0284c7,color:#e0f2fe,stroke-width:2px;
+    classDef a2 fill:#14532d,stroke:#16a34a,color:#f0fdf4,stroke-width:2px;
+    classDef a3 fill:#2e1065,stroke:#7c3aed,color:#ede9fe,stroke-width:2px;
+    classDef guard fill:#78350f,stroke:#f59e0b,color:#fef3c7,stroke-width:2px;
+
+    class A1_NLP,A1_SOLVE,A1_HEAL,A1_TOOLS a1;
+    class A2_OCC,A2_PRICE,A2_SOLAR,A2_TOOLS a2;
+    class A3_FAULT,A3_GROWTH,A3_AUDIT,A3_TOOLS a3;
+    class G_REC,G_ASK,G_AUTO guard;
+```
+
+### 🔍 Tri-Agent Responsibility Matrix
+
+| Metric / Dimension | 🚗 Agent 1: EV Autopilot Agent | 🏢 Agent 2: Host Copilot | ⚡ Agent 3: CPO & Admin Copilot |
+| :--- | :--- | :--- | :--- |
+| **Primary Domain** | EV Driver Route & Charging Intelligence | Property Monetization & Green Finance | CPO Fleet Operations & Platform Governance |
+| **Core Engine / Stack** | Python ADK + Gemini/OpenRouter + Spring tools | Spring analytics + Python ADK Gemini/OpenRouter explanation | Spring network analytics + Python ADK Gemini/OpenRouter explanation |
+| **Input Modality** | Natural-Language Prompt + Structured UI Controls | Historical Sessions, P&L Queries, Reviews | Hardware Telemetry, Tamper Alarms, Disputes |
+| **Key Scoped Tools** | `preview_autopilot_trip`, `book_charger`, `reroute`, `complete_charging` | No model tools; Spring supplies occupancy, revenue, maintenance, deal and solar context | No model tools; Spring supplies faults, pricing, revenue, expansion and offer context |
+| **Autonomy Enforcement** | `Recommend` \| `Ask Before Action` \| `Full Autopilot` | Separate approval-gated Host action endpoint | Company policy + separate ownership/approval-checked action endpoint |
+| **Fault Resilience** | Autonomous in-flight rerouting upon socket failure | Gemini → OpenRouter → deterministic Host answer | Gemini → OpenRouter → deterministic Company answer |
 
 ---
 
@@ -1068,9 +1147,32 @@ npm run android
 
 ---
 
+### Taskmaster fault-recovery demo
+
+Use one `FULL_AUTOPILOT` journey for the submission recording:
+
+1. Sign in as the seeded EV Owner and build a feasible Lucknow/Kanpur-to-Bhopal trip.
+2. Confirm the plan and start journey monitoring.
+3. Select **Simulate charger fault** in Journey controls.
+4. Verify the EV timeline shows the old booking released, a compatible replacement reserved, the route updated, and **Operations incident propagated**.
+5. Refresh the Company workspace and verify the maintenance ticket and faulted connector.
+6. Refresh Admin → Network operations and verify the incident.
+7. Open Admin → Audit trail and verify `AUTOPILOT INCIDENT DETECTED` with actor `SYSTEM AGENT`.
+
+The simulation is a single backend transaction: connector health changes to `FAULT`, Autopilot applies the saved autonomy policy, the booking and route are recovered, the Company work order is created, Host/Company notifications are stored, and Admin receives incident plus audit evidence. `ASK_BEFORE_ACTIONS` prepares the replacement but cannot reserve it until the driver approves; only `FULL_AUTOPILOT` executes the replacement automatically.
+
+---
+
 ## 🧪 Comprehensive Verification & Test Suite
 
 Run full automated test verification across all platform modules:
+
+```powershell
+# From the repository root
+.\scripts\verify.ps1
+```
+
+The script runs the Spring suite, Python agent suite, web lint and production web build. Equivalent individual commands are below.
 
 ```powershell
 # 1. Backend: 19 unit & integration test suites with Flyway migration checks
@@ -1115,7 +1217,8 @@ npx expo config --type public
 
 <div align="center">
 
-**Built with ⚡ for the Future of Sustainable Indian Mobility**  
+**Built with ❤️&⚡for the Future of Sustainable Indian Mobility**
+
 *Vidyut EV Platform • Enterprise Architecture Reference*
 
 </div>

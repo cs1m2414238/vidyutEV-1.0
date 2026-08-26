@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import unittest
+import os
 from unittest.mock import AsyncMock, patch
+
+from vidyut_agent.config import Settings
 
 from vidyut_agent.service import (
     ChatRequest,
@@ -10,6 +13,7 @@ from vidyut_agent.service import (
     _planning_reply,
     _looks_like_tool_protocol,
     _state_change_attempted,
+    chat,
 )
 
 
@@ -103,6 +107,47 @@ class PlanningFallbackTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('"destination":"Bhopal Junction"', message)
         self.assertIn('"maximumChargingBudget":875.0', message)
         self.assertNotIn("Kanpur", message)
+
+    def test_host_agent_receives_only_grounded_workspace_context(self) -> None:
+        request = ChatRequest(
+            message="Which charger needs service?",
+            workspace="HOST",
+            groundingContext={"maintenanceRisks": [{"chargerCode": "KNP-03", "riskScore": 72}]},
+        )
+
+        message = _message_for_agent(request)
+
+        self.assertIn("Authoritative HOST workspace context", message)
+        self.assertIn('"chargerCode":"KNP-03"', message)
+        self.assertNotIn("Application trip context", message)
+
+    async def test_host_uses_deterministic_answer_when_both_providers_are_unavailable(self) -> None:
+        request = ChatRequest(
+            message="How are my stations?",
+            sessionId="host-session-test",
+            requestId="host-request-test",
+            workspace="HOST",
+            groundingContext={"deterministicAnswer": "Two stations are healthy."},
+        )
+        dummy_settings = Settings(
+            model="gemini-3.5-flash",
+            fallback_models=(),
+            openrouter_api_key="",
+            openrouter_model="openai/gpt-4o-mini",
+            openrouter_fallback_models=(),
+            openrouter_base_url="https://openrouter.ai/api/v1",
+            backend_base_url="http://localhost:8080",
+            backend_timeout_seconds=15.0,
+        )
+
+        with patch.dict(os.environ, {"VIDYUT_AGENT_DISABLE_GEMINI": "true"}), \
+             patch("vidyut_agent.service.settings", dummy_settings):
+            response = await chat(request, authorization="Bearer host-test-token")
+
+        self.assertEqual(response.reply, "Two stations are healthy.")
+        self.assertEqual(response.provider, "DETERMINISTIC")
+        self.assertEqual(response.model, "deterministic-host-fallback")
+        self.assertEqual(response.toolCalls, [])
 
     def test_read_only_tools_do_not_block_provider_fallback(self) -> None:
         self.assertFalse(_state_change_attempted({

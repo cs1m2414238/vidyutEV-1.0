@@ -67,6 +67,17 @@ export interface AutopilotStop {
   demoData: boolean;
   selectionReason?: string;
   status: AutopilotStopStatus;
+  selectionType?: 'PRIMARY' | 'REROUTED_REPLACEMENT' | 'USER_SELECTED' | 'ALTERNATE' | string;
+  replacesStationId?: number;
+  replacesStationName?: string;
+  rerouteReason?: string;
+  additionalDistanceKm?: number;
+  additionalMinutes?: number;
+  additionalCost?: number;
+  removalReason?: string;
+  replacedByStationId?: number;
+  replacedByStationName?: string;
+  originalStopIndex?: number;
 }
 
 export interface VehicleRecommendationRequest {
@@ -400,9 +411,10 @@ export function sendAutopilotAgentMessage(
     headers: authorized(token),
     body: JSON.stringify({
       message,
-      sessionId,
+      sessionId: sessionId && sessionId.trim().length >= 8 ? sessionId.trim() : undefined,
+      workspace: 'EV_OWNER',
       tripContext,
-      requestId: `web-agent-${Date.now()}`,
+      requestId: `web-agent-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
     }),
   });
 }

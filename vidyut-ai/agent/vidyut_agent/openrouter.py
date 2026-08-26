@@ -459,6 +459,8 @@ async def run_openrouter_agent(
     artifacts: dict[str, dict[str, Any]],
     model_override: str | None = None,
     max_steps: int = 8,
+    system_instruction: str = OPENROUTER_SYSTEM_INSTRUCTION,
+    tools_enabled: bool = True,
 ) -> tuple[str, str]:
     """Runs a multi-turn OpenRouter agent loop with tool execution.
 
@@ -486,6 +488,8 @@ async def run_openrouter_agent(
                 tool_states=tool_states,
                 artifacts=artifacts,
                 max_steps=max_steps,
+                system_instruction=system_instruction,
+                tools_enabled=tools_enabled,
             )
         except Exception as exc:
             logger.warning("OpenRouter model %s failed: %s", candidate_model, exc)
@@ -505,6 +509,8 @@ async def _run_with_model(
     tool_states: dict[str, str],
     artifacts: dict[str, dict[str, Any]],
     max_steps: int = 8,
+    system_instruction: str = OPENROUTER_SYSTEM_INSTRUCTION,
+    tools_enabled: bool = True,
 ) -> tuple[str, str]:
     headers = {
         "Authorization": f"Bearer {settings.openrouter_api_key}",
@@ -514,7 +520,7 @@ async def _run_with_model(
     }
 
     conversation_messages: list[dict[str, Any]] = [
-        {"role": "system", "content": OPENROUTER_SYSTEM_INSTRUCTION},
+        {"role": "system", "content": system_instruction},
         {"role": "user", "content": message},
     ]
 
@@ -525,10 +531,11 @@ async def _run_with_model(
             payload = {
                 "model": candidate_model,
                 "messages": conversation_messages,
-                "tools": OPENROUTER_TOOL_DEFINITIONS,
-                "tool_choice": "auto",
                 "temperature": 0.2,
             }
+            if tools_enabled:
+                payload["tools"] = OPENROUTER_TOOL_DEFINITIONS
+                payload["tool_choice"] = "auto"
 
             resp = await client.post(endpoint, json=payload, headers=headers)
             if resp.status_code != 200:
@@ -550,6 +557,11 @@ async def _run_with_model(
             choice = choices[0]
             msg = choice.get("message") or {}
             tool_calls = msg.get("tool_calls") or []
+
+            if tool_calls and not tools_enabled:
+                raise RuntimeError(
+                    "OpenRouter returned tool calls for a read-only workspace agent"
+                )
 
             # Add assistant message to conversation history
             conversation_messages.append(msg)

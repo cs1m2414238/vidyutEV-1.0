@@ -89,17 +89,19 @@ Important routing variables:
 
 ## Host operations
 
-The Host API includes profile/KYC/bank/email verification, properties, availability, bookings, payouts, reviews, notifications, reports, live monitoring, connector maintenance impact, and Host Assistant actions.
+The Host API includes profile/KYC/bank/email verification, properties, availability, bookings, payouts, reviews, notifications, reports, live monitoring, connector maintenance impact, and Host Assistant actions. Host questions use the role-scoped Python agent with Gemini, OpenRouter, and a deterministic Spring answer in that order; the model has no mutation tools.
 
 Live occupancy is derived from charging sessions and synchronized to connector state. Maintenance impact identifies affected users, repair estimate, modeled revenue loss, and compatible alternatives. The Host Assistant can prepare actions but marks external commitments and finance applications as requiring Host approval.
 
 The Prince development seeder creates an idempotent multi-station portfolio across the Lucknow–Kanpur–Jhansi–Bhopal corridor plus an Agra solar site. It includes TATA demo equipment, mixed connectors, live sessions, a fault-ready charger, operator comparisons, and solar purchase/finance/RESCO scenarios.
 
+`POST /api/ev/autopilot/trips/{tripId}/simulate-fault` now runs the complete Taskmaster demo transaction. It faults the matching reserved connector, follows the journey's autonomy mode, releases and replaces the booking when feasible, creates a Company maintenance ticket, notifies the Host and Company, creates an Admin network incident, and records a system-agent audit event. Only Full Autopilot executes the replacement without approval.
+
 ## Company and marketplace operations
 
 Company endpoints cover stations, connectors, sessions, maintenance, pricing, bookings, staff, reports, revenue, settlements, products, Host opportunities, saved properties, surveys, proposals, and partnership projects.
 
-The Company Assistant is company-scoped and follows one authority mode: recommend only, ask before actions, or Autopilot within configured limits. Expansion Intelligence is a separate read-only ranking view; it does not duplicate assistant authority controls.
+The Company Assistant is company-scoped and follows one authority mode: recommend only, ask before actions, or Autopilot within configured limits. Its explanations use Gemini, then OpenRouter, then the deterministic Spring answer, while action execution stays in the approval- and ownership-checked Company endpoint. Expansion Intelligence is a separate read-only ranking view; it does not duplicate assistant authority controls.
 
 Verified companies can inspect the complete allowed Host/property profile before survey decisions, including location, power, parking, evidence, verification stage, previous charger history, and reputation. Contact and action access remains gated by trust and marketplace state.
 

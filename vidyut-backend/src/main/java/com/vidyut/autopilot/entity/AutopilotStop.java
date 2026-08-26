@@ -66,4 +66,20 @@ public class AutopilotStop {
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 20)
     private AutopilotStopStatus status;
+
+    @Builder.Default
+    @Column(length = 50)
+    private String selectionType = "PRIMARY";
+
+    private Long replacesStationId;
+    private String replacesStationName;
+    private String rerouteReason;
+    private Double additionalDistanceKm;
+    private Integer additionalMinutes;
+    private Double additionalCost;
+
+    private String removalReason;
+    private Long replacedByStationId;
+    private String replacedByStationName;
+    private Integer originalStopIndex;
 }

@@ -157,8 +157,11 @@ public class CompanyOperationsController {
     }
 
     @PostMapping("/ai/ask")
-    public ResponseEntity<ApiResponse<CompanyAgentResponse>> ask(@Valid @RequestBody AiAssistantRequest request) {
-        return ResponseEntity.ok(ApiResponse.success(operationsService.askAssistant(accountId(), request.getQuestion())));
+    public ResponseEntity<ApiResponse<CompanyAgentResponse>> ask(
+            @RequestHeader(HttpHeaders.AUTHORIZATION) String authorization,
+            @Valid @RequestBody AiAssistantRequest request) {
+        return ResponseEntity.ok(ApiResponse.success(
+                operationsService.askAssistant(accountId(), request.getQuestion(), authorization)));
     }
 
     @GetMapping("/ai/settings")

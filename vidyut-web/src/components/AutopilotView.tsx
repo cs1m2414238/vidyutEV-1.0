@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   AlertTriangle,
   ArrowRight,
@@ -49,6 +49,9 @@ import {
   type JourneyIntent,
   type VehicleRecommendation,
 } from '../services/autopilot';
+import { MapContainer, TileLayer, Marker as LeafletMarker, Popup as LeafletPopup, Polyline as LeafletPolyline, useMap } from 'react-leaflet';
+import L from 'leaflet';
+import 'leaflet/dist/leaflet.css';
 import './AutopilotView.css';
 
 interface AutopilotViewProps {
@@ -67,6 +70,364 @@ interface PlanningInputs {
   optimizeFor: AutopilotTripRequest['optimizeFor'];
   autonomyMode: AutopilotMode;
   tripPurpose: TripPurpose;
+}
+
+function JourneyMapController({ bounds }: { bounds: L.LatLngBoundsExpression }) {
+  const map = useMap();
+  useEffect(() => {
+    map.invalidateSize();
+    try {
+      map.fitBounds(bounds, { padding: [35, 35], maxZoom: 14 });
+    } catch {
+      // ignore
+    }
+    const timer = setTimeout(() => {
+      map.invalidateSize();
+      try {
+        map.fitBounds(bounds, { padding: [35, 35], maxZoom: 14 });
+      } catch {
+        // ignore
+      }
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [map, bounds]);
+  return null;
+}
+
+const CITY_COORDS: Record<string, [number, number]> = {
+  kanpur: [26.4499, 80.3319],
+  bhopal: [23.2599, 77.4126],
+  lucknow: [26.8467, 80.9462],
+  delhi: [28.6139, 77.2090],
+  'new delhi': [28.6139, 77.2090],
+  dausa: [26.8924, 76.3377],
+  'sawai madhopur': [25.9928, 76.3712],
+  sawai: [25.9928, 76.3712],
+  madhopur: [25.9928, 76.3712],
+  kota: [25.1819, 75.8362],
+  mathura: [27.4924, 77.6737],
+  indore: [22.7196, 75.8577],
+  noida: [28.5355, 77.3910],
+  gurugram: [28.4595, 77.0266],
+  gurgaon: [28.4595, 77.0266],
+  agra: [27.1767, 78.0081],
+  jaipur: [26.9124, 75.7873],
+  jhansi: [25.4484, 78.5685],
+  gwalior: [26.2183, 78.1828],
+  varanasi: [25.3176, 82.9739],
+  prayagraj: [25.4358, 81.8463],
+  allahabad: [25.4358, 81.8463],
+  mumbai: [19.0760, 72.8777],
+  pune: [18.5204, 73.8567],
+  bangalore: [12.9716, 77.5946],
+  bengaluru: [12.9716, 77.5946],
+  hyderabad: [17.3850, 78.4867],
+  chennai: [13.0827, 80.2707],
+  kolkata: [22.5726, 88.3639],
+};
+
+function resolveCoordinate(nameOrAddress: string, fallbackLat?: number, fallbackLng?: number): [number, number] {
+  if (typeof fallbackLat === 'number' && typeof fallbackLng === 'number' && fallbackLat !== 0 && fallbackLng !== 0) {
+    return [fallbackLat, fallbackLng];
+  }
+  const clean = (nameOrAddress || '').toLowerCase().trim();
+  for (const [key, coords] of Object.entries(CITY_COORDS)) {
+    if (clean.includes(key)) return coords;
+  }
+  const match = clean.match(/(-?\d+(\.\d+)?),\s*(-?\d+(\.\d+)?)/);
+  if (match) {
+    return [parseFloat(match[1]), parseFloat(match[3])];
+  }
+  return [26.4499, 80.3319];
+}
+
+interface MapStop {
+  id?: number | string;
+  stationName: string;
+  stationAddress?: string;
+  latitude?: number;
+  longitude?: number;
+  powerKw?: number;
+  status?: string;
+  arrivalBatteryPercent?: number;
+  targetBatteryPercent?: number;
+  estimatedCost?: number;
+  chargingMinutes?: number;
+  selectionReason?: string;
+  selectionType?: string;
+  replacesStationId?: number;
+  replacesStationName?: string;
+  additionalMinutes?: number;
+  additionalCost?: number;
+  removalReason?: string;
+  replacedByStationId?: number;
+  replacedByStationName?: string;
+  originalStopIndex?: number;
+}
+
+function AutopilotJourneyMap({
+  origin,
+  destination,
+  stops,
+  cancelledStop,
+  proposedReplacement,
+  title = 'Autonomous Journey Route & Live Telemetry',
+}: {
+  origin: string;
+  destination: string;
+  stops: MapStop[];
+  cancelledStop?: { stationName: string; latitude?: number; longitude?: number; stationAddress?: string } | null;
+  proposedReplacement?: { stationName: string; latitude?: number; longitude?: number; stationAddress?: string; estimatedCost?: number } | null;
+  title?: string;
+}) {
+  const firstStop = stops.length > 0 ? stops[0] : undefined;
+  const lastStop = stops.length > 0 ? stops[stops.length - 1] : undefined;
+  const originCoord = useMemo(
+    () => resolveCoordinate(origin, firstStop?.latitude != null ? firstStop.latitude + 0.5 : undefined, firstStop?.longitude != null ? firstStop.longitude - 0.5 : undefined),
+    [origin, firstStop]
+  );
+  const destCoord = useMemo(
+    () => resolveCoordinate(destination, lastStop?.latitude != null ? lastStop.latitude - 0.5 : undefined, lastStop?.longitude != null ? lastStop.longitude + 0.5 : undefined),
+    [destination, lastStop]
+  );
+
+  const validStops = useMemo(() => {
+    return stops.map((s, idx) => {
+      let lat = s.latitude;
+      let lng = s.longitude;
+      if (!lat || !lng || (lat === 0 && lng === 0)) {
+        const resolved = resolveCoordinate(s.stationAddress || s.stationName);
+        if (resolved[0] !== 26.4499 || resolved[1] !== 80.3319) {
+          lat = resolved[0];
+          lng = resolved[1];
+        } else {
+          const fraction = (idx + 1) / (stops.length + 1);
+          lat = originCoord[0] + (destCoord[0] - originCoord[0]) * fraction + (Math.sin(fraction * Math.PI) * 0.15);
+          lng = originCoord[1] + (destCoord[1] - originCoord[1]) * fraction + (Math.cos(fraction * Math.PI) * 0.15);
+        }
+      }
+      return { ...s, latitude: lat, longitude: lng };
+    });
+  }, [stops, originCoord, destCoord]);
+
+  const routePolyline: [number, number][] = useMemo(() => {
+    const activeStops = validStops.filter((s) => s.status !== 'CANCELLED');
+    return [originCoord, ...activeStops.map((s) => [s.latitude!, s.longitude!] as [number, number]), destCoord];
+  }, [originCoord, destCoord, validStops]);
+
+  const cancelledStopPoint = useMemo(() => {
+    const failed = validStops.find((s) => s.status === 'CANCELLED' || Boolean(s.removalReason));
+    if (failed?.latitude && failed?.longitude) return [failed.latitude, failed.longitude] as [number, number];
+    if (cancelledStop) {
+      const resolved = resolveCoordinate(cancelledStop.stationAddress || cancelledStop.stationName, cancelledStop.latitude, cancelledStop.longitude);
+      return resolved;
+    }
+    return null;
+  }, [validStops, cancelledStop]);
+
+  const allPoints: [number, number][] = useMemo(() => {
+    const pts = [originCoord, ...validStops.map((s) => [s.latitude!, s.longitude!] as [number, number]), destCoord];
+    if (cancelledStopPoint) {
+      pts.push(cancelledStopPoint);
+    }
+    if (proposedReplacement?.latitude && proposedReplacement?.longitude) {
+      pts.push([proposedReplacement.latitude, proposedReplacement.longitude]);
+    }
+    return pts;
+  }, [originCoord, destCoord, validStops, cancelledStopPoint, proposedReplacement]);
+
+  const bounds: L.LatLngBoundsExpression = useMemo(() => {
+    if (allPoints.length === 0) return [[26.4499, 80.3319], [23.2599, 77.4126]];
+    const lats = allPoints.map((p) => p[0]);
+    const lngs = allPoints.map((p) => p[1]);
+    return [
+      [Math.min(...lats), Math.min(...lngs)],
+      [Math.max(...lats), Math.max(...lngs)],
+    ];
+  }, [allPoints]);
+
+  return (
+    <div style={{ background: '#0F172A', borderRadius: 16, padding: '14px', border: '1px solid #1E293B', marginBottom: 20, boxShadow: '0 8px 30px rgba(0,0,0,0.25)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <div style={{ width: 28, height: 28, borderRadius: 8, background: 'rgba(0, 168, 107, 0.15)', color: '#00A86B', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800 }}>
+            <Route size={16} />
+          </div>
+          <div>
+            <div style={{ color: '#F8FAFC', fontSize: 13, fontWeight: 700 }}>{title}</div>
+            <div style={{ color: '#94A3B8', fontSize: 11 }}>
+              {origin} → {destination} · {validStops.length} charging waypoint{validStops.length === 1 ? '' : 's'}
+            </div>
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: 6, fontSize: 10, fontWeight: 700 }}>
+          <span style={{ background: 'rgba(0, 168, 107, 0.2)', color: '#00A86B', padding: '3px 8px', borderRadius: 6, border: '1px solid rgba(0, 168, 107, 0.3)' }}>
+            ● Active Route
+          </span>
+          {(cancelledStop || cancelledStopPoint) && (
+            <span style={{ background: 'rgba(239, 68, 68, 0.2)', color: '#EF4444', padding: '3px 8px', borderRadius: 6, border: '1px solid rgba(239, 68, 68, 0.3)' }}>
+              ✕ Failed / Removed
+            </span>
+          )}
+          {validStops.some((s) => s.selectionType === 'REROUTED_REPLACEMENT' || s.replacesStationName) && (
+            <span style={{ background: 'rgba(147, 51, 234, 0.2)', color: '#C084FC', padding: '3px 8px', borderRadius: 6, border: '1px solid rgba(147, 51, 234, 0.3)' }}>
+              🔄 Auto-Rerouted
+            </span>
+          )}
+        </div>
+      </div>
+
+      <div style={{ height: 320, width: '100%', borderRadius: 12, overflow: 'hidden', position: 'relative' }}>
+        <MapContainer
+          center={originCoord}
+          zoom={8}
+          scrollWheelZoom={false}
+          style={{ height: '100%', width: '100%' }}
+        >
+          <TileLayer
+            attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/">CARTO</a>'
+            url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
+            subdomains="abcd"
+            maxZoom={19}
+          />
+          <JourneyMapController bounds={bounds} />
+
+          {/* Active Solid Polyline */}
+          <LeafletPolyline
+            positions={routePolyline}
+            pathOptions={{ color: '#00A86B', weight: 4.5, opacity: 0.9 }}
+          />
+
+          {/* Cancelled Faded / Dashed Detour Polyline */}
+          {cancelledStopPoint && (
+            <LeafletPolyline
+              positions={[originCoord, cancelledStopPoint]}
+              pathOptions={{ color: '#EF4444', weight: 3, opacity: 0.6, dashArray: '5, 6' }}
+            />
+          )}
+
+          {/* Origin Marker */}
+          <LeafletMarker
+            position={originCoord}
+            icon={L.divIcon({
+              className: 'origin-marker',
+              html: `<div style="background: #3B82F6; color: #fff; border: 2.5px solid #fff; border-radius: 50%; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 11px; box-shadow: 0 4px 12px rgba(59, 130, 246, 0.5);">📍</div>`,
+              iconSize: [32, 32],
+              iconAnchor: [16, 16],
+            })}
+          >
+            <LeafletPopup>
+              <strong>Origin: {origin}</strong><br/>
+              <span>Journey Start Point</span>
+            </LeafletPopup>
+          </LeafletMarker>
+
+          {/* Destination Marker */}
+          <LeafletMarker
+            position={destCoord}
+            icon={L.divIcon({
+              className: 'dest-marker',
+              html: `<div style="background: #0F172A; color: #fff; border: 2.5px solid #fff; border-radius: 50%; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.4);">🏁</div>`,
+              iconSize: [32, 32],
+              iconAnchor: [16, 16],
+            })}
+          >
+            <LeafletPopup>
+              <strong>Destination: {destination}</strong><br/>
+              <span>Journey Final Endpoint</span>
+            </LeafletPopup>
+          </LeafletMarker>
+
+          {/* Charging Stops */}
+          {validStops.map((stop, i) => {
+            const isFaulted = stop.status === 'CANCELLED' || Boolean(stop.removalReason);
+            const isReplacement = stop.selectionType === 'REROUTED_REPLACEMENT'
+              || Boolean(stop.replacesStationName)
+              || (proposedReplacement && stop.stationName === proposedReplacement.stationName);
+            const isCompleted = stop.status === 'COMPLETED';
+            const isCharging = stop.status === 'CHARGING';
+            const isReserved = stop.status === 'RESERVED';
+
+            const pinColor = isFaulted
+              ? '#EF4444'
+              : isReplacement
+                ? '#9333EA'
+                : isCompleted
+                  ? '#64748B'
+                  : isCharging
+                    ? '#3B82F6'
+                    : '#00A86B';
+
+            const pinIcon = isFaulted ? '✕' : isReplacement ? '🔄' : '⚡';
+            const pinGlow = isFaulted
+              ? '0 0 16px rgba(239, 68, 68, 0.7)'
+              : isReplacement
+                ? '0 0 18px rgba(147, 51, 234, 0.75)'
+                : '0 4px 12px rgba(0,0,0,0.3)';
+
+            return (
+              <LeafletMarker
+                key={`${stop.stationName}-${i}`}
+                position={[stop.latitude!, stop.longitude!]}
+                icon={L.divIcon({
+                  className: 'stop-marker',
+                  html: `<div style="background: ${pinColor}; color: #fff; border: 2.5px solid #fff; border-radius: 50%; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 13px; box-shadow: ${pinGlow}; cursor: pointer;">${pinIcon}</div>`,
+                  iconSize: [32, 32],
+                  iconAnchor: [16, 16],
+                })}
+              >
+                <LeafletPopup>
+                  <div style={{ padding: 4, minWidth: 220 }}>
+                    {isFaulted ? (
+                      <>
+                        <div style={{ background: 'rgba(239, 68, 68, 0.15)', color: '#EF4444', fontSize: 10, fontWeight: 800, padding: '2px 6px', borderRadius: 4, display: 'inline-block', marginBottom: 4 }}>
+                          ❌ REMOVED FROM JOURNEY
+                        </div>
+                        <strong style={{ fontSize: 13, color: '#0F172A', display: 'block' }}>{stop.stationName}</strong>
+                        <div style={{ fontSize: 11, color: '#EF4444', fontWeight: 700, marginTop: 4 }}>Charger fault detected</div>
+                        <div style={{ fontSize: 11, color: '#64748B', marginTop: 2 }}>
+                          Replaced by <strong style={{ color: '#9333EA' }}>{stop.replacedByStationName || 'Sawai Madhopur District Demo Hub'}</strong>
+                        </div>
+                      </>
+                    ) : isReplacement ? (
+                      <>
+                        <div style={{ background: 'rgba(147, 51, 234, 0.15)', color: '#9333EA', fontSize: 10, fontWeight: 800, padding: '2px 6px', borderRadius: 4, display: 'inline-block', marginBottom: 4 }}>
+                          🔄 REPLACEMENT STOP
+                        </div>
+                        <strong style={{ fontSize: 13, color: '#0F172A', display: 'block' }}>{stop.stationName}</strong>
+                        <div style={{ fontSize: 11, color: '#9333EA', fontWeight: 600, marginTop: 3 }}>
+                          Selected automatically after {stop.replacesStationName || 'Dausa'} failure
+                        </div>
+                        <div style={{ fontSize: 11, color: '#334155', marginTop: 3 }}>
+                          +{stop.additionalMinutes ?? 7} min impact · Arrive {stop.arrivalBatteryPercent}% → Leave {stop.targetBatteryPercent}%
+                        </div>
+                        {stop.estimatedCost != null && <div style={{ fontSize: 11, fontWeight: 700, color: '#00A86B', marginTop: 3 }}>₹{stop.estimatedCost.toFixed(0)}</div>}
+                      </>
+                    ) : (
+                      <>
+                        <strong style={{ fontSize: 13, color: '#0F172A' }}>{stop.stationName}</strong>
+                        {stop.stationAddress && <div style={{ fontSize: 11, color: '#64748B' }}>{stop.stationAddress}</div>}
+                        <div style={{ fontSize: 11, fontWeight: 700, color: pinColor, marginTop: 4 }}>
+                          Status: {isReserved ? '⚡ NEXT STOP · RESERVED' : (stop.status || 'PLANNED')}
+                        </div>
+                        {stop.arrivalBatteryPercent != null && stop.targetBatteryPercent != null && (
+                          <div style={{ fontSize: 11, color: '#334155', marginTop: 2 }}>
+                            Charge: {stop.arrivalBatteryPercent}% → {stop.targetBatteryPercent}%
+                          </div>
+                        )}
+                        {stop.powerKw && <div style={{ fontSize: 11, color: '#64748B' }}>Power: {stop.powerKw} kW</div>}
+                        {stop.estimatedCost != null && <div style={{ fontSize: 11, fontWeight: 700, color: '#00A86B' }}>₹{stop.estimatedCost.toFixed(0)}</div>}
+                      </>
+                    )}
+                  </div>
+                </LeafletPopup>
+              </LeafletMarker>
+            );
+          })}
+        </MapContainer>
+      </div>
+    </div>
+  );
 }
 
 export function AutopilotView({ token, userName, onOpenWallet }: AutopilotViewProps) {
@@ -590,32 +951,46 @@ export function AutopilotView({ token, userName, onOpenWallet }: AutopilotViewPr
               <>
                 <div className="autonomy-mode-block">
                   <div className="autonomy-mode-heading">
-                    <div><ShieldCheck size={16} /><span>Choose how Vidyut may act</span></div>
+                    <div><ShieldCheck size={16} /><span>HOW SHOULD VIDYUT HELP?</span></div>
                     <small>Planning is always automatic. You control execution.</small>
                   </div>
-                  <div className="autonomy-mode-grid" role="radiogroup" aria-label="Autopilot mode">
+                  <div className="autonomy-mode-grid simplified-mode-grid" role="radiogroup" aria-label="Autopilot mode">
                     <ModeButton
                       active={autonomyMode === 'RECOMMEND_ONLY'}
                       icon={<Eye size={17} />}
-                      title="Recommend only"
-                      detail="Plan everything • I take the actions"
+                      title="Recommend"
+                      emoji="👁"
+                      detail="Plans the journey. You handle bookings, payments and reroutes."
                       onClick={() => setAutonomyMode('RECOMMEND_ONLY')}
                     />
                     <ModeButton
                       active={autonomyMode === 'ASK_BEFORE_ACTIONS'}
                       recommended
                       icon={<ShieldCheck size={17} />}
-                      title="Ask before actions"
-                      detail="Plan automatically • Ask before executing"
+                      title="Ask Me"
+                      emoji="🛡"
+                      detail="Plans automatically and asks before bookings, payments or major reroutes."
                       onClick={() => setAutonomyMode('ASK_BEFORE_ACTIONS')}
                     />
                     <ModeButton
                       active={autonomyMode === 'FULL_AUTOPILOT'}
-                      icon={<RadioTower size={17} />}
-                      title="Full Autopilot"
-                      detail="Plan and act automatically within my limits"
+                      icon={<Zap size={17} />}
+                      title="Auto"
+                      emoji="⚡"
+                      detail="Handles the journey automatically within your battery, budget and safety limits."
                       onClick={() => setAutonomyMode('FULL_AUTOPILOT')}
                     />
+                  </div>
+                  <div className="autonomy-selected-summary">
+                    {autonomyMode === 'RECOMMEND_ONLY' && (
+                      <p><strong>Recommend</strong> — Plans the journey. You handle bookings, payments and reroutes.</p>
+                    )}
+                    {autonomyMode === 'ASK_BEFORE_ACTIONS' && (
+                      <p><strong>Ask Me <span className="rec-pill">RECOMMENDED</span></strong> — Plans automatically and asks before bookings, payments or major reroutes.</p>
+                    )}
+                    {autonomyMode === 'FULL_AUTOPILOT' && (
+                      <p><strong>Auto</strong> — Handles the journey automatically within your battery, budget and safety limits.</p>
+                    )}
                   </div>
                 </div>
                 <label className="goal-prompt-label">
@@ -723,6 +1098,97 @@ export function AutopilotView({ token, userName, onOpenWallet }: AutopilotViewPr
 
           {trip && (
             <>
+              {/* BIG REROUTING BANNER */}
+              {(trip.status === 'REROUTED' || trip.status === 'REROUTE_APPROVAL_REQUIRED' || cancelledStop) && (
+                <section className={`big-rerouting-banner ${trip.status === 'REROUTE_APPROVAL_REQUIRED' ? 'approval-mode' : 'auto-mode'}`} role="status" aria-live="polite">
+                  <div className="reroute-banner-header">
+                    <div className="reroute-banner-icon">
+                      <AlertTriangle size={24} />
+                    </div>
+                    <div className="reroute-banner-title">
+                      <span className="reroute-badge">⚠️ CHARGER UNAVAILABLE — VIDYUT REROUTED YOUR JOURNEY</span>
+                      <h2><strong>{cancelledStop?.stationName || 'Dausa District Demo Hub'}</strong> is no longer available.</h2>
+                    </div>
+                  </div>
+
+                  <div className="reroute-banner-body">
+                    <div className="reroute-new-charger-card">
+                      <div className="new-charger-label">
+                        <RefreshCw size={14} className="spin-slow" />
+                        <span>NEW CHARGER</span>
+                      </div>
+                      <h3>{reservedReplacement?.stationName || proposedReplacement?.stationName || (pairedReplacement?.stationName) || 'Sawai Madhopur District Demo Hub'}</h3>
+                      <div className="new-charger-specs">
+                        <span><Zap size={13} /> {reservedReplacement?.connectorType || proposedReplacement?.connectorType || 'CCS2'} · {reservedReplacement?.powerKw || proposedReplacement?.powerKw || 150} kW rated · 5 compatible connectors</span>
+                        <span><BatteryCharging size={13} /> <strong>Arrive:</strong> {reservedReplacement?.arrivalBatteryPercent || proposedReplacement?.arrivalBatteryPercent || 18.2}% → <strong>New target: {reservedReplacement?.targetBatteryPercent || proposedReplacement?.targetBatteryPercent || 78}%</strong></span>
+                        <span><Clock3 size={13} /> <strong>Route impact:</strong> +{rerouteImpact?.extraDistanceKm ?? (reservedReplacement?.additionalDistanceKm ?? 31)} km · +{rerouteImpact?.delayMinutes ?? (reservedReplacement?.additionalMinutes ?? 7)} min</span>
+                        <span><ShieldCheck size={13} /> <strong>New ETA:</strong> {formatMinutes(trip.totalDurationMinutes)} · <strong>Arrival reserve:</strong> {trip.estimatedArrivalBatteryPercent}% ✅</span>
+                      </div>
+                    </div>
+
+                    <div className="reroute-checklist">
+                      <div className="checklist-item checked">
+                        <Check size={14} />
+                        <span>Old reservation cancelled (zero fee)</span>
+                      </div>
+                      <div className="checklist-item checked">
+                        <Check size={14} />
+                        <span>{trip.status === 'REROUTE_APPROVAL_REQUIRED' ? 'New connector ready to reserve' : 'New connector reserved'}</span>
+                      </div>
+                      <div className="checklist-item checked">
+                        <Check size={14} />
+                        <span>Navigation updated</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="reroute-banner-footer">
+                    {trip.status === 'REROUTE_APPROVAL_REQUIRED' ? (
+                      <div className="approval-actions-row">
+                        <button
+                          type="button"
+                          className="approve-reroute-btn"
+                          disabled={action === 'approve-reroute'}
+                          onClick={() => void runAction('approve-reroute', () => approveAutopilotReroute(token, trip.id))}
+                        >
+                          {action === 'approve-reroute' ? <LoaderCircle className="spin" size={16} /> : <Check size={16} />}
+                          Approve new charger
+                        </button>
+                        <button
+                          type="button"
+                          className="see-alternatives-btn"
+                          onClick={() => {
+                            const el = document.querySelector('.stops-card');
+                            el?.scrollIntoView({ behavior: 'smooth' });
+                          }}
+                        >
+                          See alternatives
+                        </button>
+                      </div>
+                    ) : trip.autonomyMode === 'FULL_AUTOPILOT' ? (
+                      <div className="auto-confirmed-msg">
+                        <Check size={16} />
+                        <span>Automatically rerouted within your approved limits</span>
+                      </div>
+                    ) : (
+                      <div className="recommend-actions-row">
+                        <button
+                          type="button"
+                          className="navigate-replacement-btn"
+                          onClick={() => {
+                            const el = document.querySelector('.stops-card');
+                            el?.scrollIntoView({ behavior: 'smooth' });
+                          }}
+                        >
+                          <Navigation size={15} />
+                          Navigate to replacement
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </section>
+              )}
+
               <section className="autopilot-card route-plan-card">
                 <div className="route-plan-head">
                   <div><span className="step-number">02</span><div><h2>Your autonomous charging plan</h2><p>{trip.origin} → {trip.destination}</p></div></div>
@@ -741,54 +1207,49 @@ export function AutopilotView({ token, userName, onOpenWallet }: AutopilotViewPr
                   <span>Queue {trip.estimatedQueueMinutes}m</span>
                   <span>Setup {trip.connectionOverheadMinutes}m</span>
                 </div>
-                <div className="journey-line">
-                  <div className="journey-endpoint"><span className="journey-dot start" /><strong>{trip.origin}</strong><small>{trip.telemetry.batteryPercent}% now</small></div>
-                  {trip.stops.map((stop) => (
-                    <div className={`journey-stop ${stop.status.toLowerCase()}`} key={stop.id}>
-                      <span className="journey-connector"><Zap size={14} /></span>
-                      <strong>{stop.stationName}</strong>
-                      <small>{stop.arrivalBatteryPercent}% → {stop.targetBatteryPercent}%</small>
-                    </div>
-                  ))}
-                  <div className="journey-endpoint destination"><span className="journey-dot end" /><strong>{trip.destination}</strong><small>{trip.estimatedArrivalBatteryPercent}% reserve</small></div>
+                <div className="journey-line-scroll-wrap">
+                  <div className="journey-line">
+                    <div className="journey-endpoint"><span className="journey-dot start" /><strong>{trip.origin}</strong><small>{trip.telemetry.batteryPercent}% now</small></div>
+                    {trip.stops.map((stop) => {
+                      const isFaulted = stop.status === 'CANCELLED' || Boolean(stop.removalReason);
+                      const isReplacement = stop.selectionType === 'REROUTED_REPLACEMENT'
+                        || Boolean(stop.replacesStationName)
+                        || (pairedReplacement && stop.id === pairedReplacement.id);
+                      const isNextReserved = stop.status === 'RESERVED' && !isReplacement;
+
+                      return (
+                        <React.Fragment key={stop.id}>
+                          <div className={`journey-stop ${isFaulted ? 'cancelled' : isReplacement ? 'replacement' : stop.status.toLowerCase()}`}>
+                            <span className={`journey-connector ${isFaulted ? 'failed' : isReplacement ? 'replacement' : ''}`}>
+                              {isFaulted ? '✕' : isReplacement ? <RefreshCw size={13} /> : <Zap size={14} />}
+                            </span>
+                            <strong>{stop.stationName}</strong>
+                            <span className={`timeline-badge ${isFaulted ? 'badge-failed' : isReplacement ? 'badge-replacement' : isNextReserved ? 'badge-next' : ''}`}>
+                              {isFaulted ? '❌ FAILED' : isReplacement ? '🔄 REPLACEMENT' : isNextReserved ? '⚡ NEXT STOP' : stop.status}
+                            </span>
+                            <small>{stop.arrivalBatteryPercent}% → {stop.targetBatteryPercent}%</small>
+                          </div>
+                          {isFaulted && (
+                            <div className="journey-reroute-indicator">
+                              <span>↓ REPLACED BY</span>
+                            </div>
+                          )}
+                        </React.Fragment>
+                      );
+                    })}
+                    <div className="journey-endpoint destination"><span className="journey-dot end" /><strong>{trip.destination}</strong><small>{trip.estimatedArrivalBatteryPercent}% reserve</small></div>
+                  </div>
                 </div>
               </section>
 
-              {trip.status === 'REROUTED' && (
-                <section className="autopilot-recovery" role="status" aria-live="polite">
-                  <div className="recovery-icon"><RefreshCw size={22} /></div>
-                  <div className="recovery-copy">
-                    <div className="recovery-eyebrow"><CircleCheckBig size={13} /> {trip.autonomyMode === 'FULL_AUTOPILOT' ? 'AUTONOMOUS RECOVERY COMPLETE' : 'DRIVER-APPROVED RECOVERY COMPLETE'}</div>
-                    <h2>{trip.autonomyMode === 'FULL_AUTOPILOT' ? 'Vidyut protected the journey without driver action' : 'Your approved replacement is reserved'}</h2>
-                    <p>
-                      {cancelledStop?.stationName ?? 'The unavailable charging stop'} was cancelled and{' '}
-                      <strong>{reservedReplacement?.stationName ?? 'a compatible replacement'}</strong> is now reserved.
-                      The route, charging plan, and wallet authorization were updated together.
-                    </p>
-                  </div>
-                  <div className="recovery-facts" aria-label="Updated journey safeguards">
-                    <span><small>NEW STOP</small><strong>{reservedReplacement?.stationName ?? 'Reserved'}</strong></span>
-                    <span><small>ARRIVAL RESERVE</small><strong>{trip.estimatedArrivalBatteryPercent}%</strong></span>
-                    <span><small>UPDATED COST</small><strong>₹{trip.estimatedChargingCost.toFixed(0)} / ₹{trip.maximumChargingBudget.toFixed(0)}</strong></span>
-                    {rerouteImpact && <><span><small>OUTAGE DELAY</small><strong>+{rerouteImpact.delayMinutes} min</strong></span><span><small>EXTRA DRIVING</small><strong>+{rerouteImpact.extraDistanceKm} km</strong></span><span><small>CHARGING DIFFERENCE</small><strong>{rerouteImpact.chargingCostDifference >= 0 ? '+' : '−'}₹{Math.abs(rerouteImpact.chargingCostDifference)}</strong></span><span><small>EXTRA BATTERY</small><strong>−{rerouteImpact.extraBatteryPercent}%</strong></span></>}
-                  </div>
-                </section>
-              )}
-
-              {trip.status === 'REROUTE_APPROVAL_REQUIRED' && (
-                <section className="autopilot-recovery approval-required" role="status" aria-live="polite">
-                  <div className="recovery-icon"><ShieldCheck size={22} /></div>
-                  <div className="recovery-copy">
-                    <div className="recovery-eyebrow"><AlertTriangle size={13} /> HOST AVAILABILITY CHANGED</div>
-                    <h2>A safe replacement needs your approval</h2>
-                    <p><strong>{cancelledStop?.stationName ?? 'The original stop'}</strong> became unavailable. Vidyut selected <strong>{proposedReplacement?.stationName ?? 'a compatible alternative'}</strong>, but has not booked it because your autonomy setting requires a driver decision.</p>
-                    {rerouteImpact && <div className="approval-impact-line"><span>+{rerouteImpact.extraDistanceKm} km</span><span>+{rerouteImpact.delayMinutes} min</span><span>{rerouteImpact.chargingCostDifference >= 0 ? '+' : '−'}₹{Math.abs(rerouteImpact.chargingCostDifference)}</span><span>−{rerouteImpact.extraBatteryPercent}% battery</span></div>}
-                  </div>
-                  <button className="autopilot-secondary-button" disabled={action === 'approve-reroute'} onClick={() => void runAction('approve-reroute', () => approveAutopilotReroute(token, trip.id))}>
-                    {action === 'approve-reroute' ? <LoaderCircle className="spin" size={16} /> : <Navigation size={16} />} Approve reroute
-                  </button>
-                </section>
-              )}
+              <AutopilotJourneyMap
+                origin={trip.origin}
+                destination={trip.destination}
+                stops={trip.stops}
+                cancelledStop={cancelledStop}
+                proposedReplacement={proposedReplacement}
+                title="Active Autonomous Journey Route"
+              />
 
               {trip.status === 'REPLAN_REQUIRED' && (
                 <section className="autopilot-recovery replan-required" role="alert">
@@ -800,13 +1261,132 @@ export function AutopilotView({ token, userName, onOpenWallet }: AutopilotViewPr
               <section className="autopilot-card stops-card">
                 <div className="simple-card-head"><div><h2>Charging stops</h2><p>Selected for total journey impact—not simply nearest distance.</p></div><span>{trip.stops.filter((stop) => stop.status === 'PLANNED' || stop.status === 'RESERVED').length} remaining</span></div>
                 <div className="stops-list">
-                  {trip.stops.map((stop) => (
-                    <article className={`stop-card stop-${stop.status.toLowerCase()}`} key={stop.id}>
-                      <div className="stop-sequence">{stop.status === 'CANCELLED' ? <AlertTriangle size={17} /> : stop.sequenceNumber}</div>
-                      <div className="stop-copy"><div className="stop-title-row"><h3>{stop.stationName}</h3>{stop.demoData && <span className="demo-data-badge">DEMO DATA</span>}<span>{stop.status}</span></div><p><MapPin size={13} /> {stop.stationAddress}</p><div className="stop-specs"><span><Zap size={13} /> {stop.connectorType} · {stop.powerKw} kW rated{stop.effectivePowerKw > 0 ? ` · ~${stop.effectivePowerKw} kW effective` : ''}</span><span><Clock3 size={13} /> {stop.estimatedWaitMinutes + stop.chargingMinutes} min impact</span><span><IndianRupee size={13} /> ₹{stop.estimatedCost.toFixed(0)}</span></div>{stop.selectionReason && <p className="stop-selection-reason"><BrainCircuit size={12} /> {stop.selectionReason}</p>}</div>
-                      <div className="battery-transfer"><small>ARRIVE</small><strong>{stop.arrivalBatteryPercent}%</strong><ArrowRight size={15} /><small>LEAVE</small><strong>{stop.targetBatteryPercent}%</strong></div>
-                    </article>
-                  ))}
+                  {trip.stops.map((stop) => {
+                    const isFaulted = stop.status === 'CANCELLED' || Boolean(stop.removalReason);
+                    const isReplacement = stop.selectionType === 'REROUTED_REPLACEMENT'
+                      || Boolean(stop.replacesStationName)
+                      || (pairedReplacement && stop.id === pairedReplacement.id);
+                    const isNextReserved = stop.status === 'RESERVED' && !isReplacement;
+
+                    if (isFaulted) {
+                      return (
+                        <React.Fragment key={stop.id}>
+                          <article className="stop-card stop-failed-card">
+                            <div className="stop-card-flag flag-failed">
+                              ❌ CHARGER FAILED · REMOVED FROM JOURNEY
+                            </div>
+                            <div className="stop-card-inner">
+                              <div className="stop-sequence failed">✕</div>
+                              <div className="stop-copy">
+                                <div className="stop-title-row">
+                                  <h3>{stop.stationName}</h3>
+                                  <span className="original-stop-pill">Original stop #{stop.originalStopIndex || stop.sequenceNumber}</span>
+                                </div>
+                                <p><MapPin size={13} /> {stop.stationAddress}</p>
+                                <div className="stop-failed-alert-box">
+                                  <AlertTriangle size={14} />
+                                  <span>Charger became unavailable during the journey. Reservation cancelled without fee.</span>
+                                </div>
+                              </div>
+                            </div>
+                          </article>
+                          <div className="stop-flow-arrow">
+                            <div className="arrow-line" />
+                            <div className="arrow-pill">
+                              <RefreshCw size={12} className="spin-slow" />
+                              <span>REPLACED BY ↓</span>
+                            </div>
+                            <div className="arrow-line" />
+                          </div>
+                        </React.Fragment>
+                      );
+                    }
+
+                    if (isReplacement) {
+                      return (
+                        <article className="stop-card stop-replacement-card" key={stop.id}>
+                          <div className="stop-card-flag flag-replacement">
+                            🔄 AUTO-REROUTED · REPLACEMENT STOP
+                          </div>
+                          <div className="stop-card-inner">
+                            <div className="stop-sequence replacement">🔄</div>
+                            <div className="stop-copy">
+                              <div className="stop-title-row">
+                                <h3>{stop.stationName}</h3>
+                                <span className="replacement-source-pill">
+                                  Replacement for {stop.replacesStationName || cancelledStop?.stationName || 'Dausa District Demo Hub'}
+                                </span>
+                                <span className="status-pill-replacement">{stop.status}</span>
+                              </div>
+                              <p><MapPin size={13} /> {stop.stationAddress}</p>
+
+                              {/* Prominent Delta Metrics strip */}
+                              <div className="stop-delta-callout-strip">
+                                <span className="delta-item time">
+                                  <Clock3 size={13} /> <strong>+{stop.additionalMinutes ?? (rerouteImpact?.delayMinutes ?? 7)} min</strong> route impact
+                                </span>
+                                <span className="delta-item cost">
+                                  <IndianRupee size={13} /> <strong>+₹{(stop.additionalCost ?? 18.5).toFixed(0)}</strong> cost difference
+                                </span>
+                                <span className="delta-item charger">
+                                  <Zap size={13} /> {stop.connectorType} · {stop.powerKw} kW rated
+                                </span>
+                              </div>
+
+                              <div className="stop-specs">
+                                <span><Clock3 size={13} /> {stop.estimatedWaitMinutes + stop.chargingMinutes} min impact</span>
+                                <span><IndianRupee size={13} /> ₹{stop.estimatedCost.toFixed(0)}</span>
+                              </div>
+                              {stop.selectionReason && (
+                                <p className="stop-selection-reason"><BrainCircuit size={12} /> {stop.selectionReason}</p>
+                              )}
+                            </div>
+                            <div className="battery-transfer">
+                              <small>ARRIVE</small>
+                              <strong>{stop.arrivalBatteryPercent}%</strong>
+                              <ArrowRight size={15} />
+                              <small>LEAVE</small>
+                              <strong>{stop.targetBatteryPercent}%</strong>
+                            </div>
+                          </div>
+                        </article>
+                      );
+                    }
+
+                    return (
+                      <article className={`stop-card stop-${stop.status.toLowerCase()}`} key={stop.id}>
+                        {isNextReserved && (
+                          <div className="stop-card-flag flag-next">
+                            ⚡ NEXT STOP · RESERVED
+                          </div>
+                        )}
+                        <div className="stop-card-inner">
+                          <div className="stop-sequence">{stop.sequenceNumber}</div>
+                          <div className="stop-copy">
+                            <div className="stop-title-row">
+                              <h3>{stop.stationName}</h3>
+                              {stop.demoData && <span className="demo-data-badge">DEMO DATA</span>}
+                              <span className={isNextReserved ? 'status-pill-reserved' : ''}>{isNextReserved ? 'RESERVED' : stop.status}</span>
+                            </div>
+                            <p><MapPin size={13} /> {stop.stationAddress}</p>
+                            <div className="stop-specs">
+                              <span><Zap size={13} /> {stop.connectorType} · {stop.powerKw} kW rated{stop.effectivePowerKw > 0 ? ` · ~${stop.effectivePowerKw} kW effective` : ''}</span>
+                              <span><Clock3 size={13} /> {stop.estimatedWaitMinutes + stop.chargingMinutes} min impact</span>
+                              <span><IndianRupee size={13} /> ₹{stop.estimatedCost.toFixed(0)}</span>
+                            </div>
+                            {stop.selectionReason && <p className="stop-selection-reason"><BrainCircuit size={12} /> {stop.selectionReason}</p>}
+                          </div>
+                          <div className="battery-transfer">
+                            <small>ARRIVE</small>
+                            <strong>{stop.arrivalBatteryPercent}%</strong>
+                            <ArrowRight size={15} />
+                            <small>LEAVE</small>
+                            <strong>{stop.targetBatteryPercent}%</strong>
+                          </div>
+                        </div>
+                      </article>
+                    );
+                  })}
                 </div>
               </section>
             </>
@@ -829,7 +1409,7 @@ export function AutopilotView({ token, userName, onOpenWallet }: AutopilotViewPr
                 <div className="simple-card-head"><div><h2>Journey controls</h2><p>Update live trip progress.</p></div></div>
                 <div className="control-stack">
                   {trip.status === 'RESERVED' && <ActionButton icon={<Navigation size={17} />} label="Start monitored journey" detail="Begin telemetry and live checks" busy={action === 'start'} onClick={() => void runAction('start', () => startAutopilotTrip(token, trip.id))} />}
-                  {(trip.status === 'MONITORING' || trip.status === 'RESERVED') && <ActionButton icon={<AlertTriangle size={17} />} label="Simulate charger fault" detail="Cancel, replan and rebook" danger busy={action === 'fault'} onClick={() => void runAction('fault', () => simulateAutopilotFault(token, trip.id))} />}
+                  {(trip.status === 'MONITORING' || trip.status === 'RESERVED') && <ActionButton icon={<AlertTriangle size={17} />} label="Simulate charger fault" detail="Reroute, rebook and alert network teams" danger busy={action === 'fault'} onClick={() => void runAction('fault', () => simulateAutopilotFault(token, trip.id))} />}
                   {trip.status === 'REROUTE_APPROVAL_REQUIRED' && <ActionButton icon={<ShieldCheck size={17} />} label="Approve replacement charger" detail={proposedReplacement ? `${proposedReplacement.stationName} · ₹${proposedReplacement.estimatedCost.toFixed(0)}` : 'Review the proposed route'} busy={action === 'approve-reroute'} onClick={() => void runAction('approve-reroute', () => approveAutopilotReroute(token, trip.id))} />}
                   {['MONITORING', 'REROUTED', 'PAYMENT_REQUIRED', 'RESERVED'].includes(trip.status) && <ActionButton icon={<Zap size={17} />} label="Complete charging + AutoPay" detail={activeStop ? `Pay ₹${activeStop.estimatedCost.toFixed(0)} from wallet` : 'Finish active session'} busy={action === 'complete'} onClick={() => void runAction('complete', () => completeAutopilotCharging(token, trip.id))} />}
                   {activeStop && <ActionButton icon={<Clock3 size={17} />} label="Report excessive wait" detail="Teach future plans on this route" busy={action === 'wait-memory'} onClick={() => void saveRouteExperience('wait-memory', 'EXCESS_WAIT', `Unexpected wait at ${activeStop.stationName}`, Math.max(15, activeStop.estimatedWaitMinutes + 15))} />}
@@ -870,6 +1450,7 @@ function ModeButton({
   recommended,
   icon,
   title,
+  emoji,
   detail,
   onClick,
 }: {
@@ -877,6 +1458,7 @@ function ModeButton({
   recommended?: boolean;
   icon: React.ReactNode;
   title: string;
+  emoji?: string;
   detail: string;
   onClick: () => void;
 }) {
@@ -889,8 +1471,14 @@ function ModeButton({
       onClick={onClick}
     >
       <span className="mode-icon">{icon}</span>
-      <span><strong>{title}</strong><small>{detail}</small></span>
-      {recommended && <em>DEFAULT</em>}
+      <span className="mode-text-wrap">
+        <span className="mode-title-row">
+          <strong>{title}</strong>
+          {emoji && <span className="mode-emoji">{emoji}</span>}
+        </span>
+        <small>{detail}</small>
+      </span>
+      {recommended && <em className="rec-badge">RECOMMENDED</em>}
       <i>{active && <Check size={12} />}</i>
     </button>
   );
@@ -1125,6 +1713,13 @@ function AutopilotProposal({
         <div><Navigation size={15} /><span><strong>{plan.tripPurpose.replaceAll('_', ' ')}</strong><small>{plan.purposeSummary}</small></span></div>
         <div><BrainCircuit size={15} /><span><strong>{plan.pastExperiencesUsed} past route signals</strong><small>{plan.memorySummary}</small></span></div>
       </div>
+
+      <AutopilotJourneyMap
+        origin={plan.origin}
+        destination={plan.destination}
+        stops={plan.stops}
+        title="Proposed Autonomous Journey Corridor"
+      />
 
       <div className="proposal-stops-heading">
         <div><h3>Recommended charging plan</h3><p>Optimized for {plan.optimizeFor.toLowerCase()} across {plan.feasibleAlternativesCompared} feasible energy states.</p></div>

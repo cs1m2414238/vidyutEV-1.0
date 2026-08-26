@@ -245,6 +245,17 @@ public class AdminControlService {
                 .usersRerouted(automatic).approvalsRequired(approvals).manualInterventions(manual)
                 .estimatedDowntimeMinutes(estimatedDowntimeMinutes).maintenanceTicketId(ticketId).build());
         notifyIncident(station, incident);
+        auditRepository.save(AdminAuditLog.builder()
+                .adminAccountId(0L)
+                .action("AUTOPILOT_INCIDENT_DETECTED")
+                .resourceType("INCIDENT")
+                .resourceId(String.valueOf(incident.getId()))
+                .summary(incident.getIncidentCode() + " created automatically for " + connector.getChargerCode())
+                .previousValue("ONLINE")
+                .newValue("FAULT · " + incident.getStatus())
+                .reason(reason + " · affected=" + affected + ", rerouted=" + automatic
+                        + ", approvals=" + approvals + ", manual=" + manual)
+                .build());
         return incident;
     }
 

@@ -39,6 +39,9 @@ vidyut:
   autopilot:
     current-trip-max-age-hours: ${VIDYUT_AUTOPILOT_CURRENT_TRIP_MAX_AGE_HOURS:72}
   routing:
+    google:
+      api-key: ${GOOGLE_MAPS_API_KEY:${GOOGLE_ROUTES_API_KEY:}}
+      enabled: ${VIDYUT_GOOGLE_ROUTES_ENABLED:true}
     osrm:
       base-url: ${VIDYUT_OSRM_BASE_URL:http://localhost:5000}
       reference-base-url: ${VIDYUT_OSRM_REFERENCE_BASE_URL:}

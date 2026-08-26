@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 
 
 PACKAGE_DIR = Path(__file__).resolve().parent
-load_dotenv(PACKAGE_DIR / ".env", override=False)
+load_dotenv(PACKAGE_DIR / ".env", override=True)
 
 
 def _positive_float(name: str, default: float) -> float:
@@ -48,10 +48,8 @@ class Settings:
                 os.getenv("GOOGLE_CLOUD_PROJECT", "").strip()
                 and os.getenv("GOOGLE_CLOUD_LOCATION", "").strip()
             )
-        return bool(
-            os.getenv("GOOGLE_API_KEY", "").strip()
-            or os.getenv("GEMINI_API_KEY", "").strip()
-        )
+        api_key = os.getenv("GOOGLE_API_KEY", "").strip() or os.getenv("GEMINI_API_KEY", "").strip()
+        return bool(api_key and not api_key.startswith("AQ."))
 
     @property
     def openrouter_auth_configured(self) -> bool:
@@ -63,7 +61,7 @@ class Settings:
 
 
 def load_settings() -> Settings:
-    model = os.getenv("VIDYUT_AGENT_MODEL", "gemini-3.5-flash").strip()
+    model = os.getenv("VIDYUT_AGENT_MODEL", "gemini-3.6-flash").strip()
     if not model:
         raise RuntimeError("VIDYUT_AGENT_MODEL cannot be empty")
     fallback_models = tuple(
@@ -71,7 +69,8 @@ def load_settings() -> Settings:
         for candidate in (
             value.strip()
             for value in os.getenv(
-                "VIDYUT_AGENT_FALLBACK_MODELS", "gemini-3.5-flash-lite"
+                "VIDYUT_AGENT_FALLBACK_MODELS",
+                "gemini-3.5-flash,gemini-3.5-pro,gemini-3-flash-preview",
             ).split(",")
         )
         if candidate and candidate != model

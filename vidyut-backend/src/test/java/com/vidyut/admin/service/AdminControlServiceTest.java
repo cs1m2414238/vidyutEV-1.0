@@ -113,4 +113,32 @@ class AdminControlServiceTest {
         verify(autopilotService).handleConnectorUnavailable(9L, "CCS2", 21L, "Cooling fault");
         verify(auditRepository).save(any(AdminAuditLog.class));
     }
+
+    @Test
+    void agentDetectedFaultCreatesSystemAuditEvidence() {
+        ChargingStation station = ChargingStation.builder().id(12L).name("Jhansi Hub").address("Bypass")
+                .connectors(new ArrayList<>()).build();
+        ChargingConnector connector = ChargingConnector.builder().id(31L).station(station).chargerCode("JHS-02")
+                .type(ConnectorType.CCS2).status(ChargerStatus.FAULT).faultCode("HEARTBEAT_LOSS").build();
+        station.getConnectors().add(connector);
+        when(incidentRepository.findFirstByConnectorIdAndStatusInOrderByCreatedAtDesc(eq(31L), anyCollection()))
+                .thenReturn(Optional.empty());
+        when(incidentRepository.save(any(NetworkIncident.class))).thenAnswer(invocation -> {
+            NetworkIncident incident = invocation.getArgument(0);
+            incident.setId(91L);
+            return incident;
+        });
+
+        NetworkIncident incident = service.recordDetectedIncident(station, connector, IncidentSeverity.CRITICAL,
+                "Autopilot heartbeat failure", 180,
+                Map.of("affectedJourneys", 1, "automaticReroutes", 1, "driverApprovals", 0,
+                        "replanRequired", 0));
+
+        assertThat(incident.getUsersRerouted()).isEqualTo(1);
+        var audit = org.mockito.ArgumentCaptor.forClass(AdminAuditLog.class);
+        verify(auditRepository).save(audit.capture());
+        assertThat(audit.getValue().getAdminAccountId()).isZero();
+        assertThat(audit.getValue().getAction()).isEqualTo("AUTOPILOT_INCIDENT_DETECTED");
+        assertThat(audit.getValue().getReason()).contains("affected=1", "rerouted=1");
+    }
 }

@@ -1,12 +1,18 @@
-# Vidyut Autopilot agent
+# Vidyut role-scoped agents
 
-FastAPI service built on Google ADK. It adds conversational planning and tool orchestration while Spring Boot remains the source of truth for authentication, authorization, vehicles, chargers, routes, bookings, trips, and wallet state.
+FastAPI service built on Google ADK. It exposes isolated EV Owner, Host, and Company agents while Spring Boot remains the source of truth for authentication, authorization, vehicles, chargers, routes, bookings, trips, revenue, network operations, and wallet state.
 
 The user bearer token is forwarded only to Vidyut backend tools. It is not included in Gemini or OpenRouter prompts.
 
-## Responsibilities
+## Workspace responsibilities
 
-The agent can:
+| Workspace | Model responsibility | Execution boundary |
+| --- | --- | --- |
+| `EV_OWNER` | Conversational trip planning, charging guidance, journey recovery, and approved tool orchestration | Uses authenticated EV tools; existing autonomy and mutation guards apply |
+| `HOST` | Explains Spring-calculated occupancy, maintenance, revenue, opening-hours, company-deal, and solar context | Read-only model with no tools; approved actions remain under `/api/host/ai/actions` |
+| `COMPANY` | Explains the Company’s network, faults, pricing, revenue, expansion shortlist, and offer drafts | Read-only model with no tools; approved actions remain under `/api/company/ai/actions` |
+
+The EV Owner agent can:
 
 - Read vehicle status and supported connectors.
 - Find compatible chargers and request road-aware trip plans.
@@ -33,9 +39,11 @@ Spring Boot results override model assumptions. The agent must not claim that an
 1. Gemini primary model.
 2. Configured Gemini fallback models.
 3. OpenRouter model and fallback models, when configured and no state mutation has already been attempted.
-4. Deterministic backend trip-preview fallback for planning when both LLM providers are unavailable.
+4. Deterministic Spring fallback when both LLM providers are unavailable:
+   - EV Owner requests use the backend trip-preview engine.
+   - Host and Company requests return the already-calculated role-scoped answer.
 
-This means an LLM outage does not have to break a structured route preview, but mutation safety takes precedence over retrying with another provider.
+Host and Company prompts receive only the authenticated Spring context for that account. They have no model tools and cannot directly change a station, connector, price, contract, payment, payout, finance application, or solar-scheme submission. This means an LLM outage does not break their operational pages, and a provider fallback cannot bypass approval controls.
 
 ## Configuration
 
@@ -68,15 +76,15 @@ python -m vidyut_agent
 
 The service listens on `http://127.0.0.1:8001`.
 
-- `GET /health` reports provider configuration and fallback models.
-- `POST /v1/chat` is the internal agent endpoint.
+- `GET /health` reports provider configuration, fallback models, and supported workspaces.
+- `POST /v1/chat` is the internal role-scoped agent endpoint. `workspace` accepts `EV_OWNER`, `HOST`, or `COMPANY`; Host and Company calls include a backend-generated `groundingContext`.
 - Client applications should normally call Spring Boot at `POST /api/ev/agent/chat`; the backend verifies the Vidyut JWT before forwarding the request.
 
 For the ADK development UI, run `adk web` from this directory. The exported `root_agent` uses the same instructions and tools.
 
 ## Tests
 
-The current suite covers backend tools, OpenRouter tool execution/fallback, Gemini quota fallback, deterministic planning fallback, and mutation replay protection.
+The current suite covers backend tools, OpenRouter tool execution/fallback, Gemini quota fallback, tool-free Host/Company prompts, deterministic role fallbacks, deterministic planning fallback, and mutation replay protection.
 
 ```powershell
 .\.venv\Scripts\python -m unittest discover -s tests -v

@@ -562,6 +562,7 @@
 .host-ai-card h2 { margin: 14px 0 5px; font-size: 22px; }
 .host-ai-card > p { margin: 0; color: #667085; font-size: 10px; }
 .host-ai-answer { display: flex; align-items: flex-start; gap: 13px; margin-top: 19px; padding: 17px; border-radius: 13px; color: #08784f; background: #e8f7f0; }
+.host-ai-answer > div, .ai-answer > div { display: grid; gap: 7px; min-width: 0; }
 .host-ai-answer strong { color: #344054; font-size: 10px; line-height: 1.6; white-space: pre-line; }
 .host-ai-input { display: flex; gap: 8px; margin-top: 14px; }
 .host-ai-input input { min-width: 0; flex: 1; height: 43px; padding: 0 12px; border: 1px solid #dce3e9; border-radius: 10px; font: inherit; font-size: 10px; }
@@ -924,6 +925,8 @@
 .ai-answer { display: flex; align-items: center; gap: 16px; margin-top: 20px; padding: 18px; border-radius: 14px; color: #175cd3; background: #eef4ff; }
 .ai-answer svg { width: 110px; flex: 0 0 auto; }
 .ai-answer strong { color: #344054; font-size: 12px; line-height: 1.55; }
+.agent-provider { justify-self: start; padding: 3px 8px; border: 1px solid #a7d7c5; border-radius: 999px; color: #08784f; background: #f3fbf7; font-size: 9px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; }
+.agent-provider.fallback { border-color: #fedf89; color: #b54708; background: #fffaeb; }
 .ai-input { display: flex; gap: 8px; margin-top: 16px; }
 .ai-input input { flex: 1; height: 44px; padding: 0 13px; border: 1px solid #dce3e9; border-radius: 11px; outline: 0; font: inherit; font-size: 11px; }
 .ai-input button { display: grid; width: 44px; place-items: center; border: 0; border-radius: 11px; color: #fff; background: #2563eb; cursor: pointer; }

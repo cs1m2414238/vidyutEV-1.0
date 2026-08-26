@@ -33,4 +33,17 @@ public class AutopilotStopResponse {
     private String timingScore;
     private String timingLabel;
     private AutopilotStopStatus status;
+
+    private String selectionType;
+    private Long replacesStationId;
+    private String replacesStationName;
+    private String rerouteReason;
+    private Double additionalDistanceKm;
+    private Integer additionalMinutes;
+    private Double additionalCost;
+
+    private String removalReason;
+    private Long replacedByStationId;
+    private String replacedByStationName;
+    private Integer originalStopIndex;
 }

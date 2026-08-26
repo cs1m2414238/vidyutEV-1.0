@@ -124,7 +124,7 @@ public class RoutingServiceImpl implements RoutingService {
                 .vehicleId(vehicle.getId()).usableRangeKm(usableRange).reserveBatteryPercent(reserve)
                 .estimatedArrivalBatteryPercent(round(arrival)).destinationWithinRange(withinRange)
                 .routeSource(routeSource(roadSelection.engine()))
-                .externalMapsUrl(externalMapUrl(itineraryCoordinates))
+                .externalMapsUrl(externalMapUrl(itineraryCoordinates, roadSelection.engine()))
                 .build();
     }
     private RoadRouteSelection getRoadRoute(List<Coordinate> waypoints) {
@@ -142,6 +142,7 @@ public class RoutingServiceImpl implements RoutingService {
 
     private String routeSource(OsrmClient.RouteEngine engine) {
         return switch (engine) {
+            case GOOGLE -> "GOOGLE_ROUTES_TRAFFIC_AWARE";
             case REFERENCE -> "OSRM_REFERENCE_OPENSTREETMAP";
             case ESTIMATED -> "ESTIMATED_ROAD_FALLBACK";
             default -> "OSRM_LOCAL_OPENSTREETMAP";
@@ -545,7 +546,27 @@ public class RoutingServiceImpl implements RoutingService {
     }
 
     private double round(double value) { return Math.round(value * 10.0) / 10.0; }
-    private String externalMapUrl(List<Coordinate> waypoints) {
+    private String externalMapUrl(List<Coordinate> waypoints, OsrmClient.RouteEngine engine) {
+        if (waypoints == null || waypoints.isEmpty()) return "";
+        if (engine == OsrmClient.RouteEngine.ESTIMATED) return "";
+
+        if (engine == OsrmClient.RouteEngine.GOOGLE) {
+            Coordinate origin = waypoints.get(0);
+            Coordinate destination = waypoints.get(waypoints.size() - 1);
+            StringBuilder sb = new StringBuilder("https://www.google.com/maps/dir/?api=1");
+            sb.append("&origin=").append(origin.latitude()).append(",").append(origin.longitude());
+            sb.append("&destination=").append(destination.latitude()).append(",").append(destination.longitude());
+            if (waypoints.size() > 2) {
+                sb.append("&waypoints=");
+                for (int i = 1; i < waypoints.size() - 1; i++) {
+                    if (i > 1) sb.append("%7C");
+                    sb.append(waypoints.get(i).latitude()).append(",").append(waypoints.get(i).longitude());
+                }
+            }
+            sb.append("&travelmode=driving");
+            return sb.toString();
+        }
+
         String baseUrl = externalMapBaseUrl == null ? "" : externalMapBaseUrl.replaceFirst("/+$", "");
         return baseUrl + "?engine=fossgis_osrm_car&route=" + waypoints.stream()
                 .map(coordinate -> coordinate.latitude() + "," + coordinate.longitude())

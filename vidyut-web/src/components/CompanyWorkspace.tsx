@@ -186,6 +186,9 @@ interface CompanyAgentResponse {
   siteRecommendations: SiteRecommendation[];
   actions: Array<{ action: CompanyAgentActionType; label: string; risk: string; requiresApproval: boolean; chargerId?: number; stationId?: number; proposedPricePerKwh?: number; reason: string }>;
   offerDraft?: Record<string, string | number>;
+  assistantModel?: string;
+  assistantProvider?: string;
+  assistantFallback?: boolean;
   generatedAt: string;
 }
 
@@ -738,7 +741,7 @@ function AiPanel({ companyName, question, setQuestion, answer, sites, response, 
     <article className="company-card ai-company-card">
       <div className="ai-orb"><Bot size={30} /></div>
       <div><div className="feature-eyebrow">ASK VIDYUT</div><h2>What would you like to know or change?</h2><p>Responses use only {companyName}’s stations, chargers, sessions, partnerships, maintenance and revenue.</p></div>
-      <div className="ai-answer"><Sparkline /><strong>{loading ? 'Analyzing live company data…' : answer}</strong></div>
+      <div className="ai-answer"><Sparkline /><div><strong>{loading ? 'Analyzing live company data…' : answer}</strong>{response?.assistantProvider && <small className={`agent-provider ${response.assistantFallback ? 'fallback' : ''}`}>{response.assistantFallback ? 'Rules fallback' : response.assistantProvider}{response.assistantModel ? ` · ${response.assistantModel}` : ''}</small>}</div></div>
       {response?.network && <div className="company-agent-network"><span><strong>{response.network.occupied}</strong><small>Occupied</small></span><span><strong>{response.network.available}</strong><small>Available</small></span><span><strong>{response.network.reserved}</strong><small>Reserved</small></span><span><strong>{response.network.offline}</strong><small>Offline</small></span><span><strong>{response.network.faults}</strong><small>Faults</small></span></div>}
       {response?.fault && <section className="company-agent-fault"><header><AlertTriangle size={19} /><div><strong>{response.fault.chargerCode} fault · {response.fault.stationName}</strong><span>{response.fault.issue}</span></div></header><div><span><small>Affected bookings</small><strong>{response.fault.affectedBookings}</strong></span><span><small>Estimated downtime</small><strong>{response.fault.estimatedDowntimeMinutes} min</strong></span><span><small>Revenue at risk</small><strong>{money(response.fault.estimatedRevenueAtRisk)}</strong></span></div>{response.fault.compatibleBackups.length > 0 && <p>Compatible backup: {response.fault.compatibleBackups.join(' · ')}</p>}</section>}
       {response?.revenue && response.intent === 'REVENUE' && <section className="company-agent-revenue"><span><small>Sessions</small><strong>{response.revenue.sessions}</strong></span><span><small>Energy sold</small><strong>{response.revenue.energySoldKwh} kWh</strong></span><span><small>Charging revenue</small><strong>{money(response.revenue.chargingRevenue)}</strong></span><span><small>Host payouts</small><strong>− {money(response.revenue.estimatedHostPayouts)}</strong></span><span><small>Vidyut fees</small><strong>− {money(response.revenue.estimatedVidyutFees)}</strong></span><span><small>Estimated company revenue</small><strong>{money(response.revenue.estimatedCompanyRevenue)}</strong></span></section>}

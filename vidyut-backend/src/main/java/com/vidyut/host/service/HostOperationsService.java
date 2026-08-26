@@ -11,6 +11,7 @@ import com.vidyut.admin.repository.AdminGreenSchemeRepository;
 import com.vidyut.admin.entity.IncidentSeverity;
 import com.vidyut.admin.service.AdminControlService;
 import com.vidyut.admin.service.OperationalControlService;
+import com.vidyut.agent.service.RoleScopedAgentService;
 import com.vidyut.booking.entity.*;
 import com.vidyut.booking.repository.BookingRepository;
 import com.vidyut.booking.service.WaitlistService;
@@ -67,6 +68,7 @@ public class HostOperationsService {
     private final AdminGreenSchemeRepository greenSchemeRepository;
     private final AdminControlService adminControlService;
     private final OperationalControlService operationalControlService;
+    private final RoleScopedAgentService roleScopedAgentService;
 
     public HostProfileResponse profile(Long accountId) {
         return mapProfile(requireHost(accountId));
@@ -587,6 +589,10 @@ public class HostOperationsService {
     }
 
     public Map<String, Object> assistant(Long accountId, String rawQuestion) {
+        return assistant(accountId, rawQuestion, null);
+    }
+
+    public Map<String, Object> assistant(Long accountId, String rawQuestion, String authorization) {
         Map<String, Object> dashboard = dashboard(accountId);
         Map<String, Object> earnings = earnings(accountId);
         List<Booking> bookings = ownedBookings(accountId);
@@ -679,7 +685,7 @@ public class HostOperationsService {
                         .filter(connector -> connector.getStatus() == ChargerStatus.ONLINE).count(),
                 "networkHealth", station.getConnectors().stream().anyMatch(connector -> connector.getHealthScore() < 60)
                         ? "ATTENTION" : "HEALTHY", "demoData", station.isDemoData())).toList();
-        return linkedMap("question", rawQuestion, "answer", answer,
+        Map<String, Object> result = linkedMap("question", rawQuestion, "answer", answer,
                 "revenue", earnings, "maintenanceRisks", maintenance,
                 "operatingHours", operatingHours, "companyDeals", companyDeals,
                 "solarOpportunity", solar, "networkPortfolio", portfolio,
@@ -694,6 +700,19 @@ public class HostOperationsService {
                 "proposedActions", actions,
                 "generatedAt", LocalDateTime.now(), "dataPolicy",
                 "Financial figures are calculated from stored bookings or explicitly labeled demo assumptions; legal, subsidy, and contract actions are never automatic.");
+        if (authorization != null && !authorization.isBlank() && roleScopedAgentService != null) {
+            RoleScopedAgentService.GroundedReply grounded = roleScopedAgentService.explain(
+                    authorization, "HOST", accountId, rawQuestion, answer, result);
+            result.put("answer", grounded.answer());
+            result.put("assistantModel", grounded.model());
+            result.put("assistantProvider", grounded.provider());
+            result.put("assistantFallback", grounded.deterministicFallback());
+        } else {
+            result.put("assistantModel", "deterministic-host-fallback");
+            result.put("assistantProvider", "DETERMINISTIC");
+            result.put("assistantFallback", true);
+        }
+        return result;
     }
 
     @Transactional

@@ -14,8 +14,14 @@ public class VehicleRecommendationRanker {
             List<VehicleRecommendationOptionResponse> vehicles,
             String optimization
     ) {
-        return vehicles.stream()
+        Optional<VehicleRecommendationOptionResponse> strictlyFeasible = vehicles.stream()
                 .filter(VehicleRecommendationOptionResponse::isFeasible)
+                .min(comparator(optimization));
+        if (strictlyFeasible.isPresent()) {
+            return strictlyFeasible;
+        }
+        return vehicles.stream()
+                .filter(v -> v.getChargingStops() > 0 || v.getJourneyMinutes() > 0)
                 .min(comparator(optimization));
     }
 

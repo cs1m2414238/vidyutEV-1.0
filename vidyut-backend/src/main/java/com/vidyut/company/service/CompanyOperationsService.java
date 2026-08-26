@@ -8,6 +8,7 @@ import com.vidyut.admin.entity.IncidentSeverity;
 import com.vidyut.admin.service.AdminControlService;
 import com.vidyut.admin.service.OperationalControlService;
 import com.vidyut.autopilot.service.AutopilotService;
+import com.vidyut.agent.service.RoleScopedAgentService;
 import com.vidyut.common.exception.DuplicateResourceException;
 import com.vidyut.common.exception.BadRequestException;
 import com.vidyut.common.exception.ForbiddenException;
@@ -75,6 +76,7 @@ public class CompanyOperationsService {
     private final AutopilotService autopilotService;
     private final AdminControlService adminControlService;
     private final OperationalControlService operationalControlService;
+    private final RoleScopedAgentService roleScopedAgentService;
 
     public List<StationResponse> getStations(Long accountId) {
         Company company = requireCompany(accountId);
@@ -457,6 +459,10 @@ public class CompanyOperationsService {
     }
 
     public CompanyAgentResponse askAssistant(Long accountId, String rawQuestion) {
+        return askAssistant(accountId, rawQuestion, null);
+    }
+
+    public CompanyAgentResponse askAssistant(Long accountId, String rawQuestion, String authorization) {
         Company company = requireCompany(accountId);
         List<ChargingStation> stations = managedStations(company, accountId);
         List<ChargingConnector> chargers = stations.stream().flatMap(station -> station.getConnectors().stream()).toList();
@@ -471,8 +477,30 @@ public class CompanyOperationsService {
         List<CompanyAgentResponse.RecommendedAction> actions = agentActions(intent, company, fault, pricing);
         Map<String, Object> offerDraft = "OFFER".equals(intent) ? agentOfferDraft(rawQuestion, sites) : Map.of();
         String answer = assistantAnswer(intent, network, fault, revenue, pricing, sites, offerDraft);
-        return new CompanyAgentResponse(intent, company.getAgentMode(), answer, network, fault, revenue, pricing,
-                sites, actions, offerDraft, LocalDateTime.now());
+        RoleScopedAgentService.GroundedReply grounded;
+        if (authorization != null && !authorization.isBlank() && roleScopedAgentService != null) {
+            Map<String, Object> context = new LinkedHashMap<>();
+            context.put("companyName", company.getCompanyName());
+            context.put("mode", company.getAgentMode());
+            context.put("intent", intent);
+            context.put("network", network);
+            context.put("fault", fault);
+            context.put("revenue", revenue);
+            context.put("pricing", pricing);
+            context.put("siteRecommendations", sites);
+            context.put("proposedActions", actions);
+            context.put("offerDraft", offerDraft);
+            context.put("approvalPolicy",
+                    "Spring ownership, Company Agent mode, approval and safety-limit checks control every mutation");
+            grounded = roleScopedAgentService.explain(
+                    authorization, "COMPANY", accountId, rawQuestion, answer, context);
+        } else {
+            grounded = new RoleScopedAgentService.GroundedReply(answer,
+                    "deterministic-company-fallback", "DETERMINISTIC", true);
+        }
+        return new CompanyAgentResponse(intent, company.getAgentMode(), grounded.answer(), network, fault, revenue,
+                pricing, sites, actions, offerDraft, grounded.model(), grounded.provider(),
+                grounded.deterministicFallback(), LocalDateTime.now());
     }
 
     @Transactional

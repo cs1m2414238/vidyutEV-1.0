@@ -14,7 +14,7 @@ import java.util.Map;
 public class ChargingRouteOptimizer {
 
     private static final int CONNECTION_OVERHEAD_MINUTES = 4;
-    private static final int MAX_CHARGE_PERCENT = 80;
+    private static final int MAX_CHARGE_PERCENT = 95;
 
     public OptimizationResult optimize(OptimizationRequest request) {
         validate(request);

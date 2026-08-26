@@ -17,6 +17,7 @@ public class EvAgentChatResponse {
     private String requestId;
     private String reply;
     private String model;
+    private String provider;
     private List<AgentToolCallResponse> toolCalls;
     private JsonNode plan;
     private JsonNode actionResult;

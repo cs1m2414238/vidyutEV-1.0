@@ -11,6 +11,7 @@ from vidyut_agent.openrouter import (
     _execute_openrouter_tool,
     run_openrouter_agent,
 )
+from vidyut_agent.agent import COMPANY_AGENT_INSTRUCTION
 from vidyut_agent.service import (
     ChatRequest,
     chat,
@@ -135,6 +136,42 @@ class OpenRouterToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(tool_states["preview_autopilot_trip"], "completed")
         self.assertEqual(artifacts["plan"]["totalDistanceKm"], 270)
 
+    async def test_company_agent_uses_role_prompt_without_owner_tools(self) -> None:
+        response_json = {
+            "choices": [{"message": {"role": "assistant", "content": "Network is healthy."}}]
+        }
+        mock_post = AsyncMock(return_value=MagicMock(status_code=200, json=lambda: response_json))
+        mock_client = MagicMock()
+        mock_client.post = mock_post
+        mock_client.__aenter__.return_value = mock_client
+        mock_client.__aexit__.return_value = False
+        dummy_settings = Settings(
+            model="gemini-3.5-flash",
+            fallback_models=(),
+            openrouter_api_key="sk-or-testkey",
+            openrouter_model="openai/gpt-4o-mini",
+            openrouter_fallback_models=(),
+            openrouter_base_url="https://openrouter.ai/api/v1",
+            backend_base_url="http://localhost:8080",
+            backend_timeout_seconds=15.0,
+        )
+
+        with patch("vidyut_agent.openrouter.settings", dummy_settings), \
+             patch("vidyut_agent.openrouter.httpx.AsyncClient", return_value=mock_client):
+            reply, _ = await run_openrouter_agent(
+                message='Question with {"network":{"faults":0}}',
+                tool_states={},
+                artifacts={},
+                system_instruction=COMPANY_AGENT_INSTRUCTION,
+                tools_enabled=False,
+            )
+
+        self.assertEqual(reply, "Network is healthy.")
+        payload = mock_post.await_args.kwargs["json"]
+        self.assertEqual(payload["messages"][0]["content"], COMPANY_AGENT_INSTRUCTION)
+        self.assertNotIn("tools", payload)
+        self.assertNotIn("tool_choice", payload)
+
 
 class ServiceOpenRouterFallbackTests(unittest.IsolatedAsyncioTestCase):
     async def test_health_reports_openrouter_status(self) -> None:
@@ -193,6 +230,7 @@ class ServiceOpenRouterFallbackTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(response.reply, "OpenRouter planned your trip to Agra.")
             self.assertEqual(response.model, "openai/gpt-4o-mini")
+            self.assertEqual(response.provider, "OPENROUTER")
             or_mock.assert_awaited_once()
 
 

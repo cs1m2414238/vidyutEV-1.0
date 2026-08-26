@@ -7,6 +7,7 @@ import com.vidyut.routing.dto.OsrmResponse;
 import com.vidyut.routing.dto.OsrmRoute;
 import com.vidyut.routing.dto.OsrmTableResponse;
 import com.vidyut.routing.exception.OsrmException;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
@@ -26,17 +27,20 @@ public class OsrmClient {
 
     private final RestClient restClient;
     private final RestClient referenceRestClient;
+    private final GoogleRoutesClient googleRoutesClient;
     private final String profile;
     private final double snapRadiusMeters;
     private final int maxTableLocations;
 
+    @Autowired
     public OsrmClient(
             RestClient.Builder restClientBuilder,
             @Value("${vidyut.routing.osrm.base-url}") String baseUrl,
             @Value("${vidyut.routing.osrm.reference-base-url:}") String referenceBaseUrl,
             @Value("${vidyut.routing.osrm.profile}") String profile,
             @Value("${vidyut.routing.osrm.snap-radius-meters}") double snapRadiusMeters,
-            @Value("${vidyut.routing.osrm.max-table-locations}") int maxTableLocations
+            @Value("${vidyut.routing.osrm.max-table-locations}") int maxTableLocations,
+            @Autowired(required = false) GoogleRoutesClient googleRoutesClient
     ) {
         if (baseUrl == null || baseUrl.isBlank()) {
             throw new IllegalArgumentException("OSRM base URL is required");
@@ -48,9 +52,21 @@ public class OsrmClient {
         this.referenceRestClient = referenceBaseUrl == null || referenceBaseUrl.isBlank()
                 ? null
                 : restClientBuilder.clone().baseUrl(stripTrailingSlash(referenceBaseUrl.trim())).build();
+        this.googleRoutesClient = googleRoutesClient;
         this.profile = profile;
         this.snapRadiusMeters = Math.max(1, snapRadiusMeters);
         this.maxTableLocations = Math.max(3, maxTableLocations);
+    }
+
+    public OsrmClient(
+            RestClient.Builder restClientBuilder,
+            String baseUrl,
+            String referenceBaseUrl,
+            String profile,
+            double snapRadiusMeters,
+            int maxTableLocations
+    ) {
+        this(restClientBuilder, baseUrl, referenceBaseUrl, profile, snapRadiusMeters, maxTableLocations, null);
     }
 
     public OsrmResponse getRoute(Coordinate origin, Coordinate destination) {
@@ -66,6 +82,12 @@ public class OsrmClient {
             throw new IllegalArgumentException("At least two route waypoints are required");
         }
         waypoints.forEach(this::validateCoordinate);
+        if (engine == RouteEngine.GOOGLE) {
+            if (googleRoutesClient != null && googleRoutesClient.isAvailable()) {
+                return googleRoutesClient.getRoute(waypoints);
+            }
+            throw new OsrmException("Google Routes client is not configured or available");
+        }
         String coordinates = coordinateList(waypoints);
         return requestRoute(clientFor(engine), coordinates, waypoints.size());
     }
@@ -75,6 +97,19 @@ public class OsrmClient {
             throw new IllegalArgumentException("At least two route waypoints are required");
         }
         waypoints.forEach(this::validateCoordinate);
+
+        // 1. Try Google Routes API first when available (traffic-aware)
+        if (googleRoutesClient != null && googleRoutesClient.isAvailable()) {
+            try {
+                OsrmResponse googleResponse = googleRoutesClient.getRoute(waypoints);
+                if (googleResponse != null && googleResponse.routes() != null && !googleResponse.routes().isEmpty()) {
+                    return new RouteSelection(googleResponse, RouteEngine.GOOGLE);
+                }
+            } catch (OsrmException ignored) {
+                // Gracefully cascade to OSRM Primary -> Reference -> Estimated
+            }
+        }
+
         OsrmResponse primaryResponse = null;
         try {
             primaryResponse = getRoute(waypoints, RouteEngine.PRIMARY);
@@ -228,6 +263,12 @@ public class OsrmClient {
             throw new IllegalArgumentException("The route matrix supports at most " + maxTableLocations + " locations");
         }
         coordinates.forEach(this::validateCoordinate);
+        if (engine == RouteEngine.GOOGLE) {
+            if (googleRoutesClient != null && googleRoutesClient.isAvailable()) {
+                return googleRoutesClient.getFullTable(coordinates);
+            }
+            throw new OsrmException("Google Routes client is not configured or available");
+        }
         try {
             return clientFor(engine).get()
                     .uri("/table/v1/{profile}/{coordinates}?annotations=distance,duration&radiuses={radiuses}",
@@ -410,7 +451,10 @@ public class OsrmClient {
 
     private List<RouteEngine> matrixEngines(RouteEngine preferredEngine) {
         List<RouteEngine> engines = new ArrayList<>();
-        if (preferredEngine != null && preferredEngine != RouteEngine.ESTIMATED) {
+        if (googleRoutesClient != null && googleRoutesClient.isAvailable()) {
+            engines.add(RouteEngine.GOOGLE);
+        }
+        if (preferredEngine != null && preferredEngine != RouteEngine.ESTIMATED && !engines.contains(preferredEngine)) {
             engines.add(preferredEngine);
         }
         if (!engines.contains(RouteEngine.PRIMARY)) {
@@ -592,6 +636,7 @@ public class OsrmClient {
     }
 
     public enum RouteEngine {
+        GOOGLE,
         PRIMARY,
         REFERENCE,
         ESTIMATED

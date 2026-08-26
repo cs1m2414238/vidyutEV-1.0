@@ -290,6 +290,9 @@ interface AgentAction {
 }
 interface HostAgentInsight {
   answer: string;
+  assistantModel?: string;
+  assistantProvider?: string;
+  assistantFallback?: boolean;
   revenue: Earnings;
   maintenanceRisks: AgentMaintenanceRisk[];
   operatingHours: {
@@ -1987,7 +1990,15 @@ function HostAiPanel({
         </p>
         <div className="host-ai-answer">
           <Gauge size={25} />
-          <strong>{answer}</strong>
+          <div>
+            <strong>{answer}</strong>
+            {insight?.assistantProvider && (
+              <small className={`agent-provider ${insight.assistantFallback ? "fallback" : ""}`}>
+                {insight.assistantFallback ? "Rules fallback" : insight.assistantProvider}
+                {insight.assistantModel ? ` · ${insight.assistantModel}` : ""}
+              </small>
+            )}
+          </div>
         </div>
         <div className="host-ai-input">
           <input

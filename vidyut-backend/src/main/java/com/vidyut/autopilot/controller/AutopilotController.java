@@ -11,6 +11,7 @@ import com.vidyut.autopilot.dto.RouteExperienceResponse;
 import com.vidyut.autopilot.dto.VehicleRecommendationRequest;
 import com.vidyut.autopilot.dto.VehicleRecommendationResponse;
 import com.vidyut.autopilot.service.AutopilotService;
+import com.vidyut.autopilot.service.AutopilotFaultWorkflowService;
 import com.vidyut.autopilot.service.JourneyIntentParser;
 import com.vidyut.common.response.ApiResponse;
 import com.vidyut.common.util.CurrentUserUtil;
@@ -30,6 +31,7 @@ import org.springframework.web.bind.annotation.RestController;
 public class AutopilotController {
 
     private final AutopilotService autopilotService;
+    private final AutopilotFaultWorkflowService faultWorkflowService;
     private final JourneyIntentParser journeyIntentParser;
     private final CurrentUserUtil currentUser;
 
@@ -88,8 +90,9 @@ public class AutopilotController {
 
     @PostMapping("/trips/{tripId}/simulate-fault")
     public ResponseEntity<ApiResponse<AutopilotTripResponse>> simulateFault(@PathVariable Long tripId) {
-        return ResponseEntity.ok(ApiResponse.success("Fault handled and route rebooked",
-                autopilotService.simulateChargerFault(tripId, currentUser.getCurrentAccountId())));
+        return ResponseEntity.ok(ApiResponse.success(
+                "Fault handled, route recovered and operations incident propagated",
+                faultWorkflowService.simulateAndPropagate(tripId, currentUser.getCurrentAccountId())));
     }
 
     @PostMapping("/trips/{tripId}/complete-charging")
@@ -111,5 +114,11 @@ public class AutopilotController {
     ) {
         return ResponseEntity.ok(ApiResponse.success("Route experience stored for future planning",
                 autopilotService.recordExperience(tripId, currentUser.getCurrentAccountId(), request)));
+    }
+
+    @PostMapping("/stations/reset-demo")
+    public ResponseEntity<ApiResponse<String>> resetDemoStations() {
+        autopilotService.resetDemoStations();
+        return ResponseEntity.ok(ApiResponse.success("Demo stations restored to AVAILABLE", null));
     }
 }
