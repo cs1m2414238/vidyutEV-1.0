@@ -1,7 +1,7 @@
 <div align="center">
 
 # ⚡ Vidyut EV Charging & Autopilot Platform
-### Enterprise-Grade Next-Gen EV Ecosystem for India • Connector-Aware Routing • Multi-Agent Autonomy • Live Grid Telemetry
+### Enterprise-Grade Next-Gen EV Ecosystem for India/Wrold • Connector-Aware Routing • Multi-Agent Autonomy • Live Grid Telemetry
 
 [![Spring Boot](https://img.shields.io/badge/Spring_Boot-3.3.7-6DB33F?style=for-the-badge&logo=springboot&logoColor=white)](https://spring.io/projects/spring-boot)
 [![React 19](https://img.shields.io/badge/React-19.0_TypeScript_6-61DAFB?style=for-the-badge&logo=react&logoColor=black)](https://react.dev)
