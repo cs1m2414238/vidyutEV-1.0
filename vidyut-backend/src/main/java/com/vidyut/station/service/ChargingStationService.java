@@ -10,6 +10,8 @@ public interface ChargingStationService {
                                          Long companyId, String companyName);
     StationResponse getStationById(Long id);
     List<StationResponse> getAllStations();
+    List<StationResponse> getStationsWithinBounds(double minLat, double maxLat, double minLng, double maxLng, int limit);
+
     List<NearbyStationResponse> getNearbyStations(double latitude, double longitude, double radiusKm);
     List<StationResponse> searchStations(String query, String connectorType, Double latitude, Double longitude,
                                          Double radiusKm, Integer minAvailableSlots, Double maxPricePerKwh,

@@ -22,7 +22,8 @@ from vidyut_agent.service import (
 class OpenRouterToolTests(unittest.IsolatedAsyncioTestCase):
     def test_all_tools_are_defined(self) -> None:
         tool_names = {t["function"]["name"] for t in OPENROUTER_TOOL_DEFINITIONS}
-        self.assertEqual(len(tool_names), 18)
+        self.assertEqual(len(tool_names), len(AVAILABLE_TOOLS))
+        self.assertEqual(len(tool_names), 31)
         for name in tool_names:
             self.assertIn(name, AVAILABLE_TOOLS)
 
@@ -136,7 +137,7 @@ class OpenRouterToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(tool_states["preview_autopilot_trip"], "completed")
         self.assertEqual(artifacts["plan"]["totalDistanceKm"], 270)
 
-    async def test_company_agent_uses_role_prompt_without_owner_tools(self) -> None:
+    async def test_company_agent_uses_only_company_role_tool(self) -> None:
         response_json = {
             "choices": [{"message": {"role": "assistant", "content": "Network is healthy."}}]
         }
@@ -163,14 +164,19 @@ class OpenRouterToolTests(unittest.IsolatedAsyncioTestCase):
                 tool_states={},
                 artifacts={},
                 system_instruction=COMPANY_AGENT_INSTRUCTION,
-                tools_enabled=False,
+                tools_enabled=True,
+                allowed_tool_names={"get_company_operations_context"},
             )
 
         self.assertEqual(reply, "Network is healthy.")
         payload = mock_post.await_args.kwargs["json"]
         self.assertEqual(payload["messages"][0]["content"], COMPANY_AGENT_INSTRUCTION)
-        self.assertNotIn("tools", payload)
-        self.assertNotIn("tool_choice", payload)
+        self.assertEqual(
+            [tool["function"]["name"] for tool in payload["tools"]],
+            ["get_company_operations_context"],
+        )
+        self.assertEqual(payload["tool_choice"], "auto")
+        self.assertEqual(payload["max_tokens"], 2048)
 
 
 class ServiceOpenRouterFallbackTests(unittest.IsolatedAsyncioTestCase):

@@ -54,6 +54,7 @@ public class AutopilotTrip {
 
     @Column(length = 20)
     private String arrivalDeadline;
+    private LocalDateTime arrivalDeadlineAt;
 
     @Column(nullable = false, length = 30)
     private String optimizeFor;
@@ -72,6 +73,18 @@ public class AutopilotTrip {
 
     private double startingBatteryPercent;
     private double currentBatteryPercent;
+    private Double currentLatitude;
+    private Double currentLongitude;
+    private LocalDateTime positionRecordedAt;
+    @Column(length = 40)
+    private String positionSource;
+    private double distanceTravelledKm;
+    private int elapsedDriveMinutes;
+    private double routeStartDistanceKm;
+    @Column(columnDefinition = "text")
+    private String navigationRouteJson;
+    @Column(columnDefinition = "text")
+    private String recoveryJson;
     private double minimumArrivalBatteryPercent;
     private double maximumChargingBudget;
     private double totalDistanceKm;

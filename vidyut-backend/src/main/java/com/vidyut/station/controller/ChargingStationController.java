@@ -26,7 +26,22 @@ public class ChargingStationController {
     }
 
     @GetMapping
-    public ResponseEntity<ApiResponse<List<StationResponse>>> getAllStations() {
+    public ResponseEntity<ApiResponse<List<StationResponse>>> getAllStations(
+            @RequestParam(required = false) Double minLat,
+            @RequestParam(required = false) Double maxLat,
+            @RequestParam(required = false) Double minLng,
+            @RequestParam(required = false) Double maxLng,
+            @RequestParam(required = false, defaultValue = "250") int limit) {
+        boolean anyBound = minLat != null || maxLat != null || minLng != null || maxLng != null;
+        boolean allBounds = minLat != null && maxLat != null && minLng != null && maxLng != null;
+        if (anyBound && !allBounds) {
+            throw new com.vidyut.common.exception.BadRequestException(
+                    "minLat, maxLat, minLng and maxLng must be supplied together.");
+        }
+        if (allBounds) {
+            return ResponseEntity.ok(ApiResponse.success(
+                    stationService.getStationsWithinBounds(minLat, maxLat, minLng, maxLng, limit)));
+        }
         return ResponseEntity.ok(ApiResponse.success(stationService.getAllStations()));
     }
 

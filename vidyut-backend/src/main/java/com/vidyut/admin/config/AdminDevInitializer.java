@@ -18,18 +18,18 @@ import java.util.LinkedHashSet;
 import java.util.Set;
 
 @Component
-@Profile("dev")
+@Profile({"dev", "cloud", "prod"})
 @RequiredArgsConstructor
 public class AdminDevInitializer implements ApplicationRunner {
     private final AccountRepository accountRepository;
     private final AdminAccountRepository adminRepository;
     private final PasswordEncoder passwordEncoder;
 
-    @Value("${vidyut.admin.bootstrap.enabled:true}")
+    @Value("${vidyut.admin.bootstrap.enabled:false}")
     private boolean enabled;
     @Value("${vidyut.admin.bootstrap.email:admin@vidyut.local}")
     private String email;
-    @Value("${vidyut.admin.bootstrap.password:VidyutAdmin123!}")
+    @Value("${vidyut.admin.bootstrap.password:}")
     private String password;
     @Value("${vidyut.admin.bootstrap.name:Vidyut Super Admin}")
     private String name;
@@ -39,13 +39,24 @@ public class AdminDevInitializer implements ApplicationRunner {
     public void run(ApplicationArguments args) {
         if (!enabled)
             return;
+        if (password == null || password.isBlank()) {
+            throw new IllegalStateException(
+                    "Admin bootstrap is enabled but VIDYUT_ADMIN_PASSWORD is not configured");
+        }
         String normalized = email.trim().toLowerCase();
         Account account = accountRepository.findByEmailIgnoreCase(normalized)
                 .orElseGet(() -> accountRepository.save(Account.builder()
                         .email(normalized).passwordHash(passwordEncoder.encode(password)).accountType(AccountType.ADMIN)
                         .roles(new LinkedHashSet<>(Set.of(AccountRole.ROLE_ADMIN))).enabled(true).emailVerified(true)
                         .build()));
-        if (account.getAccountType() == AccountType.ADMIN && adminRepository.findById(account.getId()).isEmpty()) {
+        account.setPasswordHash(passwordEncoder.encode(password));
+        account.setAccountType(AccountType.ADMIN);
+        account.getRoles().add(AccountRole.ROLE_ADMIN);
+        account.setEnabled(true);
+        account.setEmailVerified(true);
+        accountRepository.save(account);
+
+        if (adminRepository.findById(account.getId()).isEmpty()) {
             adminRepository.save(
                     AdminAccount.builder().account(account).displayName(name).adminRole(AdminRole.SUPER_ADMIN).build());
         }

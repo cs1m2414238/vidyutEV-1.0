@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import L from 'leaflet';
 import { CircleMarker, MapContainer, Marker, Popup, TileLayer, useMap, useMapEvents } from 'react-leaflet';
 import { Crosshair, LocateFixed, MapPin, Search } from 'lucide-react';
@@ -134,7 +134,7 @@ export function PropertyLocationPicker({
     if (address && !query) setQuery(address);
   }, [address, query]);
 
-  const selectPoint = async (nextLatitude: number, nextLongitude: number, lookupAddress = true) => {
+  const selectPoint = useCallback(async (nextLatitude: number, nextLongitude: number, lookupAddress = true) => {
     const coordinates = {
       latitude: Number(nextLatitude.toFixed(6)),
       longitude: Number(nextLongitude.toFixed(6)),
@@ -194,7 +194,7 @@ export function PropertyLocationPicker({
       setLookupState('located');
       setMessage('Pin saved. Address lookup was unavailable, so enter the address fields manually.');
     }
-  };
+  }, [googleLoaded, onChange]);
 
   const searchLocation = async () => {
     const value = query.trim();
@@ -340,7 +340,7 @@ export function PropertyLocationPicker({
         googleMarkerRef.current.setPosition({ lat: validLatitude, lng: validLongitude });
       }
     }
-  }, [googleLoaded, validLatitude, validLongitude]);
+  }, [googleLoaded, validLatitude, validLongitude, selectPoint]);
 
   return (
     <section className="property-location-picker wide" aria-label="Land location map">
@@ -389,10 +389,9 @@ export function PropertyLocationPicker({
             className="marketplace-leaflet-map"
           >
             <TileLayer
-              attribution='&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap</a> &copy; <a href="https://carto.com/">CARTO</a>'
-              url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
-              subdomains="abcd"
-              maxZoom={20}
+              attribution='&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap</a> contributors'
+              url="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+              maxZoom={19}
             />
             <LeafletContainerResizer />
             <MapPositionSync latitude={validLatitude} longitude={validLongitude} />
@@ -491,7 +490,7 @@ export function ChargerDensityMap({
     ...activeStations.map((item) => [item.latitude, item.longitude] as [number, number]),
   ], [opportunities, activeStations]);
 
-  const center = points[0] ?? [26.8467, 80.9462];
+  const center = useMemo<[number, number]>(() => points[0] ?? [26.8467, 80.9462], [points]);
 
   // Listen to Google Maps auth failure
   useEffect(() => {
@@ -669,10 +668,9 @@ export function ChargerDensityMap({
         ) : (
           <MapContainer center={center} zoom={10} scrollWheelZoom className="marketplace-leaflet-map">
             <TileLayer
-              attribution='&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap</a> &copy; <a href="https://carto.com/">CARTO</a>'
-              url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
-              subdomains="abcd"
-              maxZoom={20}
+              attribution='&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap</a> contributors'
+              url="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+              maxZoom={19}
             />
             <LeafletContainerResizer />
             <MapBoundsSync points={points} />

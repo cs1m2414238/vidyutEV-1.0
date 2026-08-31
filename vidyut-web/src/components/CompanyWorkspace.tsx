@@ -1,3 +1,4 @@
+import CompanyChargerSearch from './CompanyChargerSearch';
 import { Children, useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Activity,
@@ -97,7 +98,10 @@ interface Charger {
   connectorType: string;
   powerKw: number;
   available: boolean;
-  status: 'ONLINE' | 'OFFLINE' | 'CHARGING' | 'MAINTENANCE' | 'FAULT';
+  status: 'ONLINE' | 'OFFLINE' | 'CHARGING' | 'MAINTENANCE' | 'FAULT' | 'SUSPECTED_FAULT';
+  demoData?: boolean;
+  faultCode?: string;
+  faultReason?: string;
   maintenanceMode: boolean;
   firmwareVersion: string;
   healthScore: number;
@@ -157,7 +161,7 @@ interface SiteRecommendation {
   location: string;
   parkingBays: number;
   availableLoadKw: number;
-  nearestActiveStationKm: number;
+  nearestActiveStationKm: number | null;
   expansionScore: number;
   recommendedChargerCount?: number;
   recommendedPowerKw?: number;
@@ -166,7 +170,7 @@ interface SiteRecommendation {
 }
 
 type CompanyAgentMode = 'RECOMMEND_ONLY' | 'ASK_BEFORE_ACTIONS' | 'AUTOPILOT';
-type CompanyAgentActionType = 'DISABLE_NEW_BOOKINGS' | 'CREATE_MAINTENANCE_TICKET' | 'NOTIFY_STATION_MANAGER' | 'APPLY_PRICE_RECOMMENDATION';
+type CompanyAgentActionType = 'SIMULATE_DEMO_FAULT' | 'RESTORE_DEMO_CHARGER' | 'PUT_DEMO_CHARGER_IN_MAINTENANCE' | 'DISABLE_NEW_BOOKINGS' | 'CREATE_MAINTENANCE_TICKET' | 'NOTIFY_STATION_MANAGER' | 'APPLY_PRICE_RECOMMENDATION';
 
 interface CompanyAgentSettings {
   mode: CompanyAgentMode;
@@ -180,12 +184,16 @@ interface CompanyAgentResponse {
   mode: CompanyAgentMode;
   answer: string;
   network: { stations: number; chargers: number; occupied: number; available: number; reserved: number; offline: number; faults: number; activeSessions: number; highestLoadStation: string; highestLoadPercent: number; longestSessionCharger: string; longestSessionMinutes: number; nextAvailableCharger: string; nextAvailableMinutes: number };
-  fault?: { chargerId: number; chargerCode: string; stationName: string; issue: string; affectedBookings: number; estimatedDowntimeMinutes: number; estimatedRevenueAtRisk: number; compatibleBackups: string[] };
+  fault?: { chargerId: number; chargerCode: string; stationName: string; issue: string; affectedBookings: number; estimatedDowntimeMinutes: number | null; estimatedRevenueAtRisk: number; compatibleBackups: string[] };
   revenue: { sessions: number; energySoldKwh: number; chargingRevenue: number; estimatedHostPayouts: number; estimatedVidyutFees: number; refunds: number; estimatedCompanyRevenue: number; bestPerformingStation: string; lowestPerformingStation: string };
   pricing?: { stationId: number; stationName: string; currentPricePerKwh: number; nearbyAveragePricePerKwh: number; recommendedPricePerKwh: number; currentUtilizationPercent: number; expectedUtilizationPercent: number; timeWindow: string };
   siteRecommendations: SiteRecommendation[];
-  actions: Array<{ action: CompanyAgentActionType; label: string; risk: string; requiresApproval: boolean; chargerId?: number; stationId?: number; proposedPricePerKwh?: number; reason: string }>;
+  actions: Array<{ action: CompanyAgentActionType; label: string; risk: string; requiresApproval: boolean; chargerId?: number; stationId?: number; proposedPricePerKwh?: number; reason: string; expectedStatus?: Charger['status'] }>;
   offerDraft?: Record<string, string | number>;
+  operations?: {
+    stations: Array<{ stationId: number; stationName: string; city?: string; ownershipType: string; hostName?: string; propertyTitle?: string; issueCount: number; unavailableConnectors: number; affectedJourneyIds: number[]; activeBookingIds: number[]; downtimeMinutes?: number; availableCcs2: number; ccs2Connectors: number; acOnly: boolean }>;
+    rankingMethod: string;
+  };
   assistantModel?: string;
   assistantProvider?: string;
   assistantFallback?: boolean;
@@ -290,13 +298,22 @@ function dateTime(value?: string): string {
   return value ? new Date(value).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' }) : '—';
 }
 
-export function CompanyWorkspace({ tab, token, companyName, onNavigate, onCountsChange }: { tab: string; token: string; companyName: string; onNavigate: (tab: string) => void; onCountsChange: (counts: CompanyCounts) => void }) {
+export function CompanyWorkspace({ tab, token, companyName, onNavigate, onCountsChange, searchQuery, onSearchChange }: { tab: string; token: string; companyName: string; onNavigate: (tab: string) => void; onCountsChange: (counts: CompanyCounts) => void; searchQuery: string; onSearchChange: (query: string) => void }) {
   const [profile, setProfile] = useState<CompanyProfile | null>(null);
   const [verification, setVerification] = useState<CompanyVerificationSummary | null>(null);
   const [dashboard, setDashboard] = useState<CompanyDashboard>(emptyDashboard);
   const [analytics, setAnalytics] = useState<Analytics | null>(null);
   const [stations, setStations] = useState<Station[]>([]);
   const [chargers, setChargers] = useState<Charger[]>([]);
+  const [networkVersion, setNetworkVersion] = useState(0);
+  const [networkSearch, setNetworkSearch] = useState<{ key: string; stations: Station[]; chargers: Charger[]; error: string }>({ key: '', stations: [], chargers: [], error: '' });
+  const searchKey = `${token}:${tab}:${searchQuery.trim()}:${networkVersion}`;
+  const searchingNetwork = networkSearch.key !== searchKey;
+  const searchError = searchingNetwork ? '' : networkSearch.error;
+  const filteredStations = searchingNetwork || searchError ? [] : networkSearch.stations;
+  const filteredChargers = searchingNetwork || searchError ? [] : networkSearch.chargers;
+  const matchingCities = [...new Set((tab === 'stations' ? filteredStations : stations.filter(station => filteredChargers.some(charger => charger.stationId === station.id))).map(station => station.city).filter(Boolean))];
+  const operationalAlerts = chargers.filter(c => ['FAULT', 'SUSPECTED_FAULT', 'MAINTENANCE', 'OFFLINE'].includes(c.status));
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
@@ -305,6 +322,8 @@ export function CompanyWorkspace({ tab, token, companyName, onNavigate, onCounts
   const [maintenanceTickets, setMaintenanceTickets] = useState<MaintenanceTicket[]>([]);
   const [settlement, setSettlement] = useState<CompanySettlement>(emptySettlement);
   const [modal, setModal] = useState<ModalKind>(null);
+  const [pendingChargerSave, setPendingChargerSave] = useState(false);
+  const [pendingAgentAction, setPendingAgentAction] = useState<CompanyAgentResponse['actions'][number] | null>(null);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [form, setForm] = useState<Record<string, string | number | boolean>>({});
   const [loading, setLoading] = useState(true);
@@ -362,9 +381,24 @@ export function CompanyWorkspace({ tab, token, companyName, onNavigate, onCounts
       notifications: requests[7].status === 'fulfilled' ? requests[7].value.filter((item) => !item.read).length : 0,
     });
     setLoading(false);
+    setNetworkVersion(version => version + 1);
   }, [auth, onCountsChange]);
 
   useEffect(() => { void loadAll(); }, [loadAll]);
+
+  useEffect(() => {
+    if (tab !== 'stations' && tab !== 'chargers') return;
+    const controller = new AbortController();
+    const timer = window.setTimeout(async () => {
+      try {
+        const rows = await apiRequest<Station[] | Charger[]>(`/company/${tab}?q=${encodeURIComponent(searchQuery.trim())}`, { method: 'GET', ...auth, signal: controller.signal });
+        if (!controller.signal.aborted) setNetworkSearch({ key: searchKey, stations: tab === 'stations' ? rows as Station[] : [], chargers: tab === 'chargers' ? rows as Charger[] : [], error: '' });
+      } catch (err) {
+        if (!controller.signal.aborted) setNetworkSearch({ key: searchKey, stations: [], chargers: [], error: err instanceof Error ? err.message : 'Network search failed. Try again.' });
+      }
+    }, 300);
+    return () => { window.clearTimeout(timer); controller.abort(); };
+  }, [auth, tab, searchQuery, searchKey]);
 
   const verified = Boolean(verification?.marketplaceEnabled);
 
@@ -376,7 +410,7 @@ export function CompanyWorkspace({ tab, token, companyName, onNavigate, onCounts
     }
     if (kind === 'charger') {
       const charger = item as Charger | undefined;
-      setForm(charger ? { stationId: charger.stationId, chargerCode: charger.chargerCode, connectorType: charger.connectorType, powerKw: charger.powerKw, status: charger.status, maintenanceMode: charger.maintenanceMode, firmwareVersion: charger.firmwareVersion, healthScore: charger.healthScore } : { stationId: stations[0]?.id ?? '', chargerCode: '', connectorType: 'CCS2', powerKw: 60, status: 'ONLINE', maintenanceMode: false, firmwareVersion: '1.0.0', healthScore: 100 });
+      setForm(charger ? { stationId: charger.stationId, chargerCode: charger.chargerCode, connectorType: charger.connectorType, powerKw: charger.powerKw, status: charger.status, maintenanceMode: charger.maintenanceMode, firmwareVersion: charger.firmwareVersion, healthScore: charger.healthScore, expectedStatus: charger.status, syntheticDemo: Boolean(charger.demoData), faultReason: charger.faultReason || 'Simulated charger communication failure' } : { stationId: stations[0]?.id ?? '', chargerCode: '', connectorType: 'CCS2', powerKw: 60, status: 'ONLINE', maintenanceMode: false, firmwareVersion: '1.0.0', healthScore: 100 });
     }
     if (kind === 'employee') {
       const employee = item as Employee | undefined;
@@ -393,7 +427,7 @@ export function CompanyWorkspace({ tab, token, companyName, onNavigate, onCounts
     setError('');
   };
 
-  const submit = async () => {
+  const submit = async (approved = false) => {
     if (!modal) return;
     if (modal === 'station' && !editingId && form.stationSource === 'HOST_PARTNERED') {
       setModal(null);
@@ -401,6 +435,9 @@ export function CompanyWorkspace({ tab, token, companyName, onNavigate, onCounts
       setNotice('Choose a verified Host property, then continue through review, agreement and commissioning.');
       return;
     }
+    const editingCharger = modal === 'charger' && editingId ? [...filteredChargers, ...chargers].find(charger => charger.id === editingId) : undefined;
+    const changingStatus = editingCharger && (form.status !== editingCharger.status || Boolean(form.maintenanceMode) !== editingCharger.maintenanceMode);
+    if (changingStatus && !approved) { setPendingChargerSave(true); return; }
     setSaving(true); setError('');
     try {
       let path = ''; let method = 'POST';
@@ -410,10 +447,10 @@ export function CompanyWorkspace({ tab, token, companyName, onNavigate, onCounts
       if (modal === 'pricing') { path = `/company/stations/${editingId}/pricing`; method = 'PUT'; }
       if (modal === 'profile') { path = '/company/profile'; method = 'PUT'; }
       if (modal === 'verification') { path = '/company/verification'; method = 'POST'; }
-      const payload = { ...form };
+      const payload: Record<string, string | number | boolean> = { ...form, ...(modal === 'charger' ? { impactApproved: approved, maintenanceMode: form.status === 'MAINTENANCE', ...(form.status === 'ONLINE' && form.syntheticDemo ? { faultReason: 'Operator restored synthetic demo connector' } : {}) } : {}) };
       delete payload.stationSource;
       await apiRequest(path, { method, ...auth, body: JSON.stringify(payload) });
-      setModal(null); setNotice('Changes saved successfully.'); await loadAll();
+      setPendingChargerSave(false); setModal(null); setNotice('Changes saved successfully.'); await loadAll();
     } catch (submitError) { setError(submitError instanceof Error ? submitError.message : 'Unable to save changes.'); }
     finally { setSaving(false); }
   };
@@ -542,9 +579,9 @@ export function CompanyWorkspace({ tab, token, companyName, onNavigate, onCounts
       setSaving(true); setError('');
       const response = await apiRequest<{ state: string; message: string }>('/company/ai/actions', {
         method: 'POST', ...auth,
-        body: JSON.stringify({ ...action, priority: 'HIGH', approved: action.requiresApproval }),
+        body: JSON.stringify({ ...action, priority: 'HIGH', approved: true }),
       });
-      setNotice(response.message); await loadAll(); await askAi();
+      setPendingAgentAction(null); setNotice(response.message); await loadAll(); await askAi();
     } catch (actionError) { setError(actionError instanceof Error ? actionError.message : 'Unable to process the Company Assistant action.'); }
     finally { setSaving(false); }
   };
@@ -576,23 +613,103 @@ export function CompanyWorkspace({ tab, token, companyName, onNavigate, onCounts
       {error && <div className="wallet-message error" role="alert">{error}</div>}
       {notice && <div className="wallet-message success" role="status"><CheckCircle2 size={15} />{notice}</div>}
 
+      {operationalAlerts.length > 0 && (
+        <section className="company-urgent-incident-banner" role="alert" style={{
+          background: 'linear-gradient(135deg, rgba(239, 68, 68, 0.12) 0%, rgba(220, 38, 38, 0.18) 100%)',
+          border: '1px solid rgba(239, 68, 68, 0.4)',
+          borderRadius: 14,
+          padding: '14px 18px',
+          marginBottom: 20,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 16,
+          flexWrap: 'wrap'
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+            <div style={{
+              width: 42,
+              height: 42,
+              borderRadius: 10,
+              background: 'rgba(239, 68, 68, 0.2)',
+              color: '#ef4444',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              flexShrink: 0
+            }}>
+              <AlertTriangle size={22} />
+            </div>
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
+                <span style={{
+                  background: '#ef4444',
+                  color: '#fff',
+                  fontSize: 10,
+                  fontWeight: 800,
+                  padding: '2px 6px',
+                  borderRadius: 4,
+                  textTransform: 'uppercase'
+                }}>OPERATIONAL SERVICE ALERT</span>
+                <span style={{ fontSize: 11, color: '#fca5a5' }}>{operationalAlerts.length} connector(s) need attention</span>
+              </div>
+              <strong style={{ color: '#f8fafc', fontSize: 14 }}>{operationalAlerts[0].stationName} — {operationalAlerts[0].chargerCode}</strong>
+              <p style={{ margin: '3px 0 0 0', fontSize: 12, color: '#cbd5e1' }}>
+                {operationalAlerts[0].status} · {operationalAlerts[0].faultReason || 'Operator attention required. Review current journey impact with the Company Agent.'}
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              setQuestion("What needs attention today?");
+              onNavigate("ai");
+            }}
+            style={{
+              background: '#ef4444',
+              color: '#fff',
+              border: 'none',
+              borderRadius: 8,
+              padding: '8px 16px',
+              fontSize: 13,
+              fontWeight: 700,
+              cursor: 'pointer',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6
+            }}
+          >
+            <Wrench size={14} />
+            Ask Company Agent to Handle
+          </button>
+        </section>
+      )}
+
       {tab === 'dashboard' && <CompanyDashboardPanel dashboard={dashboard} network={network} onNavigate={onNavigate} />}
       {tab === 'monitoring' && <CompanyLiveMonitoringPanel network={network} bookings={bookings} onNavigate={onNavigate} />}
-      {tab === 'stations' && <ResourceList title="My network" description="Company-owned and Host-partnered stations, without mixing ownership roles" action="Add station" icon={Building2} onAdd={() => openModal('station')} empty="Add a controlled site or partner with a verified Host property.">{stations.map((station) => <ResourceRow key={station.id} icon={Building2} title={station.name} subtitle={`${station.ownershipType === 'HOST_PARTNERED' ? `Host property${station.propertyOwnerName ? ` · ${station.propertyOwnerName}` : ''}` : 'Company-owned / controlled'} · ${station.city} · ${station.connectors?.length ?? 0} chargers`} status={station.status} meta={`${money(station.pricePerKwh)}/kWh`} onEdit={() => openModal('station', station)} onDelete={station.ownershipType === 'COMPANY_OWNED' ? () => setPendingDelete({ kind: 'stations', id: station.id, label: station.name }) : undefined} />)}</ResourceList>}
-      {tab === 'chargers' && <ResourceList title="Provisioned chargers" action="Add charger" icon={BatteryCharging} onAdd={() => openModal('charger')} empty="Add a station before provisioning chargers.">{chargers.map((charger) => <ResourceRow key={charger.id} icon={BatteryCharging} title={charger.chargerCode} subtitle={`${charger.stationName} · ${charger.connectorType} · ${charger.powerKw} kW · Firmware ${charger.firmwareVersion}`} status={charger.status} meta={`${charger.healthScore}% health`} onEdit={() => openModal('charger', charger)} onDelete={() => setPendingDelete({ kind: 'chargers', id: charger.id, label: charger.chargerCode })} />)}</ResourceList>}
+      {(tab === 'stations' || tab === 'chargers') && <CompanyChargerSearch query={searchQuery} kind={tab} count={tab === 'stations' ? filteredStations.length : filteredChargers.length} city={matchingCities.length === 1 ? matchingCities[0] : undefined} loading={searchingNetwork} error={searchError} onClear={() => onSearchChange('')} onRetry={() => setNetworkVersion(version => version + 1)} />}
+      {tab === 'stations' && <ResourceList title="My network" description="Company-owned and Host-partnered stations, without mixing ownership roles" action="Add station" icon={Building2} onAdd={() => openModal('station')} emptyTitle={searchingNetwork ? "Searching stations…" : searchError ? "Search unavailable" : searchQuery.trim() ? `No stations found for “${searchQuery.trim()}”` : "Nothing here yet"} empty={searchingNetwork ? "Checking your authorized network." : searchError || (searchQuery.trim() ? "Try a city, address or station name." : "Add a controlled site or partner with a verified Host property.")}>{filteredStations.map((station) => <ResourceRow key={station.id} icon={Building2} title={station.name} subtitle={`${station.ownershipType === 'HOST_PARTNERED' ? `Host property${station.propertyOwnerName ? ` · ${station.propertyOwnerName}` : ''}` : 'Company-owned / controlled'} · ${station.city} · ${station.connectors?.length ?? 0} chargers`} status={station.status} meta={`${money(station.pricePerKwh)}/kWh`} onEdit={() => openModal('station', station)} onDelete={station.ownershipType === 'COMPANY_OWNED' ? () => setPendingDelete({ kind: 'stations', id: station.id, label: station.name }) : undefined} />)}</ResourceList>}
+      {tab === 'chargers' && <ResourceList title="Provisioned chargers" action="Add charger" icon={BatteryCharging} onAdd={() => openModal('charger')} emptyTitle={searchingNetwork ? "Searching chargers…" : searchError ? "Search unavailable" : searchQuery.trim() ? `No chargers found for “${searchQuery.trim()}”` : "Nothing here yet"} empty={searchingNetwork ? "Checking your authorized network." : searchError || (searchQuery.trim() ? "Try a city, station name or exact charger code." : "Add a station before provisioning chargers.")}>{filteredChargers.map((charger) => <ResourceRow key={charger.id} icon={BatteryCharging} title={charger.chargerCode} subtitle={`${charger.stationName} · ${charger.connectorType} · ${charger.powerKw} kW · Firmware ${charger.firmwareVersion}`} status={charger.status} meta={`${charger.healthScore}% health`} onEdit={() => openModal('charger', charger)} onDelete={charger.demoData ? undefined : () => setPendingDelete({ kind: 'chargers', id: charger.id, label: charger.chargerCode })} />)}</ResourceList>}
       {tab === 'bookings' && <BookingsPanel bookings={bookings} onUpdate={updateBooking} />}
       {tab === 'pricing' && <ResourceList title="Station pricing" action="Add station" icon={BadgeIndianRupee} onAdd={() => openModal('station')} empty="Create a station to configure tariffs.">{stations.map((station) => <ResourceRow key={station.id} icon={BadgeIndianRupee} title={station.name} subtitle={`Base ${money(station.pricePerKwh)}/kWh · Peak ${money(station.peakPricePerKwh ?? station.pricePerKwh)} · Student ${station.studentDiscountPercent ?? 0}% off`} status={station.dynamicPricingEnabled ? 'DYNAMIC' : 'FIXED'} meta={station.couponCode || 'No coupon'} onEdit={() => openModal('pricing', station)} />)}</ResourceList>}
       {tab === 'analytics' && <AnalyticsPanel analytics={analytics} dashboard={dashboard} />}
       {tab === 'revenue' && <CompanyRevenuePanel dashboard={dashboard} analytics={analytics} settlement={settlement} onDownload={download} />}
       {tab === 'maintenance' && <CompanyMaintenancePanel network={network} tickets={maintenanceTickets} employees={employees} saving={saving} onCreate={createMaintenanceTicket} onUpdate={updateMaintenanceTicket} />}
       {tab === 'users' && <div className="company-team-grid"><ResourceList title="Company employees" action="Add employee" icon={Users} onAdd={() => openModal('employee')} empty="Invite managers, operators and maintenance staff.">{employees.map((employee) => <ResourceRow key={employee.id} icon={Users} title={employee.name} subtitle={`${employee.email} · ${employee.permissions || 'Default permissions'}`} status={employee.active ? employee.role : 'INACTIVE'} meta={dateTime(employee.createdAt)} onEdit={() => openModal('employee', employee)} onDelete={() => setPendingDelete({ kind: 'employees', id: employee.id, label: employee.name })} />)}</ResourceList><ActivityLogPanel items={activityLogs} /></div>}
-      {tab === 'ai' && <AiPanel companyName={companyName} question={question} setQuestion={setQuestion} answer={assistantAnswer} sites={siteRecommendations} response={agentResponse} settings={agentSettings} loading={assistantLoading} saving={saving} onAsk={askAi} onSettings={updateAgentSettings} onAction={executeAgentAction} onOpenOpportunities={() => onNavigate('host_opportunities')} dashboard={dashboard} />}
+      {tab === 'ai' && <AiPanel companyName={companyName} question={question} setQuestion={setQuestion} answer={assistantAnswer} sites={siteRecommendations} response={agentResponse} settings={agentSettings} loading={assistantLoading} saving={saving} onAsk={askAi} onSettings={updateAgentSettings} onAction={async action => { setPendingAgentAction(action); }} onOpenOpportunities={() => onNavigate('host_opportunities')} dashboard={dashboard} />}
       {tab === 'expansion' && <ExpansionIntelligencePanel companyName={companyName} sites={siteRecommendations} answer={assistantAnswer} loading={assistantLoading} onRefresh={analyzeExpansion} onOpenOpportunities={() => onNavigate('host_opportunities')} onAskAssistant={() => { setQuestion('Compare the top expansion sites and explain the investment trade-offs.'); onNavigate('ai'); }} />}
       {tab === 'reports' && <ReportsPanel onDownload={download} />}
       {tab === 'notifications' && <CompanyNotificationsPanel items={notifications} onRead={markNotificationRead} onReadAll={markAllNotificationsRead} />}
       {tab === 'settings' && <SettingsPanel profile={profile} verification={verification} saving={saving} onProfile={() => openModal('profile')} onVerification={() => openModal('verification')} onVerifyEmail={() => setEmailVerificationOpen(true)} onSettings={updateCompanySettings} />}
 
-      {modal && modal !== 'verification' && <CompanyModal kind={modal} form={form} setForm={setForm} stations={stations} editing={Boolean(editingId)} saving={saving} onClose={() => setModal(null)} onSubmit={submit} />}
+      {pendingAgentAction && <OperatorApprovalDialog title={pendingAgentAction.action.includes('DEMO') ? 'DEMO ACTION' : 'Approve operational action'}
+        description={pendingAgentAction.label} detail={pendingAgentAction.reason} saving={saving} error={error}
+        onCancel={() => setPendingAgentAction(null)} onConfirm={() => void executeAgentAction(pendingAgentAction)} />}
+      {pendingChargerSave && <OperatorApprovalDialog title={form.syntheticDemo ? 'Synthetic demo event' : 'Confirm operational change'}
+        description={`${form.chargerCode}: ${form.expectedStatus} → ${form.status}`}
+        detail={form.status === 'ONLINE' ? 'Restore this connector to service and clear its fault. Existing driver plans will not be changed by restoration.' : `${form.faultReason || 'Operator status update'}. Active journeys using this connector may need a replacement plan. Other healthy connectors remain usable.`}
+        saving={saving} error={error} onCancel={() => setPendingChargerSave(false)} onConfirm={() => void submit(true)} />}
+      {modal && !pendingChargerSave && modal !== 'verification' && <CompanyModal kind={modal} form={form} setForm={setForm} stations={stations} editing={Boolean(editingId)} saving={saving} onClose={() => { if (!saving) { setModal(null); setPendingChargerSave(false); } }} onSubmit={() => submit()} />}
       {modal === 'verification' && <CompanyVerificationFlow token={token} company={profile} onClose={() => setModal(null)} onSubmitted={() => { setModal(null); setNotice('Verification submitted for independent review.'); void loadAll(); }} />}
       {emailVerificationOpen && <EmailVerificationDialog code={verificationCode} sent={verificationSent} saving={saving} onCode={setVerificationCode} onSend={sendVerificationCode} onConfirm={confirmVerificationCode} onClose={() => setEmailVerificationOpen(false)} />}
       {pendingDelete && <DeleteConfirmationDialog label={pendingDelete.label} saving={saving} onCancel={() => setPendingDelete(null)} onConfirm={remove} />}
@@ -691,8 +808,8 @@ function Dashboard({ dashboard, onNavigate }: { dashboard: CompanyDashboard; onN
 }
 
 */
-function ResourceList({ title, description = 'Protected company workspace records', action, icon: Icon, onAdd, empty, children }: { title: string; description?: string; action: string; icon: typeof Building2; onAdd: () => void; empty: string; children: React.ReactNode }) {
-  return <article className="company-card resource-card"><div className="company-card-head"><div><h2>{title}</h2><p>{description}</p></div><button className="feature-primary" onClick={onAdd}><Plus size={15} />{action}</button></div><div className="resource-list">{Children.count(children) > 0 ? children : <div className="company-empty"><Icon size={27} /><h3>Nothing here yet</h3><p>{empty}</p><button className="feature-primary" onClick={onAdd}><Plus size={15} />{action}</button></div>}</div></article>;
+function ResourceList({ title, description = 'Protected company workspace records', action, icon: Icon, onAdd, empty, emptyTitle = 'Nothing here yet', children }: { title: string; description?: string; action: string; icon: typeof Building2; onAdd: () => void; empty: string; emptyTitle?: string; children: React.ReactNode }) {
+  return <article className="company-card resource-card"><div className="company-card-head"><div><h2>{title}</h2><p>{description}</p></div><button className="feature-primary" onClick={onAdd}><Plus size={15} />{action}</button></div><div className="resource-list">{Children.count(children) > 0 ? children : <div className="company-empty"><Icon size={27} /><h3>{emptyTitle}</h3><p>{empty}</p><button className="feature-primary" onClick={onAdd}><Plus size={15} />{action}</button></div>}</div></article>;
 }
 
 function ResourceRow({ icon: Icon, title, subtitle, status, meta, onEdit, onDelete }: { icon: typeof Building2; title: string; subtitle: string; status: string; meta: string; onEdit: () => void; onDelete?: () => void }) {
@@ -728,27 +845,34 @@ function AiPanel({ companyName, question, setQuestion, answer, sites, response, 
   const modes: Array<{ id: CompanyAgentMode; label: string; detail: string }> = [
     { id: 'RECOMMEND_ONLY', label: 'Recommend only', detail: 'Vidyut recommends; your team acts' },
     { id: 'ASK_BEFORE_ACTIONS', label: 'Ask before actions', detail: 'Vidyut waits for team approval' },
-    { id: 'AUTOPILOT', label: 'Autopilot', detail: 'Vidyut acts within the limits below' },
+    { id: 'AUTOPILOT', label: 'Monitor and prepare', detail: 'Every write still requires approval' },
   ];
   return <div className="company-agent-page">
     <section className="company-agent-authority company-card">
       <div><span className="feature-eyebrow">ACTION PERMISSION</span><h2>Choose how Vidyut may act</h2><p>Vidyut always monitors and analyzes your network. You decide whether it may carry out operational actions.</p></div>
       <div className="company-agent-modes">{modes.map((mode) => <button key={mode.id} className={settings.mode === mode.id ? 'active' : ''} disabled={saving} onClick={() => void onSettings({ mode: mode.id })}><span>{mode.label}</span><small>{mode.detail}</small>{settings.mode === mode.id && <CheckCircle2 size={16} />}</button>)}</div>
-      <div className="company-agent-limit-heading"><strong>Autopilot safety limits</strong><span>These settings are used only when Autopilot is selected.</span></div>
-      <div className="company-agent-limits"><label>Maximum automatic price change <strong>{settings.maxPriceChangePercent}%</strong><input type="range" min="0" max="25" step="1" value={settings.maxPriceChangePercent} disabled={saving} onChange={(event) => void onSettings({ maxPriceChangePercent: Number(event.target.value) })} /></label><label><input type="checkbox" checked={settings.autoDisableFaultyChargers} disabled={saving} onChange={(event) => void onSettings({ autoDisableFaultyChargers: event.target.checked })} /> Isolate a faulty charger</label><label><input type="checkbox" checked={settings.autoCreateMaintenanceTickets} disabled={saving} onChange={(event) => void onSettings({ autoCreateMaintenanceTickets: event.target.checked })} /> Open maintenance tickets</label></div>
+      <div className="company-agent-limit-heading"><strong>Operational safety limits</strong><span>Every write requires approval in every mode.</span></div>
+      <div className="company-agent-limits"><label>Maximum approved price change <strong>{settings.maxPriceChangePercent}%</strong><input type="range" min="0" max="25" step="1" value={settings.maxPriceChangePercent} disabled={saving} onChange={event => void onSettings({ maxPriceChangePercent: Number(event.target.value) })} /></label><p>Host partners report issues. Company operators control equipment. EV Owners approve replacement journeys.</p></div>
     </section>
     <div className="ai-company-layout">
     <article className="company-card ai-company-card">
       <div className="ai-orb"><Bot size={30} /></div>
-      <div><div className="feature-eyebrow">ASK VIDYUT</div><h2>What would you like to know or change?</h2><p>Responses use only {companyName}’s stations, chargers, sessions, partnerships, maintenance and revenue.</p></div>
+      <div><div className="feature-eyebrow">ASK VIDYUT</div><h2>Charging network operator assistant</h2><p>Responses use only {companyName}’s stations, chargers, sessions, partnerships, maintenance and revenue.</p></div>
       <div className="ai-answer"><Sparkline /><div><strong>{loading ? 'Analyzing live company data…' : answer}</strong>{response?.assistantProvider && <small className={`agent-provider ${response.assistantFallback ? 'fallback' : ''}`}>{response.assistantFallback ? 'Rules fallback' : response.assistantProvider}{response.assistantModel ? ` · ${response.assistantModel}` : ''}</small>}</div></div>
+      {response?.operations && ['FAULT','OWNERSHIP','CONNECTOR_AVAILABILITY'].includes(response.intent) && <div className="company-operator-evidence">
+        {response.operations.stations.filter(station => response.intent !== 'FAULT' || station.issueCount > 0).slice(0, 6).map(station => <article key={station.stationId}>
+          <strong>{station.stationName} · {station.city}</strong><small>{station.ownershipType}{station.propertyTitle ? ` · ${station.propertyTitle}` : ''}{station.hostName ? ` · Host: ${station.hostName}` : ''}</small>
+          <small>{station.unavailableConnectors} unavailable connectors · {station.affectedJourneyIds.length} affected journeys · {station.activeBookingIds.length} active station bookings</small>
+          <small>{station.availableCcs2}/{station.ccs2Connectors} CCS2 available · Recorded downtime: {station.downtimeMinutes == null ? 'unknown' : `${station.downtimeMinutes} min`}</small>
+        </article>)}
+      </div>}
       {response?.network && <div className="company-agent-network"><span><strong>{response.network.occupied}</strong><small>Occupied</small></span><span><strong>{response.network.available}</strong><small>Available</small></span><span><strong>{response.network.reserved}</strong><small>Reserved</small></span><span><strong>{response.network.offline}</strong><small>Offline</small></span><span><strong>{response.network.faults}</strong><small>Faults</small></span></div>}
-      {response?.fault && <section className="company-agent-fault"><header><AlertTriangle size={19} /><div><strong>{response.fault.chargerCode} fault · {response.fault.stationName}</strong><span>{response.fault.issue}</span></div></header><div><span><small>Affected bookings</small><strong>{response.fault.affectedBookings}</strong></span><span><small>Estimated downtime</small><strong>{response.fault.estimatedDowntimeMinutes} min</strong></span><span><small>Revenue at risk</small><strong>{money(response.fault.estimatedRevenueAtRisk)}</strong></span></div>{response.fault.compatibleBackups.length > 0 && <p>Compatible backup: {response.fault.compatibleBackups.join(' · ')}</p>}</section>}
-      {response?.revenue && response.intent === 'REVENUE' && <section className="company-agent-revenue"><span><small>Sessions</small><strong>{response.revenue.sessions}</strong></span><span><small>Energy sold</small><strong>{response.revenue.energySoldKwh} kWh</strong></span><span><small>Charging revenue</small><strong>{money(response.revenue.chargingRevenue)}</strong></span><span><small>Host payouts</small><strong>− {money(response.revenue.estimatedHostPayouts)}</strong></span><span><small>Vidyut fees</small><strong>− {money(response.revenue.estimatedVidyutFees)}</strong></span><span><small>Estimated company revenue</small><strong>{money(response.revenue.estimatedCompanyRevenue)}</strong></span></section>}
-      {response?.pricing && response.intent === 'PRICING' && <section className="company-agent-pricing"><div><small>{response.pricing.stationName}</small><strong>{money(response.pricing.currentPricePerKwh)}/kWh → {money(response.pricing.recommendedPricePerKwh)}/kWh</strong><p>Nearby average {money(response.pricing.nearbyAveragePricePerKwh)} · test {response.pricing.timeWindow} · utilization {response.pricing.currentUtilizationPercent}% → estimated {response.pricing.expectedUtilizationPercent}%</p></div></section>}
-      {response?.offerDraft && Object.keys(response.offerDraft).length > 0 && <section className="company-agent-offer"><header><strong>Reviewable offer draft</strong><span>Nothing has been sent</span></header><div><span><small>Property</small><strong>{String(response.offerDraft.property)}</strong></span><span><small>Installation</small><strong>{String(response.offerDraft.installation)}</strong></span><span><small>Company investment</small><strong>{money(Number(response.offerDraft.companyInvestment))}</strong></span><span><small>Host revenue share</small><strong>{String(response.offerDraft.hostRevenueSharePercent)}%</strong></span></div><button onClick={onOpenOpportunities}>Open property workflow</button></section>}
-      {response?.actions && response.actions.length > 0 && <div className="company-agent-actions"><header><strong>Recommended actions</strong><span>{settings.mode === 'RECOMMEND_ONLY' ? 'Manual only' : settings.mode === 'AUTOPILOT' ? 'Within company limits' : 'Approval required'}</span></header>{response.actions.map((action) => <article key={action.action}><div><strong>{action.label}</strong><small>{action.reason} · {action.risk.toLowerCase()} risk</small></div><button disabled={saving || settings.mode === 'RECOMMEND_ONLY'} onClick={() => void onAction(action)}>{settings.mode === 'AUTOPILOT' && !action.requiresApproval ? 'Run within limits' : 'Approve'}</button></article>)}</div>}
-      {sites.length > 0 && <div className="company-ai-sites">
+      {response?.fault && <section className="company-agent-fault"><header><AlertTriangle size={19} /><div><strong>{response.fault.chargerCode} fault · {response.fault.stationName}</strong><span>{response.fault.issue}</span></div></header><div><span><small>Affected bookings</small><strong>{response.fault.affectedBookings}</strong></span><span><small>Estimated downtime</small><strong>{response.fault.estimatedDowntimeMinutes == null ? 'Not recorded' : `${response.fault.estimatedDowntimeMinutes} min`}</strong></span><span><small>Station booking value</small><strong>{money(response.fault.estimatedRevenueAtRisk)}</strong></span></div>{response.fault.compatibleBackups.length > 0 && <p>Compatible backup: {response.fault.compatibleBackups.join(' · ')}</p>}</section>}
+      {response?.revenue && response.intent === 'REVENUE' && <section className="company-agent-revenue"><span><small>Sessions</small><strong>{response.revenue.sessions}</strong></span><span><small>Energy sold</small><strong>{response.revenue.energySoldKwh} kWh</strong></span><span><small>Charging revenue</small><strong>{money(response.revenue.chargingRevenue)}</strong></span><span><small>Host payouts</small><strong>− {response.revenue.estimatedHostPayouts == null ? 'Not recorded' : money(response.revenue.estimatedHostPayouts)}</strong></span><span><small>Vidyut fees</small><strong>− {response.revenue.estimatedVidyutFees == null ? 'Not recorded' : money(response.revenue.estimatedVidyutFees)}</strong></span><span><small>Estimated company revenue</small><strong>{response.revenue.estimatedCompanyRevenue == null ? 'Not available' : money(response.revenue.estimatedCompanyRevenue)}</strong></span></section>}
+      {response?.pricing && response.intent === 'PRICING' && <section className="company-agent-pricing"><div><small>{response.pricing.stationName}</small><strong>{money(response.pricing.currentPricePerKwh)}/kWh → {money(response.pricing.recommendedPricePerKwh)}/kWh</strong><p>Nearby average {money(response.pricing.nearbyAveragePricePerKwh)} · test {response.pricing.timeWindow} · utilization {response.pricing.currentUtilizationPercent}% · demand change unknown</p></div></section>}
+      {response?.offerDraft && Object.keys(response.offerDraft).length > 0 && <section className="company-agent-offer"><header><strong>Reviewable offer draft</strong><span>Nothing has been sent</span></header><div><span><small>Property</small><strong>{String(response.offerDraft.property)}</strong></span><span><small>Installation</small><strong>{String(response.offerDraft.installation)}</strong></span><span><small>Company investment</small><strong>{response.offerDraft.companyInvestment == null ? 'Terms needed' : money(Number(response.offerDraft.companyInvestment))}</strong></span><span><small>Host revenue share</small><strong>{response.offerDraft.hostRevenueSharePercent == null ? 'Terms needed' : `${response.offerDraft.hostRevenueSharePercent}%`}</strong></span></div><button onClick={onOpenOpportunities}>Open property workflow</button></section>}
+      {response?.actions && response.actions.length > 0 && <div className="company-agent-actions"><header><strong>Recommended actions</strong><span>{settings.mode === 'RECOMMEND_ONLY' ? 'Manual only' : 'Approval required'}</span></header>{response.actions.map((action) => <article key={action.action}><div><strong>{action.label}</strong><small>{action.reason} · {action.risk.toLowerCase()} risk</small></div><button disabled={saving || settings.mode === 'RECOMMEND_ONLY'} onClick={() => void onAction(action)}>Review action</button></article>)}</div>}
+      {sites.length > 0 && response?.intent === 'EXPANSION' && <div className="company-ai-sites">
         <header><div><strong>Expansion shortlist</strong><span>Grid, parking and network-gap score</span></div><button onClick={onOpenOpportunities}>Open all Host land</button></header>
         {sites.slice(0, 3).map((site, index) => <article key={site.propertyId}>
           <b>#{index + 1}</b><div><strong>{site.title}</strong><span><MapPin size={12} /> {site.location}</span><small>{site.reason}</small></div>
@@ -756,7 +880,7 @@ function AiPanel({ companyName, question, setQuestion, answer, sites, response, 
         </article>)}
       </div>}
       <div className="ai-input"><input value={question} onChange={event => setQuestion(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') void onAsk(); }} placeholder="Ask about occupied chargers, a fault, revenue, pricing, properties or an offer…" /><button onClick={() => void onAsk()} disabled={loading}><Send size={17} /></button></div>
-      <div className="ai-prompts">{['How many cars are charging right now?','Explain the highest-priority fault','How much did we earn today?','Should I reduce prices?','Where should we install next?','Prepare an offer with maximum ₹18 lakh investment'].map(item => <button key={item} onClick={() => setQuestion(item)}>{item}</button>)}</div>
+      <div className="ai-prompts">{['Which station needs the most attention right now?', 'Show me all Host-partnered stations with operational issues.', 'Which Host property is the best candidate for our next 120 kW CCS2 charger?', 'Compare the partnership offers for the Agra property.', 'Simulate a fault on the Agra demo CCS2 connector.', 'Restore DEMO-AGRA-CCS2-01', 'Which stations have only AC charging?'].map(item => <button key={item} onClick={() => setQuestion(item)}>{item}</button>)}</div>
     </article>
     <aside className="company-card"><div className="company-card-head"><div><h2>Live company data</h2><p>Visible only inside {companyName}’s workspace</p></div><Activity size={20} /></div><div className="insight-list"><SmallMetric label="Stations" value={dashboard.totalStations} /><SmallMetric label="Faults" value={dashboard.faults} /><SmallMetric label="Utilization" value={`${dashboard.utilizationRate}%`} /><SmallMetric label="Revenue" value={money(dashboard.revenue)} /></div><div className="company-agent-boundary"><ShieldCheck size={18} /><p><strong>One assistant, company scope only</strong>Vidyut can analyze and operate {companyName}’s infrastructure according to the action permission selected above. Platform-wide control remains with Admin.</p></div></aside>
   </div></div>;
@@ -795,7 +919,7 @@ function ExpansionIntelligencePanel({ companyName, sites, answer, loading, onRef
         <div className="expansion-site-ranking">{sites.map((site, index) => <article key={site.propertyId}>
           <b>#{index + 1}</b>
           <div className="expansion-site-copy"><strong>{site.title}</strong><span><MapPin size={12} />{site.location}</span><p>{site.reason}</p></div>
-          <div className="expansion-site-evidence"><span><small>Grid capacity</small><strong>{site.availableLoadKw} kW</strong></span><span><small>Parking</small><strong>{site.parkingBays} bays</strong></span><span><small>Network gap</small><strong>{site.nearestActiveStationKm} km</strong></span><span><small>Recommended setup</small><strong>{site.recommendedChargerCount ?? 1} × {site.recommendedPowerKw ?? 60} kW {site.recommendedConnector ?? 'CCS2'}</strong></span></div>
+          <div className="expansion-site-evidence"><span><small>Grid capacity</small><strong>{site.availableLoadKw} kW</strong></span><span><small>Parking</small><strong>{site.parkingBays} bays</strong></span><span><small>Network gap</small><strong>{site.nearestActiveStationKm == null ? 'Unknown' : `${site.nearestActiveStationKm} km`}</strong></span><span><small>Recommended setup</small><strong>{site.recommendedChargerCount ?? 1} × {site.recommendedPowerKw ?? 60} kW {site.recommendedConnector ?? 'CCS2'}</strong></span></div>
           <div className="expansion-site-score"><strong>{site.expansionScore.toFixed(0)}</strong><small>/100</small><button onClick={onOpenOpportunities}>Review site</button></div>
         </article>)}</div>
       </section>
@@ -842,8 +966,10 @@ function CompanyModal({ kind, form, setForm, stations, editing, saving, onClose,
         {kind === 'charger' && <>
           {select('stationId','Station',stations.map(station => ({ value: station.id, label: station.name })))}{field('chargerCode','Charger code')}
           {select('connectorType','Connector',['CCS2','TYPE2','CHADEMO','GB_T'])}{field('powerKw','Power kW','number')}
-          {select('status','Status',['ONLINE','OFFLINE','CHARGING','MAINTENANCE','FAULT'])}{field('firmwareVersion','Firmware version')}{field('healthScore','Health score','number')}
-          <label className="company-checkbox"><input type="checkbox" checked={Boolean(form.maintenanceMode)} onChange={event => setForm(current => ({ ...current, maintenanceMode: event.target.checked }))} />Maintenance mode</label>
+          {select('status','Operational status',['ONLINE','OFFLINE','CHARGING','MAINTENANCE','FAULT','SUSPECTED_FAULT'])}{field('firmwareVersion','Firmware version')}{field('healthScore','Health score','number')}
+          <label className="company-checkbox"><input type="checkbox" checked={form.status === 'MAINTENANCE'} disabled />Maintenance follows operational status</label>
+          {form.status === 'FAULT' && field('faultReason','Fault reason')}
+          {form.syntheticDemo && <div className="company-demo-review wide"><strong>DEMO CONTROLS · Synthetic telemetry</strong><p>{String(form.chargerCode)} · Change ONLINE → FAULT to prepare an incident. Change FAULT → ONLINE to restore this connector. Saving requires review and confirmation.</p></div>}
         </>}
         {kind === 'employee' && <>{field('name','Full name')}{field('email','Work email','email')}{field('phone','Phone')}{select('role','Role',['MANAGER','OPERATOR','MAINTENANCE','FINANCE','ANALYST'])}{field('permissions','Permissions')}<label className="company-checkbox"><input type="checkbox" checked={Boolean(form.active)} onChange={event => setForm(current => ({ ...current, active: event.target.checked }))} />Active employee</label></>}
         {kind === 'pricing' && <>{field('pricePerKwh','Base ₹/kWh','number')}{field('timeBasedPricePerHour','Time-based ₹/hour','number')}{field('peakPricePerKwh','Peak ₹/kWh','number')}{field('peakHours','Peak hours')}{field('studentDiscountPercent','Student discount %','number')}{field('corporatePricePerKwh','Corporate ₹/kWh','number')}{field('couponCode','Coupon code')}{field('couponDiscountPercent','Coupon discount %','number')}<label className="company-checkbox"><input type="checkbox" checked={Boolean(form.dynamicPricingEnabled)} onChange={event => setForm(current => ({ ...current, dynamicPricingEnabled: event.target.checked }))} />Dynamic pricing</label></>}
@@ -874,3 +1000,13 @@ function Sparkline() { return <svg viewBox="0 0 200 44" aria-hidden="true"><path
 void RevenuePanel;
 void MaintenancePanel;
 void NotificationsPanel;
+
+function OperatorApprovalDialog({ title, description, detail, saving, error, onCancel, onConfirm }: {
+  title: string; description: string; detail: string; saving: boolean; error: string; onCancel: () => void; onConfirm: () => void;
+}) {
+  return <div className="vehicle-form-backdrop" style={{ zIndex: 3000 }}><section className="company-modal" role="dialog" aria-modal="true" aria-labelledby="operator-approval-title">
+    <div className="company-card-head"><div><h2 id="operator-approval-title">{title}</h2><p>Review before the backend changes network state.</p></div></div>
+    <div style={{ padding: 24 }}><h3>{description}</h3><p>{detail}</p>{error && <p role="alert">{error}</p>}</div>
+    <div className="company-modal-actions"><button autoFocus className="secondary-action" disabled={saving} onClick={onCancel}>Cancel</button><button className="feature-primary" disabled={saving} onClick={onConfirm}>{saving ? 'Applying…' : 'Approve'}</button></div>
+  </section></div>;
+}

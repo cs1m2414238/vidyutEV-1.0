@@ -1,6 +1,7 @@
 package com.vidyut.host.controller;
 
 import com.vidyut.booking.dto.BookingStatusUpdateRequest;
+import com.vidyut.common.exception.BadRequestException;
 import com.vidyut.common.response.ApiResponse;
 import com.vidyut.common.util.CurrentUserUtil;
 import com.vidyut.host.dto.*;
@@ -52,6 +53,33 @@ public class HostOperationsController {
             @RequestHeader(HttpHeaders.AUTHORIZATION) String authorization,
             @Valid @RequestBody HostAiRequest request) {
         return ok(hostService.assistant(id(), request.getQuestion(), authorization));
+    }
+    @PostMapping("/ai/context") public ResponseEntity<ApiResponse<Map<String, Object>>> assistantContext(
+            @Valid @RequestBody HostAiRequest request) {
+        return ok(hostService.assistant(id(), request.getQuestion()));
+    }
+    @GetMapping("/ai/readiness") public ResponseEntity<ApiResponse<Map<String, Object>>> readiness() {
+        return ok(hostService.evaluatePropertyReadiness(id()));
+    }
+    @GetMapping("/ai/offers") public ResponseEntity<ApiResponse<Map<String, Object>>> offers(@RequestParam(required = false) String property) {
+        return ok(hostService.compareCompanyOffers(id(), property));
+    }
+    @GetMapping("/ai/charger-health") public ResponseEntity<ApiResponse<Map<String, Object>>> chargerHealth() {
+        return ok(hostService.getHostedChargerHealth(id()));
+    }
+    @GetMapping("/ai/property-duplicate") public ResponseEntity<ApiResponse<Map<String, Object>>> propertyDuplicate(
+            @RequestParam String title, @RequestParam String address, @RequestParam String city) {
+        return ok(hostService.checkPropertyDuplicate(id(), title, address, city));
+    }
+    @PostMapping("/ai/prepare-property-draft") public ResponseEntity<ApiResponse<Map<String, Object>>> preparePropertyDraft(
+            @Valid @RequestBody com.vidyut.land.dto.LandListingCreateRequest request) {
+        return ok(hostService.preparePropertyListing(id(), request));
+    }
+    @PostMapping("/ai/create-property-draft") public ResponseEntity<ApiResponse<Map<String, Object>>> createPropertyDraft(
+            @RequestParam(defaultValue = "false") boolean approved,
+            @Valid @RequestBody com.vidyut.land.dto.LandListingCreateRequest request) {
+        if (!approved) throw new BadRequestException("Host approval is required before creating a property draft");
+        return ok(hostService.createPropertyDraft(id(), request));
     }
     @PostMapping("/ai/actions") public ResponseEntity<ApiResponse<Map<String, Object>>> agentAction(@Valid @RequestBody HostAgentActionRequest request) { return ok(hostService.executeAgentAction(id(), request)); }
     @GetMapping("/notifications") public ResponseEntity<ApiResponse<List<Notification>>> notifications() { return ok(notificationService.getNotificationsForUser(id())); }

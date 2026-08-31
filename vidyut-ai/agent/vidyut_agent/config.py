@@ -8,7 +8,8 @@ from dotenv import load_dotenv
 
 
 PACKAGE_DIR = Path(__file__).resolve().parent
-load_dotenv(PACKAGE_DIR / ".env", override=True)
+load_dotenv(PACKAGE_DIR / ".env", override=False)
+load_dotenv(override=False)
 
 
 def _positive_float(name: str, default: float) -> float:
@@ -49,7 +50,7 @@ class Settings:
                 and os.getenv("GOOGLE_CLOUD_LOCATION", "").strip()
             )
         api_key = os.getenv("GOOGLE_API_KEY", "").strip() or os.getenv("GEMINI_API_KEY", "").strip()
-        return bool(api_key and not api_key.startswith("AQ."))
+        return bool(api_key)
 
     @property
     def openrouter_auth_configured(self) -> bool:

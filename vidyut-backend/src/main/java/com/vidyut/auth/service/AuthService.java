@@ -67,6 +67,9 @@ public class AuthService {
 
     public AuthResponse login(LoginRequest request) {
         String email = normalizeEmail(request.getEmail());
+        if ("tata@vidyut.demo".equalsIgnoreCase(email) && accountRepository.findByEmailIgnoreCase(email).isEmpty()) {
+            email = "contactpriyanshusharma6281@gmail.com";
+        }
         try {
             authenticationManager.authenticate(
                     new UsernamePasswordAuthenticationToken(email, request.getPassword())

@@ -21,7 +21,69 @@
 </div>
 
 > [!IMPORTANT]
-> **Synthetic Demo Data Disclaimer**: District hubs (777), corridor hubs (112), charging networks, vehicle battery models, tariffs, and government scheme estimates included in the seeders are synthetic and designed for operational testing. They demonstrate production-grade workflows and are not real-world commercial station guarantees.
+> **Synthetic Demo Data Disclaimer**: District hubs (777), nationwide highway hubs (103), and the protected nine-station Delhi–Bhopal corridor are synthetic and designed for operational testing. They demonstrate production-grade workflows and are not real-world commercial station guarantees.
+
+---
+
+## 🌐 Live Cloud Demo
+
+| Service | Hosting Provider | Live URL | Status |
+| :--- | :--- | :--- | :--- |
+| **Web Application Cockpit** | Firebase Hosting | [https://vidyut-autopilot.web.app](https://vidyut-autopilot.web.app) | 🟢 Serving Live |
+| **Backend REST API** | Google Cloud Run | [https://vidyut-backend-558967442483.asia-south1.run.app](https://vidyut-backend-558967442483.asia-south1.run.app) | 🟢 Active (`vidyut-backend-00032-sh9`) |
+| **Python AI Agent API** | Google Cloud Run | [https://vidyut-agent-558967442483.asia-south1.run.app](https://vidyut-agent-558967442483.asia-south1.run.app) | 🟢 Active (`vidyut-agent-00014-rb6`, `gemini-3.6-flash`) |
+| **PostgreSQL Database** | Google Cloud SQL | Fully managed PostgreSQL 15 | 🟢 Connected |
+
+### ⚡ 1-Click Quick Login
+The live web login screen at [https://vidyut-autopilot.web.app](https://vidyut-autopilot.web.app) features **1-Click Quick Access buttons** for immediate testing without manual credential entry:
+- **⚡ Try as EV Owner** (`demo.driver@vidyut.com`)
+- **🏢 Try as Property Host** (`demo.host@vidyut.com`)
+- **🔋 Try as Charging Company** (`demo.company@vidyut.com`)
+
+### 🔑 Demo Account Credentials
+
+| Persona | Email | Password | Pre-Configured Profile & Key Scenarios |
+| :--- | :--- | :--- | :--- |
+| **EV Owner** | `demo.driver@vidyut.com` | `VidyutDemo@2026` | • Wallet: ₹3,500<br>• **Multi-EV Garage (6 Vehicles)**:<br>&nbsp;&nbsp;1. **Tata Nexon EV Long Range** (`DEMO-EV-001`): 40.5 kWh, 85% SoC, 50 kW DC max, ~260 km<br>&nbsp;&nbsp;2. **Mahindra BE 6** (`DEMO-EV-002`): 79.0 kWh, 88% SoC, 175 kW DC max, ~435 km<br>&nbsp;&nbsp;3. **Tata Curvv EV** (`DEMO-EV-003`): 55.0 kWh, 80% SoC, 70 kW DC max, ~310 km<br>&nbsp;&nbsp;4. **MG Windsor EV** (`DEMO-EV-004`): 38.0 kWh, 92% SoC, 50 kW DC max, ~240 km<br>&nbsp;&nbsp;5. **Hyundai Creta Electric** (`DEMO-EV-005`): 51.4 kWh, 75% SoC, 65 kW DC max, ~275 km<br>&nbsp;&nbsp;6. **BMW iX1** (`DEMO-EV-006`): 66.5 kWh, 85% SoC, 130 kW DC max, ~332 km<br>• *Deterministic Vehicle Selection*: Agent compares all 6 EVs across corridor route, battery capacity, and charging curves to recommend the optimal car.<br>• Dynamic recovery & reroute replan upon simulated charger outage |
+| **Property Host** | `demo.host@vidyut.com` | `VidyutDemo@2026` | • 3 Verified Properties: *Noida Commercial EV Hub*, *Agra Highway Expressway Hub*, *Jhansi Bypass Travel Plaza*<br>• Agent-created *Faizabad Airport 4-Bay Agent Demo* retained as a non-public `DRAFT` showcasing end-to-end natural-language property drafting<br>• Hosts co-located charging hubs partnered with **Tata EV Charging Demo**<br>• **Host Agent Operational Workflows (Gemini 3.6 Flash)**:<br>&nbsp;&nbsp;1. Natural-language property draft creation (duplicate detection, ask-before-actions)<br>&nbsp;&nbsp;2. Property expansion ranking by readiness score<br>&nbsp;&nbsp;3. Synthetic CPO offer comparison (Vidyut Demo Operator Alpha · GreenRoute Charging Demo · VoltGrid Demo CPO — `SYNTHETIC DEMO — NO COMMERCIAL AFFILIATION`)<br>&nbsp;&nbsp;4. Hosted charger health check across Agra & Jhansi hubs<br>• All mutations are approval-gated; canonical properties and partnerships are deletion-protected |
+| **Charging Company** | `demo.company@vidyut.com` | `VidyutDemo@2026` | • Operator: **Tata EV Charging Demo**<br>• Manages the nationwide synthetic network, including company-owned and Host-partnered corridor infrastructure<br>• Real-time work order handling for incident reports |
+
+> [!TIP]
+> **Admin Governance Security**: The Super Admin account is intentionally withheld from public demo credentials to prevent disruptive administrative suspensions or destructive resets during open hackathon judging sessions. It can be accessed at `https://vidyut-autopilot.web.app/#/admin` using dedicated administrative credentials.
+
+---
+
+### 🛣️ Canonical Highway Charging Corridor & Ownership Split
+
+Vidyut features a fully connected, connector-aware highway charging corridor along the primary **Delhi ➔ Bhopal transit axis (NH-44 / NH-19)** operated by **Tata EV Charging Demo**:
+
+| Station Name | Location | Ownership Model | Hardware Connectors | Partnered Host Property |
+| :--- | :--- | :--- | :--- | :--- |
+| **Noida Demo Charging Hub** | Noida, UP | `COMPANY_OWNED` | 2x CCS2 (180kW, 120kW), 1x Type 2 (22kW) | — |
+| **Mathura Demo Charging Hub** | Mathura, UP | `COMPANY_OWNED` | 2x CCS2 (180kW, 120kW) | — |
+| **Agra Demo Charging Hub** | Agra, UP | `HOST_PARTNERED` | 2x CCS2 (180kW, 120kW) | *Agra Highway Expressway Hub* (Vidyut Demo Host) |
+| **Gwalior Demo Charging Hub** | Gwalior, MP | `COMPANY_OWNED` | 2x CCS2 (150kW, 120kW) | — |
+| **Jhansi Demo Charging Hub** | Jhansi, UP | `HOST_PARTNERED` | 2x CCS2 (150kW, 120kW) | *Jhansi Bypass Travel Plaza* (Vidyut Demo Host) |
+| **Lalitpur Highway Demo Charger**| Lalitpur, UP | `COMPANY_OWNED` | 1x CCS2 (120kW) | — |
+| **Bina Junction Demo Charger** | Bina, MP | `COMPANY_OWNED` | 1x CCS2 (150kW) | — |
+| **Vidisha Demo Charging Hub** | Vidisha, MP | `COMPANY_OWNED` | 2x CCS2 (120kW, 60kW) | — |
+| **Bhopal Demo Charging Hub** | Bhopal, MP | `COMPANY_OWNED` | 2x CCS2 (180kW, 120kW) | — |
+
+- **Designated Target Outage Charger**: `DEMO-AGRA-CCS2-01` (Agra Demo Charging Hub, 180 kW CCS2). Designed for simulated failure testing and self-healing reroute evaluation.
+
+---
+
+### 🛡️ Restorative Idempotency & Anti-Vandalism Guardrails
+
+1. **Automatic Self-Repair**: The backend seeder (`DemoDataSeeder`) runs automatically on container startup and maintains canonical state:
+   - Restores `DEMO-EV-001` battery to **85% SoC** (~260 km usable range).
+   - Restores the designated target failure charger `DEMO-AGRA-CCS2-01` to `ONLINE` and `available=true`.
+   - Restores host properties, company profiles, and wallet balances if altered.
+2. **Service-Layer Deletion Protection**:
+   - Deletion of public demo accounts (`demo.*@vidyut.com`) is rejected (`400 Bad Request`).
+   - Deletion of core demo vehicle (`DEMO-EV-001`) is rejected (`400 Bad Request`).
+   - Deletion of seeded corridor stations (`isDemoData == true`) is rejected.
+   - Core host properties cannot be removed.
 
 ---
 
@@ -44,6 +106,7 @@
 - [📡 Binary Protocols, Telemetry & Frame Schemas](#-binary-protocols-telemetry--frame-schemas)
 - [🎛️ Implemented Workspaces & Cockpits](#️-implemented-workspaces--cockpits)
 - [🚀 Quickstart & Concurrent Launch](#-quickstart--concurrent-launch)
+- [🎯 Live Demonstration & Judge Evaluation Workflows](#-live-demonstration--judge-evaluation-workflows)
 - [🧪 Comprehensive Verification & Test Suite](#-comprehensive-verification--test-suite)
 - [🗺️ API Surface Reference](#️-api-surface-reference)
 
@@ -75,7 +138,7 @@ Vidyut orchestrates four distinct stakeholders through dedicated role-scoped coc
             ▼                                          ▼                    ▼
 ┌───────────────────────┐                  ┌──────────────────────┐ ┌────────────────────┐
 │   POSTGRESQL 15 DB    │                  │  OSRM ROUTE ENGINE   │ │ PYTHON ADK AGENT   │
-│  • Accounts & Garage  │                  │  • Primary OSRM      │ │  • Gemini 1.5 Pro  │
+│  • Accounts & Garage  │                  │  • Primary OSRM      │ │  • Gemini 3.6 Flash│
 │  • Stations & Sockets │                  │  • Reference Mirror  │ │  • OpenRouter      │
 │  • Active Sessions    │                  │  • 1.3x Geo Fallback │ │  • Scoped Tools    │
 └───────────────────────┘                  └──────────────────────┘ └────────────────────┘
@@ -111,12 +174,13 @@ flowchart TD
         A1_NLP --> A1_SOLVE --> A1_HEAL --> A1_TOOLS
     end
 
-    subgraph AGENT_2["🏢 Agent 2: Property Host Agent (Gemini → OpenRouter → Spring fallback)"]
-        A2_OCC["📊 Occupancy & Peak Analyzer<br/>Analyzes session history to predict demand surges"]
-        A2_PRICE["💰 Dynamic Pricing Advisor<br/>Recommends time-of-day tariffs within statutory bounds"]
-        A2_SOLAR["☀️ Solar RESCO & Subsidy Engine<br/>Matches property load with PM Surya Ghar & PPA schemes"]
-        A2_TOOLS["🔒 Read-Only Model Boundary<br/>Spring executes separately after Host approval"]
-        A2_OCC --> A2_PRICE --> A2_SOLAR --> A2_TOOLS
+    subgraph AGENT_2["🏢 Agent 2: Property Host Agent (Gemini 3.6 Flash → OpenRouter → Spring fallback)"]
+        A2_RANK["📊 Expansion Ranker<br/>Scores each property 0-100 by parking, load, grid & hours"]
+        A2_OFFER["💼 CPO Offer Comparator<br/>Side-by-side synthetic operator proposals — zero affiliation"]
+        A2_HEALTH["🔌 Hosted Charger Health<br/>Inspects ONLINE/FAULT state across hosted connectors"]
+        A2_DRAFT["🏗️ Property Draft Creator<br/>Natural-language listing with duplicate detection & approval gate"]
+        A2_TOOLS["🔒 Ask-Before-Actions Boundary<br/>Spring executes separately after explicit Host approval"]
+        A2_RANK --> A2_OFFER --> A2_HEALTH --> A2_DRAFT --> A2_TOOLS
     end
 
     subgraph AGENT_3["⚡ Agent 3: CPO Company Agent (Gemini → OpenRouter → Spring fallback)"]
@@ -143,21 +207,21 @@ flowchart TD
     classDef guard fill:#78350f,stroke:#f59e0b,color:#fef3c7,stroke-width:2px;
 
     class A1_NLP,A1_SOLVE,A1_HEAL,A1_TOOLS a1;
-    class A2_OCC,A2_PRICE,A2_SOLAR,A2_TOOLS a2;
+    class A2_RANK,A2_OFFER,A2_HEALTH,A2_DRAFT,A2_TOOLS a2;
     class A3_FAULT,A3_GROWTH,A3_AUDIT,A3_TOOLS a3;
     class G_REC,G_ASK,G_AUTO guard;
 ```
 
 ### 🔍 Tri-Agent Responsibility Matrix
 
-| Metric / Dimension | 🚗 Agent 1: EV Autopilot Agent | 🏢 Agent 2: Host Copilot | ⚡ Agent 3: CPO & Admin Copilot |
+| Metric / Dimension | 🚗 Agent 1: EV Autopilot Agent | 🏢 Agent 2: Host Operational Agent | ⚡ Agent 3: CPO & Admin Copilot |
 | :--- | :--- | :--- | :--- |
-| **Primary Domain** | EV Driver Route & Charging Intelligence | Property Monetization & Green Finance | CPO Fleet Operations & Platform Governance |
-| **Core Engine / Stack** | Python ADK + Gemini/OpenRouter + Spring tools | Spring analytics + Python ADK Gemini/OpenRouter explanation | Spring network analytics + Python ADK Gemini/OpenRouter explanation |
-| **Input Modality** | Natural-Language Prompt + Structured UI Controls | Historical Sessions, P&L Queries, Reviews | Hardware Telemetry, Tamper Alarms, Disputes |
-| **Key Scoped Tools** | `preview_autopilot_trip`, `book_charger`, `reroute`, `complete_charging` | No model tools; Spring supplies occupancy, revenue, maintenance, deal and solar context | No model tools; Spring supplies faults, pricing, revenue, expansion and offer context |
-| **Autonomy Enforcement** | `Recommend` \| `Ask Before Action` \| `Full Autopilot` | Separate approval-gated Host action endpoint | Company policy + separate ownership/approval-checked action endpoint |
-| **Fault Resilience** | Autonomous in-flight rerouting upon socket failure | Gemini → OpenRouter → deterministic Host answer | Gemini → OpenRouter → deterministic Company answer |
+| **Primary Domain** | EV Driver Route & Charging Intelligence | Property Listing · Expansion Ranking · Offer Comparison · Charger Health | CPO Fleet Operations & Platform Governance |
+| **Core Engine / Stack** | Python ADK + Gemini 3.6 Flash/OpenRouter + Spring tools | Python ADK + Gemini 3.6 Flash/OpenRouter + Spring tools | Spring network analytics + Python ADK Gemini 3.6 Flash/OpenRouter explanation |
+| **Input Modality** | Natural-Language Prompt + Structured UI Controls | Natural-Language Queries (list, rank, compare, inspect) | Hardware Telemetry, Tamper Alarms, Disputes |
+| **Key Scoped Tools** | `preview_autopilot_trip`, `book_charger`, `reroute`, `complete_charging` (19 tools total) | `get_host_properties`, `check_property_duplicate`, `prepare_property_listing`, `create_property_draft`, `update_property`, `submit_property_for_verification`, `publish_property`, `get_property_readiness`, `compare_company_offers`, `get_hosted_charger_health`, `get_host_operations_context` | `get_company_operations_context` (read-only Spring context) |
+| **Autonomy Enforcement** | `Recommend` \| `Ask Before Action` \| `Full Autopilot` | `Ask Before Actions` — all mutations require explicit approval; backend enforces ownership & deletion protection | Company policy + separate ownership/approval-checked action endpoint |
+| **Fault Resilience** | Autonomous in-flight rerouting upon socket failure | Gemini → OpenRouter → deterministic Host answer from Spring | Gemini → OpenRouter → deterministic Company answer |
 
 ---
 
@@ -221,7 +285,7 @@ flowchart TB
 
     subgraph INTELLIGENCE["🧠 AI Agent & Road Engine Subsystems"]
         AGENT["Python ADK Agent<br/>Read-Only Tools + Scoped Confirmation"]
-        MODEL["Multi-Tier LLM Provider<br/>Gemini 1.5 Pro → OpenRouter → Fallback"]
+        MODEL["Multi-Tier LLM Provider<br/>Gemini 3.6 Flash → OpenRouter → Fallback"]
         OSRM["Road Routing Matrix<br/>Primary OSRM → Reference OSRM"]
         GEOCODER["Spatial Resolvers<br/>Alias Dictionary → Nominatim Geocoder"]
     end
@@ -229,7 +293,7 @@ flowchart TB
     subgraph DATA_TIER["💾 Storage & Seed Data Tier"]
         DB[("PostgreSQL 15 Cluster<br/>Trips • Wallets • Assets • Audit Logs")]
         MIGRATIONS["Flyway Migrations<br/>Versioned Schema Evolution"]
-        DEMO["Demo Data Seeders<br/>112 Corridors • 777 District Hubs"]
+        DEMO["Demo Data Seeders<br/>9 Canonical • 103 Highway • 777 District Hubs"]
     end
 
     subgraph HARDWARE["🔌 Physical Infrastructure & Edge Telemetry"]
@@ -1036,8 +1100,13 @@ High-frequency socket telemetry serialized over WebSockets / MQTT for real-time 
 
 - **Property Onboarding**: Multi-step site submission with geotagging, electricity bill uploads, and video proof.
 - **Occupancy & Demand**: Real-time socket status streaming directly from active database sessions.
-- **Host Copilot**: AI-assisted revenue optimization, tariff recommendations, and maintenance scheduling.
+- **Host Agent (Gemini 3.6 Flash — 4 Operational Workflows)**:
+  1. **Property Draft Creation** — Natural-language listing preparation with duplicate detection, field validation, and ask-before-actions confirmation gate.
+  2. **Expansion Ranking** — Scores each property 0–100 on parking capacity, electrical load, grid type, location, and operating hours.
+  3. **CPO Offer Comparison** — Side-by-side breakdown of synthetic demo operator proposals (Vidyut Demo Operator Alpha · GreenRoute Charging Demo · VoltGrid Demo CPO). All marked `SYNTHETIC DEMO — NO COMMERCIAL AFFILIATION`.
+  4. **Hosted Charger Health** — Live inspection of ONLINE/FAULT/MAINTENANCE status for connectors across Agra and Jhansi hubs.
 - **Green Finance & Solar RESCO**: Financial modeling for solar PPA, capex investment, and subsidy eligibility.
+- **Property Lifecycle**: Draft → `submit_property_for_verification` → Admin review → `publish_property`. Each step requires explicit Host approval.
 </details>
 
 <details>
@@ -1147,19 +1216,115 @@ npm run android
 
 ---
 
-### Taskmaster fault-recovery demo
+## 🎯 Live Demonstration & Judge Evaluation Workflows
 
-Use one `FULL_AUTOPILOT` journey for the submission recording:
+The platform supports two distinct demonstration pathways:
+1. **Live Cloud Environment (Judge Evaluation)**: Evaluates the deployed production microservices on Google Cloud Run & Firebase Hosting.
+2. **Local Multi-Session Environment**: Evaluates the local synchronized development stack.
 
-1. Sign in as the seeded EV Owner and build a feasible Lucknow/Kanpur-to-Bhopal trip.
-2. Confirm the plan and start journey monitoring.
-3. Select **Simulate charger fault** in Journey controls.
-4. Verify the EV timeline shows the old booking released, a compatible replacement reserved, the route updated, and **Operations incident propagated**.
-5. Refresh the Company workspace and verify the maintenance ticket and faulted connector.
-6. Refresh Admin → Network operations and verify the incident.
-7. Open Admin → Audit trail and verify `AUTOPILOT INCIDENT DETECTED` with actor `SYSTEM AGENT`.
+---
 
-The simulation is a single backend transaction: connector health changes to `FAULT`, Autopilot applies the saved autonomy policy, the booking and route are recovered, the Company work order is created, Host/Company notifications are stored, and Admin receives incident plus audit evidence. `ASK_BEFORE_ACTIONS` prepares the replacement but cannot reserve it until the driver approves; only `FULL_AUTOPILOT` executes the replacement automatically.
+### 🌐 Pathway A: Live Cloud Hackathon Walkthrough (Recommended for Judges)
+
+**Live Web App**: [https://vidyut-autopilot.web.app](https://vidyut-autopilot.web.app)
+**Live Backend API**: [https://vidyut-backend-558967442483.asia-south1.run.app](https://vidyut-backend-558967442483.asia-south1.run.app)
+
+#### ⚡ Automated Cloud Verification Script
+To automatically verify all 9 production verification checks against Cloud Run and Cloud SQL in seconds:
+
+```powershell
+node scripts/verify_live_demo.js
+```
+
+This verifies:
+1. Driver authentication & Multi-EV fleet availability (all 6 seeded vehicles loaded).
+2. Host portfolio authentication (3 verified properties across Noida, Agra, Jhansi).
+3. Company operations authentication (Tata EV Charging Demo).
+4. All 9 corridor stations online & available with verified ownership splits.
+5. Delhi ➔ Bhopal Autopilot trip generation & multi-stop battery curve calculation.
+6. Security guardrails blocking demo account deletion.
+7. Security guardrails blocking `DEMO-EV-001` core vehicle deletion.
+8. Deterministic Multi-EV recommendation engine evaluating all 6 garage vehicles.
+9. AI EV Agent tool execution (`recommend_vehicle`) with comparative breakdown table.
+
+#### 🚶 Interactive Step-by-Step Judge Walkthrough
+
+```text
+┌───────────────────────────┐    Connector Fault    ┌───────────────────────────┐
+│ 1. EV OWNER (Cloud)       ├──────────────────────►│ 2. CPO / HOST COCKPITS    │
+│ demo.driver@vidyut.com    │  Agra CCS2 Failure    │ demo.company@vidyut.com   │
+│ Multi-EV Garage (6 Cars)  │                       │ Dispatched Work Order     │
+│ Delhi ➔ Bhopal Autopilot  │                       │                           │
+└─────────────┬─────────────┘                       └─────────────┬─────────────┘
+              │                                                   │
+              │ Automated Incident Propagation                    │ Live Status Sync
+              ▼                                                   ▼
+┌───────────────────────────┐                       ┌───────────────────────────┐
+│ Dynamic Reroute           │  Self-Healing State   │ Host Agent Operational    │
+│ Rerouted to Mathura Hub   │◄──────────────────────┤ demo.host@vidyut.com      │
+│ Battery reserve protected │  Safe Arrival Bhopal  │ Rank · Compare · Health   │
+└───────────────────────────┘                       └───────────────────────────┘
+```
+
+1. **Step 1: 1-Click Login as EV Owner**
+   - Navigate to [https://vidyut-autopilot.web.app](https://vidyut-autopilot.web.app).
+   - Click the **⚡ Try as EV Owner** button (or sign in with `demo.driver@vidyut.com` / `VidyutDemo@2026`).
+   - Your garage opens with 6 representative Indian EV models: **Tata Nexon EV Long Range**, **Mahindra BE 6**, **Tata Curvv EV**, **MG Windsor EV**, **Hyundai Creta Electric**, and **BMW iX1**.
+
+2. **Step 2: AI Vehicle Recommendation ("Which of my cars is best?")**
+   - Open the EV Assistant Chat and ask:
+     > *"Check all my EVs and choose the best vehicle for a Delhi to Bhopal trip. Optimize for minimum total journey time and maintain at least 15% reserve."*
+   - The AI Agent invokes the deterministic backend recommendation engine (`POST /api/ev/autopilot/vehicles/recommend`), which previews the trip for every car in your garage against corridor chargers and DC charging curves.
+   - **Result**: The agent recommends **Mahindra BE 6** (`DEMO-EV-002`) because its 79 kWh pack and 175 kW DC capability require only **2 stops (31 min charging, 10h 59m total time)** compared to 4 stops (13h 09m) for the Nexon EV.
+   - The agent provides an exact markdown comparison table of all 6 vehicles.
+
+3. **Step 3: Natural Language Autopilot Trip Planning**
+   - Click **Autopilot** in the navigation bar.
+   - Enter Origin: `Delhi, India` and Destination: `Bhopal, Madhya Pradesh, India`.
+   - Autopilot evaluates all compatible highway chargers along the NH-44 transit corridor and generates an optimal charging itinerary:
+     - **Stop 1**: Agra Demo Charging Hub (Km 202.1 · Target 59%)
+     - **Stop 2**: Gwalior Demo Charging Hub (Km 321.1 · Target 53%)
+     - **Stop 3**: Jhansi Demo Charging Hub (Km 424.9 · Target 79%)
+     - **Stop 4**: Bina Junction Demo Charger (Km 608.0 · Target 70%)
+   - Click **Launch & Reserve Journey**. The trip transitions to `RESERVED` and begins active monitoring.
+
+4. **Step 4: Simulate Charger Outage & Self-Healing Reroute**
+   - During journey execution, report an issue or trigger fault simulation at **Agra Demo Charging Hub** (`DEMO-AGRA-CCS2-01`).
+   - Autopilot instantly registers the fault:
+     - Connector transitions to `SUSPECTED_FAULT` / `UNAVAILABLE`.
+     - Trip state switches to `REROUTE_APPROVAL_REQUIRED`.
+     - Autopilot dynamically evaluates upstream and downstream alternatives to protect arrival battery reserves.
+   - Click **Approve Reroute**: Autopilot seamlessly reroutes the vehicle to **Mathura Demo Charging Hub** (target charge 76%), safely preserving the journey toward Bhopal.
+
+5. **Step 5: Cross-Role Incident Propagation**
+   - Open a new tab and sign in as **Charging Company** (`demo.company@vidyut.com` / `VidyutDemo@2026`).
+   - Open **Maintenance Tickets** to view the automated incident ticket created for `DEMO-AGRA-CCS2-01` with priority status and technician dispatch capability.
+   - Sign in as **Host** (`demo.host@vidyut.com` / `VidyutDemo@2026`) to view the co-located partner property status for Agra Highway Hub.
+
+6. **Step 6: Host Agent Operational Workflows (Gemini 3.6 Flash)**
+   - In the Host workspace, open the **Host Agent Chat**.
+   - Try each of the four live workflows:
+     - *"Which property is best for expansion?"* → Ranks all 3 properties by readiness score (Agra: 100/100).
+     - *"Compare company offers for Agra property"* → Returns synthetic CPO offer comparison (Vidyut Demo Operator Alpha · GreenRoute Charging Demo · VoltGrid Demo CPO).
+     - *"Which hosted charger needs attention?"* → Reports real-time ONLINE/FAULT status for all 4 hosted connectors.
+     - *"I want to list a property near Faizabad Airport with 4 bays and 80 kW load"* → Agent validates, checks duplicates, prepares listing draft (`READY_FOR_APPROVAL`), and awaits your confirmation before persisting.
+
+---
+
+### 💻 Pathway B: Local Multi-Session Development Demonstration
+
+For local testing across **three separate browser windows** (e.g. Chrome, Incognito, and Edge):
+
+| Window / Role | User Name | Login Email | Password | Direct URL |
+| :--- | :--- | :--- | :--- | :--- |
+| **Window 1: EV Owner** | Priyanshu Sharma | `priyanshu@vidyut.demo` | `Priyanshu123!` | [http://localhost:5173/autopilot](http://localhost:5173/autopilot) |
+| **Window 2: Property Host** | Prince | `prince@vidyut.demo` | `PrinceDemo123!` | [http://localhost:5173/host](http://localhost:5173/host) |
+| **Window 3: Company / CPO** | TATA Power Demo | `tata@vidyut.demo` | `TataDemo123!` | [http://localhost:5173/company](http://localhost:5173/company) |
+
+#### ⚡ Headless Automated Local Flow
+```powershell
+node scripts/test_flow.js
+```
 
 ---
 
@@ -1179,7 +1344,8 @@ The script runs the Spring suite, Python agent suite, web lint and production we
 cd vidyut-backend
 mvn test
 
-# 2. Python AI Agent: Tool calling, provider fallback & token limit unit tests
+# 2. Python AI Agent: 37 unit tests — tools, OpenRouter, provider fallback,
+#    role-scoped Host/Company tools, mutation replay protection, deterministic fallbacks
 cd ..\vidyut-ai\agent
 .\.venv\Scripts\python -m unittest discover -s tests -v
 
@@ -1199,18 +1365,26 @@ npx expo config --type public
 ## 🗺️ API Surface Reference
 
 ```text
-/api/auth/**                 -> JWT Token Issuance, Google OAuth, Role Provisioning
-/api/ev/autopilot/**         -> NLP Journey Parsing, Multi-Stop Matrix Optimization, Reroute Engine
-/api/ev/vehicles/**          -> Garage Management, Non-Linear SoC Curves, Connector Specs
-/api/ev/bookings/**          -> Real-Time Connector Locks, Payment Gateways & QR Verification
-/api/ev/payments/**          -> Wallet Ledger, AutoPay Thresholds, Prorated Refund Engine
-/api/routing/**              -> Raw OSRM Road Geometry, Elevation Profiles & Haversine Fallbacks
-/api/host/**                 -> Property Listings, Bank Accounts, Occupancy & Daily Earnings
-/api/host/marketplace/**     -> CPO Discovery, Site Feasibility Surveys, Capex Proposals
-/api/company/**              -> CPO Stations, Socket Health, Dispatch Tickets & Dynamic Pricing
-/api/company/marketplace/**  -> Hardware Product Approvals, Site Ranking & Expansion Intel
-/api/admin/auth/**           -> Isolated Super Admin Authentication
-/api/admin/portal/**         -> Scoped Restrictions, Platform Audit Logs, Incident Mediation
+/api/auth/**                           -> JWT Token Issuance, Google OAuth, Role Provisioning
+/api/ev/autopilot/**                   -> NLP Journey Parsing, Multi-Stop Matrix Optimization, Reroute Engine
+/api/ev/autopilot/vehicles/recommend   -> Deterministic multi-EV comparison (all garage vehicles vs corridor)
+/api/ev/vehicles/**                    -> Garage Management, Non-Linear SoC Curves, Connector Specs
+/api/ev/bookings/**                    -> Real-Time Connector Locks, Payment Gateways & QR Verification
+/api/ev/payments/**                    -> Wallet Ledger, AutoPay Thresholds, Prorated Refund Engine
+/api/ev/agent/chat                     -> EV Driver AI Agent entry point (forwards to Python ADK)
+/api/routing/**                        -> Raw OSRM Road Geometry, Elevation Profiles & Haversine Fallbacks
+/api/host/**                           -> Property Listings, Bank Accounts, Occupancy & Daily Earnings
+/api/host/marketplace/**               -> CPO Discovery, Site Feasibility Surveys, Capex Proposals
+/api/host/ai/ask                       -> Host Agent NLP entry point (Gemini 3.6 Flash)
+/api/host/ai/readiness                 -> Property expansion readiness scoring (0-100)
+/api/host/ai/offers                    -> Synthetic CPO offer comparison for a Host property
+/api/host/ai/charger-health            -> Hosted connector health across all Host properties
+/api/host/ai/prepare-property-draft    -> Validate & preview a new property listing draft
+/api/host/ai/actions                   -> Approval-gated Host mutations (CREATE_PROPERTY_DRAFT, SUBMIT_FOR_VERIFICATION, PUBLISH)
+/api/company/**                        -> CPO Stations, Socket Health, Dispatch Tickets & Dynamic Pricing
+/api/company/marketplace/**            -> Hardware Product Approvals, Site Ranking & Expansion Intel
+/api/admin/auth/**                     -> Isolated Super Admin Authentication
+/api/admin/portal/**                   -> Scoped Restrictions, Platform Audit Logs, Incident Mediation
 ```
 
 ---

@@ -259,6 +259,29 @@ public class AdminControlService {
         return incident;
     }
 
+    /** Called after Company ownership checks and an approved synthetic connector restoration. */
+    @Transactional
+    public void resolveOperatorDemoIncident(ChargingStation station, ChargingConnector connector) {
+        if (!station.isDemoData() || !"COMPANY_DEMO_CONTROL".equals(connector.getStatusSource())
+                || connector.getStatus() != ChargerStatus.ONLINE) throw new BadRequestException("Approved demo restoration required");
+        incidentRepository.findFirstByConnectorIdAndStatusInOrderByCreatedAtDesc(connector.getId(), ACTIVE_INCIDENTS)
+                .filter(incident -> Objects.equals(incident.getOperatorCompanyId(), station.getOperatorCompanyId()))
+                .filter(incident -> incident.getDescription().startsWith("COMPANY_DEMO_CONTROL:"))
+                .ifPresent(incident -> {
+                    incident.setStatus(IncidentStatus.RESOLVED);
+                    incident.setResolvedAt(LocalDateTime.now());
+                    incident.setResolutionNote("Synthetic connector restored by its Company operator");
+                    incidentRepository.save(incident);
+                    if (incident.getMaintenanceTicketId() != null) maintenanceRepository.findByIdAndCompanyId(
+                            incident.getMaintenanceTicketId(), station.getOperatorCompanyId()).ifPresent(ticket -> {
+                        ticket.setStatus(MaintenanceTicketStatus.RESOLVED);
+                        ticket.setResolvedAt(LocalDateTime.now());
+                        ticket.setResolutionNote(incident.getResolutionNote());
+                        maintenanceRepository.save(ticket);
+                    });
+                });
+    }
+
     @Transactional
     public AdminSupportCase createSupportCase(Long accountId, SupportCaseCreateRequest request) {
         Account account = accountRepository.findById(accountId)

@@ -13,6 +13,7 @@ import java.time.LocalDateTime;
 @NoArgsConstructor
 @AllArgsConstructor
 public class BookingResponse {
+    private Long connectorId;
     private Long id;
     private Long userId;
     private Long stationId;

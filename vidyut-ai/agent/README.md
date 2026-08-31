@@ -9,8 +9,8 @@ The user bearer token is forwarded only to Vidyut backend tools. It is not inclu
 | Workspace | Model responsibility | Execution boundary |
 | --- | --- | --- |
 | `EV_OWNER` | Conversational trip planning, charging guidance, journey recovery, and approved tool orchestration | Uses authenticated EV tools; existing autonomy and mutation guards apply |
-| `HOST` | Explains Spring-calculated occupancy, maintenance, revenue, opening-hours, company-deal, and solar context | Read-only model with no tools; approved actions remain under `/api/host/ai/actions` |
-| `COMPANY` | Explains the Company’s network, faults, pricing, revenue, expansion shortlist, and offer drafts | Read-only model with no tools; approved actions remain under `/api/company/ai/actions` |
+| `HOST` | Uses a role-scoped read-only backend tool for properties, occupancy, maintenance, revenue, partnerships, and scored recommendations | Mutations remain under `/api/host/ai/actions` and require backend approval |
+| `COMPANY` | Uses a role-scoped read-only backend tool for managed network, faults, maintenance, expansion sites, and performance evidence | Mutations remain under `/api/company/ai/actions` and require backend approval |
 
 The EV Owner agent can:
 
@@ -43,7 +43,7 @@ Spring Boot results override model assumptions. The agent must not claim that an
    - EV Owner requests use the backend trip-preview engine.
    - Host and Company requests return the already-calculated role-scoped answer.
 
-Host and Company prompts receive only the authenticated Spring context for that account. They have no model tools and cannot directly change a station, connector, price, contract, payment, payout, finance application, or solar-scheme submission. This means an LLM outage does not break their operational pages, and a provider fallback cannot bypass approval controls.
+Host and Company prompts receive only the authenticated Spring context for that account and each has one workspace-specific read-only tool. They cannot directly change a station, connector, price, contract, payment, payout, finance application, or solar-scheme submission. This means an LLM outage does not break their operational pages, and a provider fallback cannot bypass approval controls.
 
 ## Configuration
 
@@ -51,8 +51,8 @@ Copy `vidyut_agent/.env.example` to the ignored `vidyut_agent/.env` file when ne
 
 ```env
 GOOGLE_API_KEY=your-private-key
-VIDYUT_AGENT_MODEL=gemini-3.5-flash
-VIDYUT_AGENT_FALLBACK_MODELS=gemini-3.5-flash-lite
+VIDYUT_AGENT_MODEL=gemini-3.6-flash
+VIDYUT_AGENT_FALLBACK_MODELS=gemini-3.5-flash,gemini-3.5-pro
 VIDYUT_AGENT_DISABLE_GEMINI=false
 
 OPENROUTER_API_KEY=
@@ -84,7 +84,7 @@ For the ADK development UI, run `adk web` from this directory. The exported `roo
 
 ## Tests
 
-The current suite covers backend tools, OpenRouter tool execution/fallback, Gemini quota fallback, tool-free Host/Company prompts, deterministic role fallbacks, deterministic planning fallback, and mutation replay protection.
+The current suite covers backend tools, OpenRouter tool execution/fallback, Gemini quota fallback, role-scoped Host/Company tools, deterministic role fallbacks, deterministic planning fallback, and mutation replay protection.
 
 ```powershell
 .\.venv\Scripts\python -m unittest discover -s tests -v

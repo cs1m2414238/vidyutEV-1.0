@@ -161,6 +161,8 @@
 .topbar-search input { width: 100%; border: 0; outline: 0; color: #101828; background: transparent; font: inherit; font-size: 13px; }
 .topbar-search-submit { display: grid; width: 30px; height: 30px; flex: 0 0 auto; place-items: center; border: 0; border-radius: 8px; color: #fff; background: #16a36b; cursor: pointer; }
 .topbar-search-submit:hover { background: #08784f; }
+.topbar-search-clear { display: grid; width: 28px; height: 30px; flex: 0 0 auto; place-items: center; border: 0; border-radius: 8px; color: #667085; background: transparent; cursor: pointer; }
+.topbar-search-clear:hover { background: #eaf3ee; color: #08784f; }
 .topbar-spacer { flex: 1; }
 .topbar-location { position: relative; }
 .location-button { display: flex; align-items: center; gap: 7px; padding: 9px 12px; border: 1px solid #e4e7ec; border-radius: 11px; color: #344054; background: #fff; font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; }

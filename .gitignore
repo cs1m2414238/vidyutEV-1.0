@@ -30,9 +30,21 @@ tmp/
 .env
 .env.local
 .env.*.local
+**/.env.production
 !*.env.example
+
+# Expo & React Native
+.expo/
+**/expo-env.d.ts
+
+# Firebase Deployment Artifacts
+**/.firebase/
+# Note: firebase.json and .firebaserc are intentionally tracked
 
 # OS & System Files
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Local scratch & temp work
+scratch/

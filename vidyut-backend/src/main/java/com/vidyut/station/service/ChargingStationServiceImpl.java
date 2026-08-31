@@ -1,11 +1,14 @@
 package com.vidyut.station.service;
 
+import com.vidyut.common.exception.BadRequestException;
 import com.vidyut.common.exception.ResourceNotFoundException;
 import com.vidyut.station.dto.*;
 import com.vidyut.station.entity.*;
 import com.vidyut.station.repository.ChargingStationRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -113,6 +116,25 @@ public class ChargingStationServiceImpl implements ChargingStationService {
 
     @Override
     @Transactional(readOnly = true)
+    public List<StationResponse> getStationsWithinBounds(double minLat, double maxLat, double minLng, double maxLng, int limit) {
+        if (!Double.isFinite(minLat) || !Double.isFinite(maxLat)
+                || !Double.isFinite(minLng) || !Double.isFinite(maxLng)
+                || minLat < -90 || maxLat > 90 || minLng < -180 || maxLng > 180
+                || minLat > maxLat || minLng > maxLng) {
+            throw new BadRequestException("Station bounds must be valid latitude/longitude ranges.");
+        }
+        int cappedLimit = Math.max(1, Math.min(limit > 0 ? limit : 250, 500));
+        PageRequest page = PageRequest.of(0, cappedLimit,
+                Sort.by("latitude").ascending().and(Sort.by("longitude")).and(Sort.by("id")));
+        return stationRepository.findPublishedStationsWithinBounds(
+                        minLat, maxLat, minLng, maxLng, demoDataEnabled, page)
+                .stream()
+                .map(this::mapToResponse)
+                .collect(Collectors.toList());
+    }
+
+    @Override
+    @Transactional(readOnly = true)
     public List<NearbyStationResponse> getNearbyStations(double latitude, double longitude, double radiusKm) {
         return publishedStations().stream()
                 .map(s -> {
@@ -201,16 +223,21 @@ public class ChargingStationServiceImpl implements ChargingStationService {
 
     @Override
     public void deleteStation(Long id) {
-        if (!stationRepository.existsById(id)) {
-            throw new ResourceNotFoundException("Station not found with id: " + id);
+        ChargingStation station = stationRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("Station not found with id: " + id));
+        if (station.isDemoData() || station.getDemoSeedKey() != null) {
+            throw new BadRequestException("Core seeded demo charging stations cannot be permanently deleted.");
         }
-        stationRepository.deleteById(id);
+        stationRepository.delete(station);
     }
 
     @Override
     public void deleteStation(Long id, Long ownerAccountId) {
         ChargingStation station = stationRepository.findByIdAndHostUserId(id, ownerAccountId)
                 .orElseThrow(() -> new ResourceNotFoundException("Station not found for this account"));
+        if (station.isDemoData() || station.getDemoSeedKey() != null) {
+            throw new BadRequestException("Core seeded demo charging stations cannot be permanently deleted.");
+        }
         stationRepository.delete(station);
     }
 

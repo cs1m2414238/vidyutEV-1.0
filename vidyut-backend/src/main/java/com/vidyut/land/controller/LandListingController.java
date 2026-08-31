@@ -23,7 +23,7 @@ public class LandListingController {
     @PostMapping
     public ResponseEntity<ApiResponse<LandListingResponse>> createListing(
             @Valid @RequestBody LandListingCreateRequest request) {
-        return ResponseEntity.ok(ApiResponse.success("Land listing published successfully",
+        return ResponseEntity.ok(ApiResponse.success("Land listing saved for review",
                 landListingService.createListing(currentUser.getCurrentAccountId(), request)));
     }
 

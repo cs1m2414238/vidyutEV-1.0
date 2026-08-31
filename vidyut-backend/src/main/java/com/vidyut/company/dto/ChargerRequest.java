@@ -20,6 +20,11 @@ public class ChargerRequest {
     private double powerKw;
     private ChargerStatus status = ChargerStatus.ONLINE;
     private boolean maintenanceMode;
+    private boolean impactApproved;
+    private boolean syntheticDemo;
+    private ChargerStatus expectedStatus;
+    @jakarta.validation.constraints.Size(max = 500)
+    private String faultReason;
     private String firmwareVersion;
     @Min(0) @Max(100)
     private int healthScore = 100;

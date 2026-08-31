@@ -3,7 +3,7 @@ spring:
     url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/vidyut}
     driver-class-name: org.postgresql.Driver
     username: ${SPRING_DATASOURCE_USERNAME:postgres}
-    password: ${SPRING_DATASOURCE_PASSWORD:priyanshu2004}
+    password: ${SPRING_DATASOURCE_PASSWORD:}
 
   jpa:
     open-in-view: false
@@ -12,15 +12,15 @@ spring:
     show-sql: true
 
 jwt:
-  secret: ${JWT_SECRET:404E635266556A586E3272357538782F413F4428472B4B6250645367566B5970}
+  secret: ${JWT_SECRET}
   expiration: 86400000 # 24 hours
 
 vidyut:
   admin:
     bootstrap:
-      enabled: ${VIDYUT_ADMIN_BOOTSTRAP_ENABLED:true}
+      enabled: ${VIDYUT_ADMIN_BOOTSTRAP_ENABLED:false}
       email: ${VIDYUT_ADMIN_EMAIL:admin@vidyut.local}
-      password: ${VIDYUT_ADMIN_PASSWORD:VidyutAdmin123!}
+      password: ${VIDYUT_ADMIN_PASSWORD:}
       name: ${VIDYUT_ADMIN_NAME:Vidyut Super Admin}
   demo-data:
     enabled: ${VIDYUT_DEMO_DATA_ENABLED:true}

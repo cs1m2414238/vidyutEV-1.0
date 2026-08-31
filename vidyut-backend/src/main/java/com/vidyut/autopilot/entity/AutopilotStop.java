@@ -35,6 +35,8 @@ public class AutopilotStop {
     private Long stationId;
 
     private Long bookingId;
+    private Long connectorId;
+    private String chargerCode;
 
     @Column(nullable = false)
     private String stationName;

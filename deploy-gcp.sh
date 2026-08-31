@@ -32,7 +32,7 @@ gcloud run deploy vidyut-agent \
     --region "$REGION" \
     --platform managed \
     --allow-unauthenticated \
-    --set-env-vars="VIDYUT_AGENT_MODEL=gemini-3.5-flash,GOOGLE_GENAI_USE_VERTEXAI=1,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=$REGION"
+    --set-env-vars="VIDYUT_AGENT_MODEL=gemini-3.6-flash,GOOGLE_GENAI_USE_VERTEXAI=1,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=$REGION"
 
 AGENT_URL=$(gcloud run services describe vidyut-agent --region "$REGION" --format="value(status.url)")
 echo "✅ vidyut-agent deployed at: $AGENT_URL"

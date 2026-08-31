@@ -22,4 +22,8 @@ public class ChargerResponse {
     private String firmwareVersion;
     private int healthScore;
     private LocalDateTime lastHeartbeat;
+    private String faultCode;
+    private String faultReason;
+    private String statusSource;
+    private boolean demoData;
 }

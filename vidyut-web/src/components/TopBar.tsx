@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Bell, ChevronDown, LocateFixed, MapPin, Menu, Search } from 'lucide-react';
+import { Bell, ChevronDown, LocateFixed, MapPin, Menu, Search, X } from 'lucide-react';
 
 export interface TopBarLocation {
   label: string;
@@ -11,6 +11,9 @@ interface TopBarProps {
   notificationCount?: number;
   onOpenMenu?: () => void;
   onSearch?: (query: string) => void;
+  searchValue?: string;
+  onSearchChange?: (query: string) => void;
+  searchPlaceholder?: string;
   onLocationChange?: (location: TopBarLocation) => void;
   onOpenNotifications?: () => void;
 }
@@ -25,10 +28,18 @@ export function TopBar({
   notificationCount = 0,
   onOpenMenu,
   onSearch,
+  searchValue: controlledSearchValue,
+  onSearchChange,
+  searchPlaceholder = 'Search location, charger or booking',
   onLocationChange,
   onOpenNotifications,
 }: TopBarProps) {
-  const [searchValue, setSearchValue] = useState('');
+  const [localSearchValue, setLocalSearchValue] = useState('');
+  const searchValue = controlledSearchValue ?? localSearchValue;
+  const setSearchValue = (value: string) => {
+    setLocalSearchValue(value);
+    onSearchChange?.(value);
+  };
   const [selectedLocation, setSelectedLocation] = useState(knownLocations[0]);
   const [locationMenuOpen, setLocationMenuOpen] = useState(false);
   const [locationError, setLocationError] = useState('');
@@ -76,10 +87,14 @@ export function TopBar({
         <Search size={17} color="#98a2b3" />
         <input
           aria-label="Search Vidyut"
-          placeholder="Search location, charger or booking"
+          placeholder={searchPlaceholder}
           value={searchValue}
           onChange={(event) => setSearchValue(event.target.value)}
         />
+        {searchValue && <button className="topbar-search-clear" type="button" aria-label="Clear search" onClick={() => {
+          setSearchValue('');
+          if (!onSearchChange) onSearch?.('');
+        }}><X size={16} /></button>}
         <button className="topbar-search-submit" type="submit" aria-label="Search">
           <Search size={16} />
         </button>

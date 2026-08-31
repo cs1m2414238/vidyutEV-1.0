@@ -18,4 +18,10 @@ public class AutopilotTelemetryResponse {
     private double batteryPercent;
     private double remainingRangeKm;
     private String state;
+    private Double latitude;
+    private Double longitude;
+    private java.time.LocalDateTime positionRecordedAt;
+    private String positionSource;
+    private double distanceTravelledKm;
+    private double safeReachableDistanceKm;
 }

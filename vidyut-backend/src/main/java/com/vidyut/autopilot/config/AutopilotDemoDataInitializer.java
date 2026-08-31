@@ -37,9 +37,16 @@ public class AutopilotDemoDataInitializer implements ApplicationRunner {
     private final ChargingStationRepository stationRepository;
     private final ObjectMapper objectMapper;
 
+    @org.springframework.beans.factory.annotation.Value("${demo.seed.enabled:false}")
+    private boolean demoSeedEnabled;
+
     @Override
     @Transactional
     public void run(ApplicationArguments args) throws IOException {
+        if (demoSeedEnabled) {
+            return;
+        }
+
         List<DemoStation> seeds;
         try (var input = new ClassPathResource(SEED_RESOURCE).getInputStream()) {
             seeds = objectMapper.readValue(input, new TypeReference<>() {});
@@ -49,6 +56,9 @@ public class AutopilotDemoDataInitializer implements ApplicationRunner {
                 .collect(Collectors.toMap(ChargingStation::getName, Function.identity(), (first, ignored) -> first));
 
         for (DemoStation seed : seeds) {
+            if (stationRepository.existsByDemoSeedKey(seed.key())) {
+                continue;
+            }
             ChargingStation existing = existingByName.get(seed.name());
             if (existing == null) {
                 stationRepository.save(toEntity(seed));

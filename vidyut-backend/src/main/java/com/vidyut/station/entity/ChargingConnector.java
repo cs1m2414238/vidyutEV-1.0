@@ -56,6 +56,12 @@ public class ChargingConnector {
     @Column(length = 120)
     private String faultCode;
 
+    @Column(length = 500)
+    private String faultReason;
+    @Column(length = 60)
+    private String statusSource;
+    private java.time.LocalDateTime statusChangedAt;
+
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "station_id")
     @JsonIgnore

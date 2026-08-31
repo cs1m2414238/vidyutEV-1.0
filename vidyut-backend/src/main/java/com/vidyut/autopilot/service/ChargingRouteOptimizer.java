@@ -17,6 +17,17 @@ public class ChargingRouteOptimizer {
     private static final int MAX_CHARGE_PERCENT = 95;
 
     public OptimizationResult optimize(OptimizationRequest request) {
+        return optimize(request, false, 0);
+    }
+
+    /** The first option is a mandatory, already reachable bridge. Its charge is
+     * limited to the next selected leg plus reserve/margin, never a fixed 80%. */
+    public OptimizationResult optimizeRecovery(OptimizationRequest request, double safetyMarginSoc) {
+        if (request.chargers().isEmpty()) throw new BadRequestException("A reachable bridge charger is required");
+        return optimize(request, true, safetyMarginSoc);
+    }
+
+    private OptimizationResult optimize(OptimizationRequest request, boolean recovery, double safetyMarginSoc) {
         validate(request);
         int destinationIndex = request.chargers().size() + 1;
         List<Map<Integer, Label>> labels = new ArrayList<>();
@@ -33,10 +44,11 @@ public class ChargingRouteOptimizer {
         for (int fromIndex = 0; fromIndex < destinationIndex; fromIndex++) {
             for (Label current : List.copyOf(labels.get(fromIndex).values())) {
                 for (int toIndex = fromIndex + 1; toIndex <= destinationIndex; toIndex++) {
+                    if (recovery && fromIndex == 0 && toIndex != 1) continue;
                     transitionsEvaluated++;
                     Double distanceKm = matrixValue(request.matrix().distances(), fromIndex, toIndex, 1000.0);
                     Double durationMinutes = matrixValue(request.matrix().durations(), fromIndex, toIndex, 60.0);
-                    if (distanceKm == null || durationMinutes == null || distanceKm <= 0) {
+                    if (distanceKm == null || durationMinutes == null || distanceKm < 0 || durationMinutes < 0) {
                         continue;
                     }
 
@@ -45,6 +57,14 @@ public class ChargingRouteOptimizer {
                     double arrivalBattery = current.departureBatteryPercent - batteryUsedPercent;
                     if (arrivalBattery + 0.0001 < request.minimumBatteryPercent()) {
                         continue;
+                    }
+                    if (recovery && fromIndex == 1) {
+                        double bridgeArrival = request.startingBatteryPercent()
+                                - matrixValue(request.matrix().distances(), 0, 1, 1000.0)
+                                * request.energyPerKmKwh() / request.batteryCapacityKwh() * 100.0;
+                        double minimumDeparture = Math.ceil(Math.max(bridgeArrival,
+                                request.minimumBatteryPercent() + safetyMarginSoc + batteryUsedPercent));
+                        if (Math.abs(current.departureBatteryPercent - minimumDeparture) > 0.0001) continue;
                     }
 
                     int drivingMinutes = (int) Math.ceil(durationMinutes);
@@ -66,6 +86,7 @@ public class ChargingRouteOptimizer {
                     int minimumTarget = Math.max(
                             (int) Math.ceil(arrivalBattery + 1),
                             (int) Math.ceil(request.minimumBatteryPercent() + 2));
+                    if (recovery && toIndex == 1) minimumTarget = (int) Math.ceil(arrivalBattery);
                     for (int targetBattery = minimumTarget;
                          targetBattery <= MAX_CHARGE_PERCENT;
                          targetBattery++) {
@@ -182,10 +203,13 @@ public class ChargingRouteOptimizer {
         if (request == null || request.matrix() == null) {
             throw new IllegalArgumentException("A route matrix is required");
         }
-        if (request.batteryCapacityKwh() <= 0 || request.energyPerKmKwh() <= 0) {
+        if (!Double.isFinite(request.batteryCapacityKwh()) || !Double.isFinite(request.energyPerKmKwh())
+                || request.batteryCapacityKwh() <= 0 || request.energyPerKmKwh() <= 0) {
             throw new IllegalArgumentException("A valid vehicle energy model is required");
         }
-        if (request.startingBatteryPercent() <= request.minimumBatteryPercent()) {
+        if (!Double.isFinite(request.startingBatteryPercent()) || !Double.isFinite(request.minimumBatteryPercent())
+                || request.startingBatteryPercent() > 100 || request.minimumBatteryPercent() < 0
+                || request.startingBatteryPercent() <= request.minimumBatteryPercent()) {
             throw new IllegalArgumentException("Starting battery must be above the reserve");
         }
         if (request.vehicleMaxChargePowerKw() <= 0

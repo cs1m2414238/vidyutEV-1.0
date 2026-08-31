@@ -77,8 +77,104 @@
 .active-journey-heading h2 svg { flex: 0 0 auto; color: #10b981; }
 .active-journey-heading p { margin: 0; color: #64748b; font-size: .73rem; font-weight: 550; }
 .active-journey-actions { flex: 0 0 auto; gap: 11px; }
-.active-journey-actions button { display: flex; align-items: center; gap: 7px; min-height: 39px; padding: 0 14px; border: 0; border-radius: 11px; color: #fff; background: #0b6b4d; box-shadow: 0 8px 18px rgba(11, 107, 77, .18); font: inherit; font-size: .72rem; font-weight: 800; cursor: pointer; }
+.active-journey-actions button { display: flex; align-items: center; gap: 7px; min-height: 39px; padding: 0 14px; border: 0; border-radius: 11px; color: #fff; background: #0b6b4d; box-shadow: 0 8px 18px rgba(11, 107, 77, .18); font: inherit; font-size: .72rem; font-weight: 800; cursor: pointer; transition: all 0.15s ease; }
 .active-journey-actions button:hover { background: #07553e; transform: translateY(-1px); }
+.active-journey-actions .btn-end-journey {
+  background: #ffffff;
+  color: #dc2626;
+  border: 1px solid #fecaca;
+  box-shadow: 0 4px 12px rgba(220, 38, 38, 0.08);
+}
+.active-journey-actions .btn-end-journey:hover {
+  background: #fef2f2;
+  border-color: #f87171;
+  color: #b91c1c;
+  transform: translateY(-1px);
+}
+.end-journey-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: rgba(15, 23, 42, 0.65);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+.end-journey-modal {
+  background: #ffffff;
+  border-radius: 18px;
+  max-width: 440px;
+  width: 100%;
+  padding: 24px;
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+  border: 1px solid #e2e8f0;
+  animation: modal-fade-in 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+@keyframes modal-fade-in {
+  from { opacity: 0; transform: scale(0.96); }
+  to { opacity: 1; transform: scale(1); }
+}
+.end-modal-header {
+  display: flex;
+  gap: 15px;
+  align-items: flex-start;
+}
+.end-modal-icon {
+  width: 46px;
+  height: 46px;
+  border-radius: 12px;
+  background: #fee2e2;
+  color: #dc2626;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.end-modal-header h3 {
+  margin: 0 0 6px;
+  font-size: 1.15rem;
+  color: #0f172a;
+  font-weight: 800;
+}
+.end-modal-header p {
+  margin: 0;
+  color: #64748b;
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+.end-modal-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  margin-top: 22px;
+}
+.end-modal-actions button {
+  padding: 9px 16px;
+  border-radius: 10px;
+  font-size: 0.8rem;
+  font-weight: 750;
+  cursor: pointer;
+  border: none;
+  transition: all 0.15s ease;
+}
+.end-modal-actions .btn-cancel-keep {
+  background: #f1f5f9;
+  color: #475569;
+}
+.end-modal-actions .btn-cancel-keep:hover {
+  background: #e2e8f0;
+  color: #1e293b;
+}
+.end-modal-actions .btn-confirm-end {
+  background: #dc2626;
+  color: #ffffff;
+  box-shadow: 0 4px 12px rgba(220, 38, 38, 0.25);
+}
+.end-modal-actions .btn-confirm-end:hover {
+  background: #b91c1c;
+}
 .active-journey-status { display: inline-flex; align-items: center; gap: 7px; padding: 7px 10px; border: 1px solid #bae6d2; border-radius: 999px; color: #047857; background: #ecfdf5; font-size: .65rem; font-weight: 850; white-space: nowrap; }
 .active-journey-status i { width: 7px; height: 7px; border-radius: 50%; background: #10b981; box-shadow: 0 0 0 4px rgba(16, 185, 129, .12); animation: journey-live-pulse 1.8s ease-out infinite; }
 .active-journey-status.status-payment_required { border-color: #fed7aa; color: #c2410c; background: #fff7ed; }

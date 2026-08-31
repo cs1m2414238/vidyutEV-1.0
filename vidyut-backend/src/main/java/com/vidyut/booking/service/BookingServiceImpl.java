@@ -72,6 +72,7 @@ public class BookingServiceImpl implements BookingService {
         }
         int hours = Math.max(1, (int) Math.ceil(durationMinutes / 60.0));
         double powerKw = station.getConnectors().stream()
+                .filter(connector -> request.getConnectorId()==null || request.getConnectorId().equals(connector.getId()))
                 .filter(connector -> connector.isAvailable() && !connector.isMaintenanceMode()
                         && connector.getStatus() == ChargerStatus.ONLINE)
                 .mapToDouble(connector -> connector.getPowerKw())
@@ -98,10 +99,15 @@ public class BookingServiceImpl implements BookingService {
             throw new DuplicateResourceException("The selected charging slot is full. Join the waitlist or choose another time.");
         }
 
+        if (request.getConnectorId()!=null && bookingRepository.countConnectorOverlapping(request.getConnectorId(), startTime, endTime,
+                EnumSet.of(BookingStatus.PENDING, BookingStatus.CONFIRMED, BookingStatus.IN_PROGRESS)) > 0)
+            throw new DuplicateResourceException("The exact recovery connector is already reserved for this time. Evaluate recovery again.");
+
         Booking booking = Booking.builder()
                 .userId(userId)
                 .stationId(station.getId())
                 .vehicleId(request.getVehicleId())
+                .connectorId(request.getConnectorId())
                 .idempotencyKey(idempotencyKey == null || idempotencyKey.isBlank() ? null : idempotencyKey)
                 .stationName(station.getName())
                 .stationAddress(station.getAddress())
@@ -282,6 +288,7 @@ public class BookingServiceImpl implements BookingService {
 
     private BookingResponse mapToResponse(Booking booking) {
         return BookingResponse.builder()
+                .connectorId(booking.getConnectorId())
                 .id(booking.getId())
                 .userId(booking.getUserId())
                 .stationId(booking.getStationId())

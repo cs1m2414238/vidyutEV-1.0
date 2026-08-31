@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react';
-import { MapPin, Calendar, Wallet, AlertCircle, Info, Navigation, Sparkles, BatteryCharging, Bluetooth, Route, ChevronRight, ArrowRight, Clock3, IndianRupee, ShieldCheck, RefreshCw, Zap } from 'lucide-react';
+import { MapPin, Calendar, Wallet, AlertCircle, Info, Navigation, Sparkles, BatteryCharging, Bluetooth, Route, ChevronRight, ArrowRight, Clock3, IndianRupee, ShieldCheck, RefreshCw, Zap, XCircle } from 'lucide-react';
 import { MapContainer, TileLayer, Marker as LeafletMarker, Popup as LeafletPopup, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import type { User, Charger } from '../../types';
 import type { Vehicle } from '../../services/vehicles';
-import { getCurrentAutopilotTrip, type AutopilotTrip, type AutopilotTripStatus } from '../../services/autopilot';
+import { getCurrentAutopilotTrip, endAutopilotJourney, type AutopilotTrip, type AutopilotTripStatus } from '../../services/autopilot';
 
 interface EVOwnerDashboardProps {
   token: string;
@@ -46,6 +46,22 @@ export function EVOwnerDashboard({
 }: EVOwnerDashboardProps) {
   const [activeJourney, setActiveJourney] = useState<AutopilotTrip | null>(null);
   const [journeyRefreshError, setJourneyRefreshError] = useState('');
+  const [showEndModal, setShowEndModal] = useState(false);
+  const [endingJourney, setEndingJourney] = useState(false);
+
+  const handleConfirmEndJourney = async () => {
+    if (!activeJourney) return;
+    setEndingJourney(true);
+    try {
+      await endAutopilotJourney(token, activeJourney.id);
+      setActiveJourney(null);
+      setShowEndModal(false);
+    } catch (err) {
+      console.error('Failed to end journey:', err);
+    } finally {
+      setEndingJourney(false);
+    }
+  };
 
   useEffect(() => {
     let mounted = true;
@@ -115,6 +131,8 @@ export function EVOwnerDashboard({
           trip={activeJourney}
           refreshWarning={journeyRefreshError}
           onContinue={onOpenAutopilot}
+          onEndJourney={() => setShowEndModal(true)}
+          ending={endingJourney}
         />
       ) : (
         <button type="button" className="ev-autopilot-banner" onClick={onOpenAutopilot}>
@@ -125,6 +143,38 @@ export function EVOwnerDashboard({
           </span>
           <span className="ev-autopilot-banner-action">Plan a journey →</span>
         </button>
+      )}
+
+      {showEndModal && activeJourney && (
+        <div className="end-journey-modal-overlay" onClick={(e) => { if (e.target === e.currentTarget) setShowEndModal(false); }}>
+          <div className="end-journey-modal">
+            <div className="end-modal-header">
+              <div className="end-modal-icon"><XCircle size={24} /></div>
+              <div>
+                <h3>End this journey?</h3>
+                <p>Your active navigation will stop and future charging reservations will be released.</p>
+              </div>
+            </div>
+            <div className="end-modal-actions">
+              <button
+                type="button"
+                className="btn-cancel-keep"
+                onClick={() => setShowEndModal(false)}
+                disabled={endingJourney}
+              >
+                Keep journey
+              </button>
+              <button
+                type="button"
+                className="btn-confirm-end"
+                onClick={() => void handleConfirmEndJourney()}
+                disabled={endingJourney}
+              >
+                {endingJourney ? 'Ending…' : 'End journey'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Main Top 3 Cards Grid */}
@@ -139,9 +189,8 @@ export function EVOwnerDashboard({
               style={{ height: '100%', width: '100%', borderRadius: 16 }}
             >
               <TileLayer
-                attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/">CARTO</a>'
-                url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
-                subdomains="abcd"
+                attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+                url="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
                 maxZoom={19}
               />
               <MiniMapResizer />
@@ -277,7 +326,7 @@ export function EVOwnerDashboard({
             </div>
             <div className="metric-box">
               <span className="metric-label"><Bluetooth size={12} /> Connection</span>
-              <span className="metric-val">{vehicle?.connectionStatus === 'CONNECTED' ? 'Connected' : vehicle?.connectionStatus === 'DISCONNECTED' ? 'Offline' : 'Not synced'}</span>
+              <span className="metric-val">{vehicle?.telemetrySource === 'BLUETOOTH_DEMO' || vehicle?.registrationNumber?.startsWith('DEMO-') || vehicle?.registrationNumber?.startsWith('PRI-') ? 'Demo telemetry' : vehicle?.connectionStatus === 'CONNECTED' ? 'Connected' : vehicle?.connectionStatus === 'DISCONNECTED' ? 'Offline' : 'Not synced'}</span>
             </div>
           </div>
 
@@ -399,10 +448,14 @@ function ActiveJourneyAnalytics({
   trip,
   refreshWarning,
   onContinue,
+  onEndJourney,
+  ending,
 }: {
   trip: AutopilotTrip;
   refreshWarning: string;
   onContinue?: () => void;
+  onEndJourney?: () => void;
+  ending?: boolean;
 }) {
   const status = journeyStatus[trip.status];
   const usableStops = trip.stops.filter((stop) => stop.status !== 'CANCELLED');
@@ -433,6 +486,17 @@ function ActiveJourneyAnalytics({
         <div className="active-journey-actions">
           <span className={`active-journey-status status-${trip.status.toLowerCase()}`}><i />{status.label}</span>
           <button type="button" onClick={onContinue}><Navigation size={16} /> Continue journey <ChevronRight size={15} /></button>
+          {onEndJourney && (
+            <button
+              type="button"
+              className="btn-end-journey"
+              onClick={onEndJourney}
+              disabled={ending}
+              title="End active journey early"
+            >
+              <XCircle size={15} /> End journey
+            </button>
+          )}
         </div>
       </div>
 

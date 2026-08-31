@@ -5,6 +5,7 @@ import 'leaflet/dist/leaflet.css';
 import { LocateFixed } from 'lucide-react';
 import { loadGoogleMaps, isGoogleMapsConfigured, onGoogleMapsAuthFailure, isGoogleMapsAuthFailed } from '../services/googleMapsLoader';
 import type { Charger } from '../types';
+import type { StationViewportBounds } from '../services/stations';
 
 interface MapViewProps {
   chargers: Charger[];
@@ -16,10 +17,11 @@ interface MapViewProps {
   center?: [number, number];
   compatibleConnector?: string;
   offline?: boolean;
+  onBoundsChange?: (bounds: StationViewportBounds) => void;
 }
 
 type MapProviderMode = 'GOOGLE_MAPS' | 'LEAFLET_OSM';
-type TileStyle = 'voyager' | 'osm' | 'satellite';
+type TileStyle = 'osm' | 'satellite';
 
 // Custom SVG icon generator for Leaflet
 const createLeafletCustomIcon = (charger: Charger, isSelected: boolean) => {
@@ -93,6 +95,35 @@ function LeafletMapController({
   return null;
 }
 
+function LeafletViewportReporter({ onBoundsChange }: { onBoundsChange?: (bounds: StationViewportBounds) => void }) {
+  const map = useMap();
+
+  useEffect(() => {
+    if (!onBoundsChange) return undefined;
+    let timer: number | undefined;
+    const report = () => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        const bounds = map.getBounds();
+        onBoundsChange({
+          minLat: bounds.getSouth(),
+          maxLat: bounds.getNorth(),
+          minLng: bounds.getWest(),
+          maxLng: bounds.getEast(),
+        });
+      }, 300);
+    };
+    report();
+    map.on('moveend zoomend', report);
+    return () => {
+      window.clearTimeout(timer);
+      map.off('moveend zoomend', report);
+    };
+  }, [map, onBoundsChange]);
+
+  return null;
+}
+
 export const MapView: React.FC<MapViewProps> = ({
   chargers,
   selectedId,
@@ -103,18 +134,17 @@ export const MapView: React.FC<MapViewProps> = ({
   center = [26.8467, 80.9462],
   compatibleConnector,
   offline = false,
+  onBoundsChange,
 }) => {
   const [showMore, setShowMore] = useState(false);
   const [connector, setConnector] = useState('COMPATIBLE');
   const [maxPrice, setMaxPrice] = useState(50);
   const [minimumPower, setMinimumPower] = useState(0);
-  const [tileStyle, setTileStyle] = useState<TileStyle>('voyager');
+  const [tileStyle, setTileStyle] = useState<TileStyle>('osm');
   const [userLocation, setUserLocation] = useState<[number, number] | null>(null);
   const [locating, setLocating] = useState(false);
 
-  const [preferredMode, setPreferredMode] = useState<MapProviderMode>(
-    isGoogleMapsConfigured() ? 'GOOGLE_MAPS' : 'LEAFLET_OSM'
-  );
+  const [preferredMode, setPreferredMode] = useState<MapProviderMode>('LEAFLET_OSM');
   const [googleMapsLoaded, setGoogleMapsLoaded] = useState(false);
   const [googleMapsError, setGoogleMapsError] = useState(isGoogleMapsAuthFailed());
 
@@ -122,6 +152,14 @@ export const MapView: React.FC<MapViewProps> = ({
   const googleMapInstanceRef = useRef<google.maps.Map | null>(null);
   const markersRef = useRef<google.maps.Marker[]>([]);
   const infoWindowRef = useRef<google.maps.InfoWindow | null>(null);
+  const onBoundsChangeRef = useRef(onBoundsChange);
+  const googleBoundsTimerRef = useRef<number | undefined>(undefined);
+
+  useEffect(() => {
+    onBoundsChangeRef.current = onBoundsChange;
+  }, [onBoundsChange]);
+
+  useEffect(() => () => window.clearTimeout(googleBoundsTimerRef.current), []);
 
   // Subscribe to Google Maps Auth Failure event (e.g. invalid key or unauth domain)
   useEffect(() => {
@@ -251,6 +289,22 @@ export const MapView: React.FC<MapViewProps> = ({
 
         googleMapInstanceRef.current = new window.google.maps.Map(googleMapRef.current, mapOptions);
         infoWindowRef.current = new window.google.maps.InfoWindow();
+        googleMapInstanceRef.current.addListener('idle', () => {
+          window.clearTimeout(googleBoundsTimerRef.current);
+          googleBoundsTimerRef.current = window.setTimeout(() => {
+            const bounds = googleMapInstanceRef.current?.getBounds();
+            const southWest = bounds?.getSouthWest();
+            const northEast = bounds?.getNorthEast();
+            if (southWest && northEast) {
+              onBoundsChangeRef.current?.({
+                minLat: southWest.lat(),
+                maxLat: northEast.lat(),
+                minLng: southWest.lng(),
+                maxLng: northEast.lng(),
+              });
+            }
+          }, 300);
+        });
       } catch (err) {
         console.warn('Google Maps instantiation failed, falling back:', err);
         setGoogleMapsError(true);
@@ -374,17 +428,6 @@ export const MapView: React.FC<MapViewProps> = ({
 
           {activeMode === 'LEAFLET_OSM' && (
             <div style={styles.tileStyleGroup}>
-              <button
-                type="button"
-                style={{
-                  ...styles.tileBtn,
-                  ...(tileStyle === 'voyager' ? styles.tileBtnActive : {}),
-                }}
-                onClick={() => setTileStyle('voyager')}
-                title="CartoDB Voyager (High contrast, modern)"
-              >
-                Voyager
-              </button>
               <button
                 type="button"
                 style={{
@@ -551,15 +594,7 @@ export const MapView: React.FC<MapViewProps> = ({
               center={activeCenter}
               selectedLocation={selectedCharger ? [selectedCharger.latitude, selectedCharger.longitude] : null}
             />
-
-            {tileStyle === 'voyager' && (
-              <TileLayer
-                attribution='&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap</a> &copy; <a href="https://carto.com/">CARTO</a>'
-                url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
-                subdomains="abcd"
-                maxZoom={20}
-              />
-            )}
+            <LeafletViewportReporter onBoundsChange={onBoundsChange} />
 
             {tileStyle === 'osm' && (
               <TileLayer
@@ -627,6 +662,7 @@ export const MapView: React.FC<MapViewProps> = ({
                       {c.outletPartner && (
                         <div style={styles.outletBadge}>{c.outletInstitutionName || 'Outlet partner'}</div>
                       )}
+                      {c.demoData && <div style={styles.demoBadge}>SYNTHETIC DEMO STATION</div>}
                       <div style={styles.popupAddress}>{c.address}</div>
                       <div style={styles.popupMeta}>
                         <span>⚡ {c.powerKw} kW</span> • <span>🔌 {c.connectorType}</span>
@@ -892,6 +928,16 @@ const styles: Record<string, React.CSSProperties> = {
     borderRadius: 999,
     color: '#6D28D9',
     background: '#F0E9FF',
+    fontSize: 9,
+    fontWeight: 800,
+  },
+  demoBadge: {
+    display: 'inline-block',
+    margin: '2px 0 4px',
+    padding: '2px 6px',
+    borderRadius: 999,
+    color: '#92400E',
+    background: '#FEF3C7',
     fontSize: 9,
     fontWeight: 800,
   },

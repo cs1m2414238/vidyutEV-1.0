@@ -51,6 +51,8 @@ export interface AutopilotStop {
   sequenceNumber: number;
   stationId: number;
   bookingId?: number;
+  connectorId?: number;
+  chargerCode?: string;
   stationName: string;
   stationAddress: string;
   connectorType: string;
@@ -221,6 +223,8 @@ export interface AutopilotAction {
 }
 
 export interface AutopilotTrip {
+  recovery?: AutopilotRecovery | null;
+  routeCoordinates?: number[][];
   id: number;
   idempotencyKey: string;
   goal: string;
@@ -254,6 +258,12 @@ export interface AutopilotTrip {
   paymentMessage?: string;
   walletBalance: number;
   telemetry: {
+    latitude?: number;
+    longitude?: number;
+    positionRecordedAt?: string;
+    positionSource?: string;
+    distanceTravelledKm?: number;
+    safeReachableDistanceKm?: number;
     vehicleId: number;
     vehicleName: string;
     registrationNumber: string;
@@ -351,12 +361,26 @@ export function startAutopilotTrip(token: string, tripId: number): Promise<Autop
   });
 }
 
-export function simulateAutopilotFault(token: string, tripId: number): Promise<AutopilotTrip> {
-  return apiRequest<AutopilotTrip>(`/ev/autopilot/trips/${tripId}/simulate-fault`, {
+export function reportChargerIssue(
+  token: string,
+  tripId: number,
+  reason: string = 'CHARGER_NOT_STARTING',
+  comment?: string
+): Promise<AutopilotTrip> {
+  return apiRequest<AutopilotTrip>(`/ev/autopilot/trips/${tripId}/report-issue`, {
     method: 'POST',
     headers: authorized(token),
-    body: '{}',
+    body: JSON.stringify({ reason, comment }),
   });
+}
+
+export function simulateAutopilotFault(
+  token: string,
+  tripId: number,
+  reason: string = 'CHARGER_NOT_STARTING',
+  comment?: string
+): Promise<AutopilotTrip> {
+  return reportChargerIssue(token, tripId, reason, comment);
 }
 
 export function completeAutopilotCharging(token: string, tripId: number): Promise<AutopilotTrip> {
@@ -367,8 +391,75 @@ export function completeAutopilotCharging(token: string, tripId: number): Promis
   });
 }
 
-export function approveAutopilotReroute(token: string, tripId: number): Promise<AutopilotTrip> {
+export function approveAutopilotReroute(token: string, tripId: number, recovery: AutopilotRecovery): Promise<AutopilotTrip> {
   return apiRequest<AutopilotTrip>(`/ev/autopilot/trips/${tripId}/approve-reroute`, {
+    method: 'POST',
+    headers: authorized(token),
+    body: JSON.stringify({ incidentId: recovery.incidentId, planId: recovery.planId }),
+  });
+}
+
+export interface AutopilotRecovery {
+  incidentId: string;
+  planId?: string;
+  state: 'INCIDENT_DETECTED' | 'CANDIDATES_READY' | 'NO_SAFE_RECOVERY_ROUTE' | 'PREPARED' | 'AWAITING_APPROVAL' | 'SUGGESTED' | 'EXECUTED';
+  strategy?: 'DIRECT_NEXT_STOP' | 'DIRECT_DESTINATION' | 'BRIDGE_RECOVERY';
+  reason?: string;
+  agentProvider?: string;
+  positionSource?: string;
+  positionRecordedAt?: string;
+  currentLatitude?: number;
+  currentLongitude?: number;
+  currentSoc: number;
+  reserveSoc: number;
+  batteryCapacityKwh?: number;
+  efficiencyWhPerKm?: number;
+  safeReachableDistanceKm?: number;
+  failedConnectorId?: number;
+  failedStationId: number;
+  proposedStops?: AutopilotStop[];
+  distanceToBridgeKm?: number;
+  predictedArrivalSoc?: number;
+  departureTargetSoc?: number;
+  additionalDistanceKm?: number | null;
+  additionalMinutes?: number | null;
+  additionalCost?: number | null;
+  newRemainingDistanceKm?: number;
+  newRemainingMinutes?: number;
+  remainingCost?: number;
+  estimatedArrivalTime?: string;
+  routeEngine?: string;
+}
+
+export async function runAutopilotRecovery(token: string, tripId: number, incidentId: string): Promise<AutopilotTrip> {
+  const result = await apiRequest<{ journey: AutopilotTrip }>(`/ev/autopilot/trips/${tripId}/recovery/run`, {
+    method: 'POST', headers: authorized(token), body: JSON.stringify({ incidentId }),
+  });
+  return result.journey;
+}
+
+export function refreshAutopilotRecovery(token: string, tripId: number, incidentId: string): Promise<AutopilotTrip> {
+  return apiRequest(`/ev/autopilot/trips/${tripId}/recovery/refresh`, {
+    method: 'POST', headers: authorized(token), body: JSON.stringify({ incidentId }),
+  });
+}
+
+export function updateAutopilotPosition(token: string, tripId: number, position: { latitude: number; longitude: number; batteryPercent: number; recordedAt: string }): Promise<AutopilotTrip> {
+  return apiRequest(`/ev/autopilot/trips/${tripId}/position`, {
+    method: 'POST', headers: authorized(token), body: JSON.stringify(position),
+  });
+}
+
+export function endAutopilotJourney(token: string, tripId: number, completed?: boolean): Promise<AutopilotTrip> {
+  return apiRequest<AutopilotTrip>(`/ev/autopilot/trips/${tripId}/end`, {
+    method: 'POST',
+    headers: authorized(token),
+    body: JSON.stringify({ completed: Boolean(completed) }),
+  });
+}
+
+export function arriveAutopilotJourney(token: string, tripId: number): Promise<AutopilotTrip> {
+  return apiRequest<AutopilotTrip>(`/ev/autopilot/trips/${tripId}/simulation/arrive`, {
     method: 'POST',
     headers: authorized(token),
   });

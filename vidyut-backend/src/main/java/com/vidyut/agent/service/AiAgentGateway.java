@@ -61,6 +61,19 @@ public class AiAgentGateway {
         return new AgentServiceUnavailableException(message);
     }
 
+    public JsonNode recover(String authorization, Long tripId, String incidentId) {
+        try {
+            return restClient.post().uri("/v1/recovery")
+                    .header(HttpHeaders.AUTHORIZATION, authorization)
+                    .body(java.util.Map.of("tripId", tripId, "incidentId", incidentId))
+                    .retrieve().body(JsonNode.class);
+        } catch (RestClientResponseException exception) {
+            throw mapAgentError(exception);
+        } catch (ResourceAccessException exception) {
+            throw new AgentServiceUnavailableException("EV Agent recovery is unavailable. Existing reservations are unchanged unless execution already completed; refresh the journey before retrying.");
+        }
+    }
+
     private String errorMessage(String body) {
         try {
             JsonNode root = objectMapper.readTree(body);

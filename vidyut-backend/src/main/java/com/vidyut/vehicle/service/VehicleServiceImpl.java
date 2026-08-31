@@ -115,6 +115,11 @@ public class VehicleServiceImpl implements VehicleService {
     public void deleteVehicle(Long id) {
         Vehicle vehicle = vehicleRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Vehicle not found with id: " + id));
+        if (vehicle.getRegistrationNumber() != null && (
+                vehicle.getRegistrationNumber().toUpperCase().startsWith("DEMO-EV-") ||
+                vehicle.getRegistrationNumber().toUpperCase().startsWith("PRI-EV-"))) {
+            throw new BadRequestException("Core seeded demo EVs (" + vehicle.getRegistrationNumber() + ") cannot be deleted.");
+        }
         removeWalletConfiguration(vehicle.getUserId(), id);
         vehicleRepository.delete(vehicle);
     }
@@ -124,6 +129,11 @@ public class VehicleServiceImpl implements VehicleService {
     public void deleteVehicle(Long id, Long userId) {
         Vehicle vehicle = vehicleRepository.findByIdAndUserId(id, userId)
                 .orElseThrow(() -> new ResourceNotFoundException("Vehicle not found for this account"));
+        if (vehicle.getRegistrationNumber() != null && (
+                vehicle.getRegistrationNumber().toUpperCase().startsWith("DEMO-EV-") ||
+                vehicle.getRegistrationNumber().toUpperCase().startsWith("PRI-EV-"))) {
+            throw new BadRequestException("Core seeded demo EVs (" + vehicle.getRegistrationNumber() + ") cannot be deleted.");
+        }
         removeWalletConfiguration(userId, id);
         vehicleRepository.delete(vehicle);
     }

@@ -11,5 +11,11 @@ public record CompanyAgentActionRequest(
         Double proposedPricePerKwh,
         MaintenancePriority priority,
         @Size(max = 500) String reason,
-        boolean approved
-) {}
+        boolean approved,
+        com.vidyut.station.entity.ChargerStatus expectedStatus
+) {
+    public CompanyAgentActionRequest(CompanyAgentActionType action, Long chargerId, Long stationId,
+            Double proposedPricePerKwh, MaintenancePriority priority, String reason, boolean approved) {
+        this(action, chargerId, stationId, proposedPricePerKwh, priority, reason, approved, null);
+    }
+}

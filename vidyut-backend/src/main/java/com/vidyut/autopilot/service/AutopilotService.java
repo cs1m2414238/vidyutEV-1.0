@@ -72,10 +72,12 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.UUID;
 
 @Service
@@ -103,6 +105,10 @@ public class AutopilotService {
     private final VehicleChargingProfileService vehicleChargingProfileService;
     private final VehicleRecommendationRanker vehicleRecommendationRanker;
     private final DeadlineEvaluator deadlineEvaluator;
+    private final SafeRecoveryPlanner recoveryPlanner;
+    private final AutopilotPositionService positions;
+    private final RecoveryStore recoveryStore;
+    private final com.vidyut.station.repository.ChargingConnectorRepository recoveryConnectors;
 
     @Value("${vidyut.routing.corridor-time-km:8}")
     private double timeCorridorKm;
@@ -115,9 +121,6 @@ public class AutopilotService {
 
     @Value("${vidyut.routing.stop-endpoint-buffer-km:10}")
     private double stopEndpointBufferKm;
-
-    @Value("${vidyut.routing.corridor-margin-degrees:2.5}")
-    private double corridorMarginDegrees;
 
     @Value("${vidyut.demo-data.enabled:false}")
     private boolean demoDataEnabled;
@@ -310,7 +313,7 @@ public class AutopilotService {
                 >= request.getMinimumArrivalBatteryPercent();
         boolean overallFeasible = withinBudget && safeArrivalReserve && deadlineAssessment.feasible();
         String summary = optimizationSummary(
-                optimization, optimized, plan.candidates().size(), corridorLimitKm(optimization), plan);
+                optimization, optimized, plan.candidates().size(), plan.corridorKm(), plan);
         if (!deadlineAssessment.feasible()) {
             summary += " The battery-safe preview misses the requested arrival deadline by "
                     + deadlineAssessment.minutesLate() + " minutes.";
@@ -421,6 +424,8 @@ public class AutopilotService {
                 .energyConsumptionKwhPer100Km(round(vehicleEnergyPerKmKwh(vehicle) * 100))
                 .vehicleMaxChargingPowerKw(round(chargingProfile.maximumDcPowerKw()))
                 .chargingEfficiencyPercent(round(chargingProfile.efficiency() * 100))
+                .dbBoundCandidatesEvaluated(plan.dbBoundCandidates())
+                .postCorridorCandidatesEvaluated(plan.postCorridorCandidates())
                 .compatibleChargersEvaluated(plan.candidates().size())
                 .feasibleAlternativesCompared(optimized.feasibleAlternatives())
                 .optimizationSummary(summary)
@@ -478,7 +483,7 @@ public class AutopilotService {
         DeadlineEvaluator.DeadlineAssessment deadlineAssessment = deadlineEvaluator.assess(
                 request.getArrivalDeadline(), departure, totalMinutes);
         String summary = optimizationSummary(
-                optimization, optimized, plan.candidates().size(), corridorLimitKm(optimization), plan);
+                optimization, optimized, plan.candidates().size(), plan.corridorKm(), plan);
 
         double totalCost = optimized.cost();
         if (totalCost > request.getMaximumChargingBudget()) {
@@ -496,6 +501,33 @@ public class AutopilotService {
                     + deadlineAssessment.requestedArrivalTime().format(clock)
                     + " deadline by " + deadlineAssessment.minutesLate()
                     + " minutes. Change the deadline before launching Autopilot.");
+        }
+
+        // Clean up any prior active trips for this user before starting a new journey
+        List<AutopilotTrip> priorActiveTrips = tripRepository.findByUserIdAndStatusIn(userId, List.of(
+                AutopilotTripStatus.RESERVED,
+                AutopilotTripStatus.MONITORING,
+                AutopilotTripStatus.REROUTED,
+                AutopilotTripStatus.REROUTE_APPROVAL_REQUIRED,
+                AutopilotTripStatus.REPLAN_REQUIRED,
+                AutopilotTripStatus.PAYMENT_REQUIRED
+        ));
+        for (AutopilotTrip prior : priorActiveTrips) {
+            prior.setStatus(AutopilotTripStatus.CANCELLED);
+            prior.setActiveStationId(null);
+            prior.setActiveBookingId(null);
+            prior.setUpdatedAt(LocalDateTime.now());
+            tripRepository.save(prior);
+            List<AutopilotStop> priorStops = stopRepository.findByTripIdOrderBySequenceNumberAsc(prior.getId());
+            for (AutopilotStop s : priorStops) {
+                if (s.getStatus() != AutopilotStopStatus.COMPLETED) {
+                    if (s.getBookingId() != null) {
+                        try { bookingService.cancelBooking(s.getBookingId()); } catch (Exception ignored) {}
+                    }
+                    s.setStatus(AutopilotStopStatus.CANCELLED);
+                    stopRepository.save(s);
+                }
+            }
         }
 
         AutopilotTrip trip = tripRepository.save(AutopilotTrip.builder()
@@ -533,6 +565,16 @@ public class AutopilotService {
                 .build());
 
         List<AutopilotStop> stops = buildOptimizedStops(trip, plan);
+        positions.setNavigation(trip, plan.finalRoute());
+        if (trip.getArrivalDeadline()!=null && !trip.getArrivalDeadline().isBlank()) {
+            LocalDateTime now = LocalDateTime.now();
+            LocalDateTime deadline = now.toLocalDate().atTime(LocalTime.parse(trip.getArrivalDeadline()));
+            trip.setArrivalDeadlineAt(deadline.isBefore(now) ? deadline.plusDays(1) : deadline);
+        }
+        if (demoDataEnabled && AutopilotPositionService.demoVehicle(vehicle)
+                && plan.finalRouteEngine() != OsrmClient.RouteEngine.ESTIMATED) {
+            positions.initializeDemo(trip, origin);
+        }
         stopRepository.saveAll(stops);
 
         int chargingMinutes = optimized.chargingMinutes() + optimized.queueMinutes()
@@ -595,22 +637,28 @@ public class AutopilotService {
 
     @Transactional
     public AutopilotTripResponse startJourney(Long tripId, Long userId, AutopilotProgressRequest request) {
-        AutopilotTrip trip = ownedTrip(tripId, userId);
+        AutopilotTrip trip = lockedTrip(tripId, userId);
         if (trip.getStatus() == AutopilotTripStatus.COMPLETED) return toResponse(trip);
 
         double drop = request == null || request.getBatteryDropPercent() <= 0
                 ? 6
                 : request.getBatteryDropPercent();
-        trip.setCurrentBatteryPercent(round(Math.max(
-                trip.getMinimumArrivalBatteryPercent() + 2,
-                trip.getCurrentBatteryPercent() - drop
-        )));
-        trip.setStatus(AutopilotTripStatus.MONITORING);
+        Vehicle vehicle = ownedVehicle(trip.getVehicleId(), userId);
+        if (demoDataEnabled && AutopilotPositionService.demoVehicle(vehicle)) {
+            if (!"DEMO_ROUTE_PROGRESS".equals(trip.getPositionSource())) {
+                throw new BadRequestException("Start a new demo journey with a verified road route before simulating progress");
+            }
+            AutopilotStop next = stopRepository.findFirstByTripIdAndStatusOrderBySequenceNumberAsc(tripId, AutopilotStopStatus.RESERVED).orElse(null);
+            if (next!=null) drop = Math.min(drop, Math.max(0, next.getDistanceFromOriginKm()-trip.getDistanceTravelledKm())
+                    * vehicleEnergyPerKmKwh(vehicle)/batteryCapacity(vehicle)*100);
+            positions.advanceDemo(trip, drop, batteryCapacity(vehicle), vehicleEnergyPerKmKwh(vehicle));
+        }
+        if (trip.getStatus()!=AutopilotTripStatus.REROUTE_APPROVAL_REQUIRED) trip.setStatus(AutopilotTripStatus.MONITORING);
         trip.setPaymentMessage(null);
         trip.setUpdatedAt(LocalDateTime.now());
         tripRepository.save(trip);
         addAction(trip, AutopilotActionState.SUCCESS, "Navigation started",
-                "Live telemetry active · battery " + trip.getCurrentBatteryPercent()
+                ("DEMO_ROUTE_PROGRESS".equals(trip.getPositionSource()) ? "Simulated road progress" : "Journey monitoring active") + " · battery " + round(trip.getCurrentBatteryPercent())
                         + "% · next reservation protected.");
         addAction(trip, AutopilotActionState.INFO, "Journey monitored",
                 "Vidyut is watching charger status, queue changes, battery safety and budget.");
@@ -619,14 +667,20 @@ public class AutopilotService {
 
     @Transactional
     public AutopilotTripResponse simulateChargerFault(Long tripId, Long userId) {
+        return simulateChargerFault(tripId, userId, null);
+    }
+
+    @Transactional
+    public AutopilotTripResponse simulateChargerFault(Long tripId, Long userId, Long stopId) {
         AutopilotTrip trip = ownedTrip(tripId, userId);
         if (trip.getStatus() == AutopilotTripStatus.COMPLETED) {
             throw new BadRequestException("A completed trip cannot be rerouted");
         }
 
-        AutopilotStop current = stopRepository
-                .findFirstByTripIdAndStatusOrderBySequenceNumberAsc(tripId, AutopilotStopStatus.RESERVED)
-                .orElseThrow(() -> new BadRequestException("This trip has no active charger reservation"));
+        AutopilotStop current = (stopId != null)
+                ? ownedStop(tripId, stopId)
+                : stopRepository.findFirstByTripIdAndStatusOrderBySequenceNumberAsc(tripId, AutopilotStopStatus.RESERVED)
+                        .orElseThrow(() -> new BadRequestException("This trip has no active charger reservation"));
 
         boolean executeAutomatically = automaticFaultRecoveryAllowed(trip.getAutonomyMode());
         return recoverUnavailableStop(trip, current,
@@ -651,6 +705,113 @@ public class AutopilotService {
         return toResponse(trip);
     }
 
+    @Transactional
+    public AutopilotTripResponse endJourney(Long tripId, Long userId, Map<String, Object> request) {
+        AutopilotTrip trip = ownedTrip(tripId, userId);
+        if (trip.getStatus() == AutopilotTripStatus.COMPLETED || trip.getStatus() == AutopilotTripStatus.CANCELLED) {
+            return toResponse(trip);
+        }
+
+        boolean explicitComplete = request != null && (
+                Boolean.TRUE.equals(request.get("completed")) ||
+                "COMPLETED".equalsIgnoreCase(String.valueOf(request.get("status"))) ||
+                Boolean.TRUE.equals(request.get("reachedDestination"))
+        );
+
+        List<AutopilotStop> stops = stopRepository.findByTripIdOrderBySequenceNumberAsc(trip.getId());
+        boolean allStopsDone = !stops.isEmpty() && stops.stream()
+                .allMatch(s -> s.getStatus() == AutopilotStopStatus.COMPLETED);
+
+        boolean reached = explicitComplete || allStopsDone;
+        AutopilotTripStatus finalStatus = reached ? AutopilotTripStatus.COMPLETED : AutopilotTripStatus.CANCELLED;
+
+        // Release future reservations and cancel incomplete stops
+        for (AutopilotStop stop : stops) {
+            if (stop.getStatus() != AutopilotStopStatus.COMPLETED) {
+                if (stop.getBookingId() != null) {
+                    try {
+                        bookingService.cancelBooking(stop.getBookingId());
+                    } catch (Exception ignored) {
+                        // ignore if already cancelled
+                    }
+                }
+                stop.setStatus(AutopilotStopStatus.CANCELLED);
+                stopRepository.save(stop);
+            }
+        }
+
+        trip.setActiveStationId(null);
+        trip.setActiveBookingId(null);
+        trip.setStatus(finalStatus);
+        trip.setPaymentMessage(null);
+        trip.setUpdatedAt(LocalDateTime.now());
+
+        // Cancel any other lingering active trips for this user so state is completely clean
+        List<AutopilotTrip> otherActiveTrips = tripRepository.findByUserIdAndStatusIn(userId, List.of(
+                AutopilotTripStatus.RESERVED,
+                AutopilotTripStatus.MONITORING,
+                AutopilotTripStatus.REROUTED,
+                AutopilotTripStatus.REROUTE_APPROVAL_REQUIRED,
+                AutopilotTripStatus.REPLAN_REQUIRED,
+                AutopilotTripStatus.PAYMENT_REQUIRED
+        ));
+        for (AutopilotTrip other : otherActiveTrips) {
+            if (!other.getId().equals(trip.getId())) {
+                other.setStatus(AutopilotTripStatus.CANCELLED);
+                other.setActiveStationId(null);
+                other.setActiveBookingId(null);
+                other.setUpdatedAt(LocalDateTime.now());
+                tripRepository.save(other);
+                List<AutopilotStop> otherStops = stopRepository.findByTripIdOrderBySequenceNumberAsc(other.getId());
+                for (AutopilotStop s : otherStops) {
+                    if (s.getStatus() != AutopilotStopStatus.COMPLETED) {
+                        if (s.getBookingId() != null) {
+                            try {
+                                bookingService.cancelBooking(s.getBookingId());
+                            } catch (Exception ignored) {}
+                        }
+                        s.setStatus(AutopilotStopStatus.CANCELLED);
+                        stopRepository.save(s);
+                    }
+                }
+            }
+        }
+
+        if (reached) {
+            addAction(trip, AutopilotActionState.SUCCESS, "Journey completed",
+                    "Arrived at " + trip.getDestination() + ". Charging reservations settled and completed.");
+            notificationService.sendNotification(userId, "Journey completed",
+                    "You have arrived at " + trip.getDestination() + ". Trip marked as completed.",
+                    NotificationType.SYSTEM_ALERT);
+        } else {
+            addAction(trip, AutopilotActionState.INFO, "Journey ended by user",
+                    "Active navigation ended early. Remaining charging reservations were released.");
+            notificationService.sendNotification(userId, "Journey ended",
+                    "Your journey to " + trip.getDestination() + " was ended and future reservations were released.",
+                    NotificationType.SYSTEM_ALERT);
+        }
+
+        tripRepository.save(trip);
+        return toResponse(trip);
+    }
+
+    @Transactional
+    public AutopilotTripResponse simulateArrival(Long tripId, Long userId) {
+        AutopilotTrip trip = lockedTrip(tripId,userId);
+        Vehicle vehicle = ownedVehicle(trip.getVehicleId(),userId);
+        if (!demoDataEnabled || !AutopilotPositionService.demoVehicle(vehicle) || !"DEMO_ROUTE_PROGRESS".equals(trip.getPositionSource()))
+            throw new BadRequestException("Arrival simulation is available only for a tracked demo vehicle");
+        if (stopRepository.findByTripIdOrderBySequenceNumberAscIdAsc(tripId).stream().anyMatch(s -> s.getStatus()==AutopilotStopStatus.RESERVED || s.getStatus()==AutopilotStopStatus.PLANNED))
+            throw new BadRequestException("Complete the required charging stops before simulating arrival");
+        double remaining = Math.max(0,positions.navigation(trip).distance()/1000-(trip.getDistanceTravelledKm()-trip.getRouteStartDistanceKm()));
+        double drop = remaining*vehicleEnergyPerKmKwh(vehicle)/batteryCapacity(vehicle)*100;
+        SafeRecoveryPlanner.requireReserve(trip.getCurrentBatteryPercent()-drop,trip.getMinimumArrivalBatteryPercent());
+        positions.advanceDemo(trip,drop,batteryCapacity(vehicle),vehicleEnergyPerKmKwh(vehicle));
+        Map<String, Object> req = new HashMap<>();
+        req.put("completed", true);
+        return endJourney(tripId, userId, req);
+    }
+
     @Transactional(readOnly = true)
     public Map<String, Object> connectorDisruptionImpact(
             Long stationId,
@@ -665,18 +826,16 @@ public class AutopilotService {
                                 && !connector.isMaintenanceMode()
                                 && connector.getStatus() == ChargerStatus.ONLINE))
                 .orElse(false);
-        List<AutopilotStop> affectedStops = backupAvailable ? List.of()
-                : stopRepository.findByStationIdAndStatus(stationId, AutopilotStopStatus.RESERVED).stream()
+        List<AutopilotStop> affectedStops = stopRepository.findByStationIdAndStatus(stationId, AutopilotStopStatus.RESERVED).stream()
                         .filter(stop -> stop.getConnectorType().equalsIgnoreCase(connectorType))
+                        .filter(stop -> stop.getConnectorId() != null
+                                ? stop.getConnectorId().equals(excludedConnectorId) : !backupAvailable)
                         .filter(stop -> tripRepository.findById(stop.getTripId())
                                 .map(trip -> activeTripStatuses().contains(trip.getStatus()))
                                 .orElse(false))
                         .toList();
-        long fullAutopilot = affectedStops.stream().filter(stop -> tripRepository.findById(stop.getTripId())
-                .map(trip -> "FULL_AUTOPILOT".equals(normalizedAutonomyMode(trip.getAutonomyMode())))
-                .orElse(false)).map(AutopilotStop::getTripId).distinct().count();
-        long approvalRequired = affectedStops.stream().map(AutopilotStop::getTripId).distinct().count()
-                - fullAutopilot;
+        long fullAutopilot = 0;
+        long approvalRequired = affectedStops.stream().map(AutopilotStop::getTripId).distinct().count();
         return Map.of(
                 "activeJourneys", affectedStops.stream().map(AutopilotStop::getTripId).distinct().count(),
                 "automaticReroutes", fullAutopilot,
@@ -693,11 +852,12 @@ public class AutopilotService {
             String reason
     ) {
         Map<String, Object> impact = connectorDisruptionImpact(stationId, connectorType, excludedConnectorId);
-        if (Boolean.TRUE.equals(impact.get("backupConnectorAvailable"))) {
+        if (((Number) impact.get("activeJourneys")).longValue() == 0) {
             return Map.of("affectedJourneys", 0, "automaticReroutes", 0, "driverApprovals", 0,
-                    "replanRequired", 0, "backupConnectorAvailable", true);
+                    "replanRequired", 0, "backupConnectorAvailable", impact.get("backupConnectorAvailable"));
         }
 
+        int notified = 0;
         int automatic = 0;
         int approvals = 0;
         int replanRequired = 0;
@@ -705,307 +865,248 @@ public class AutopilotService {
         for (AutopilotStop stop : stopRepository
                 .findByStationIdAndStatus(stationId, AutopilotStopStatus.RESERVED)) {
             if (!stop.getConnectorType().equalsIgnoreCase(connectorType)
+                    || (stop.getConnectorId() != null ? !stop.getConnectorId().equals(excludedConnectorId)
+                        : Boolean.TRUE.equals(impact.get("backupConnectorAvailable")))
                     || !processedTrips.add(stop.getTripId())) continue;
             AutopilotTrip trip = tripRepository.findById(stop.getTripId()).orElse(null);
             if (trip == null || !activeTripStatuses().contains(trip.getStatus())) continue;
-            boolean automaticAction = "FULL_AUTOPILOT".equals(
-                    normalizedAutonomyMode(trip.getAutonomyMode()));
-            AutopilotTripResponse result = recoverUnavailableStop(trip, stop, reason, automaticAction);
-            if (result.getStatus() == AutopilotTripStatus.REROUTED) automatic++;
-            else if (result.getStatus() == AutopilotTripStatus.REROUTE_APPROVAL_REQUIRED) approvals++;
-            else if (result.getStatus() == AutopilotTripStatus.REPLAN_REQUIRED) replanRequired++;
+            recoverUnavailableStop(trip, stop, reason, false);
+            notified++;
         }
         return Map.of(
-                "affectedJourneys", automatic + approvals + replanRequired,
+                "affectedJourneys", notified,
+                "agentIncidentsPending", notified,
                 "automaticReroutes", automatic,
                 "driverApprovals", approvals,
                 "replanRequired", replanRequired,
-                "backupConnectorAvailable", false
+                "backupConnectorAvailable", impact.get("backupConnectorAvailable")
         );
     }
 
     @Transactional
-    public AutopilotTripResponse approvePreparedReroute(Long tripId, Long userId) {
-        AutopilotTrip trip = ownedTrip(tripId, userId);
-        if (trip.getStatus() != AutopilotTripStatus.REROUTE_APPROVAL_REQUIRED) {
-            throw new BadRequestException("This journey has no replacement charger awaiting approval");
-        }
-        AutopilotStop replacement = stopRepository.findByTripIdOrderBySequenceNumberAscIdAsc(tripId).stream()
-                .filter(stop -> stop.getStatus() == AutopilotStopStatus.PLANNED)
-                .max(Comparator.comparingInt(AutopilotStop::getSequenceNumber))
-                .orElseThrow(() -> new BadRequestException("No safe replacement charger is available to approve"));
-        reserveNextStop(trip, replacement, userId);
-        trip.setStatus(AutopilotTripStatus.REROUTED);
+    public AutopilotTripResponse approvePreparedReroute(Long tripId, Long userId, String incidentId, String planId) {
+        return executeRecovery(tripId, userId, incidentId, planId, true);
+    }
+
+    /** Hardware events record evidence only. The authenticated EV Agent session
+     * receives this incident and performs candidate lookup and preparation. */
+    private AutopilotTripResponse recoverUnavailableStop(AutopilotTrip trip, AutopilotStop failed,
+                                                        String reason, boolean ignoredAutomaticFlag) {
+        RecoverySession previous = recoveryStore.read(trip);
+        if (previous != null && previous.getFailedStopId().equals(failed.getId())
+                && !"EXECUTED".equals(previous.getEvidence().getState())) return toResponse(trip);
+        String incidentId = UUID.randomUUID().toString();
+        var evidence = com.vidyut.autopilot.dto.AutopilotRecoveryResponse.builder()
+                .incidentId(incidentId).state("INCIDENT_DETECTED").reason(reason)
+                .autonomyMode(normalizedAutonomyMode(trip.getAutonomyMode()))
+                .currentSoc(trip.getCurrentBatteryPercent()).reserveSoc(trip.getMinimumArrivalBatteryPercent())
+                .failedStationId(failed.getStationId()).failedConnectorId(failed.getConnectorId()).build();
+        recoveryStore.write(trip, RecoverySession.builder().incidentId(incidentId).failedStopId(failed.getId())
+                .originalTripStatus(trip.getStatus()).evidence(evidence).build());
         trip.setUpdatedAt(LocalDateTime.now());
         tripRepository.save(trip);
-        addAction(trip, AutopilotActionState.SUCCESS, "Driver approved reroute",
-                replacement.getStationName() + " is reserved and navigation is updated.");
-        notificationService.sendNotification(userId, "Replacement charger reserved",
-                replacement.getStationName() + " is now part of your active journey.",
-                NotificationType.AGENT_REPLAN, "vidyut://autopilot?tripId=" + tripId);
+        addAction(trip, AutopilotActionState.WARNING, "Charger fault detected",
+                failed.getStationName() + " · connector " + failed.getConnectorId()
+                        + ". Incident queued for the EV Agent. Existing reservations are unchanged.");
         return toResponse(trip);
     }
 
-    private AutopilotTripResponse recoverUnavailableStop(
-            AutopilotTrip trip,
-            AutopilotStop current,
-            String reason,
-            boolean executeAutomatically
-    ) {
-        Long userId = trip.getUserId();
-        Long tripId = trip.getId();
+    @Transactional(readOnly = true)
+    public Map<String, Object> recoveryContext(Long tripId, Long userId, String incidentId) {
+        AutopilotTrip trip = ownedTrip(tripId, userId);
+        RecoverySession session = requireRecovery(trip, incidentId);
+        return Map.of("incidentId", session.getIncidentId(), "journey", toResponse(trip));
+    }
 
-        addAction(trip, AutopilotActionState.WARNING, "Station fault detected",
-                current.getStationName() + " is unavailable. " + reason + " Full remaining-journey re-optimization initiated.");
-        remember(trip, current.getStationId(), RouteExperienceOutcome.CHARGER_FAULT,
-                current.getStationName() + " became unavailable and forced a full journey re-optimization.", null, null);
-
-        // 1. Cancel the booking for the failed stop without fee
-        if (current.getBookingId() != null) {
-            bookingService.cancelBookingWithoutFee(current.getBookingId(), userId,
-                    "The charger became unavailable, so Vidyut released this reservation without a fee.");
-        }
-        current.setStatus(AutopilotStopStatus.CANCELLED);
-        current.setRemovalReason("CHARGER_FAULT");
-        current.setOriginalStopIndex(current.getSequenceNumber());
-        stopRepository.save(current);
-        addAction(trip, AutopilotActionState.SUCCESS, "Old reservation released",
-                "Booking #" + current.getBookingId() + " cancelled without fee.");
-
-        // 2. Fetch all stops for this trip
-        List<AutopilotStop> allStops = stopRepository.findByTripIdOrderBySequenceNumberAscIdAsc(tripId);
-        List<AutopilotStop> completedStops = allStops.stream()
-                .filter(s -> s.getStatus() == AutopilotStopStatus.COMPLETED)
-                .toList();
-        List<AutopilotStop> staleUncompletedStops = allStops.stream()
-                .filter(s -> (s.getStatus() == AutopilotStopStatus.PLANNED || s.getStatus() == AutopilotStopStatus.RESERVED)
-                        && !s.getId().equals(current.getId()))
-                .toList();
-
-        // Release any pending bookings on stale downstream stops
-        for (AutopilotStop stale : staleUncompletedStops) {
-            if (stale.getBookingId() != null) {
-                try {
-                    bookingService.cancelBookingWithoutFee(stale.getBookingId(), userId,
-                            "Journey rerouted following charger outage");
-                } catch (Exception ignored) {}
-            }
-        }
-        // Remove stale uncompleted stops so they can be replaced by the newly optimized stops
-        if (!staleUncompletedStops.isEmpty()) {
-            stopRepository.deleteAll(staleUncompletedStops);
-        }
-
-        // 3. Determine current vehicle state
+    @Transactional
+    public Map<String, Object> safeRecoveryCandidates(Long tripId, Long userId, String incidentId) {
+        AutopilotTrip trip = lockedTrip(tripId, userId);
+        RecoverySession session = requireRecovery(trip, incidentId);
+        if ("CANDIDATES_READY".equals(session.getEvidence().getState()))
+            return Map.of("state", "CANDIDATES_READY", "evidence", session.getEvidence(), "candidates",
+                    session.getPlans().stream().map(p -> Map.of("planId", p.id(), "plan", recoveryEvidence(session,p))).toList());
+        if (!Set.of("INCIDENT_DETECTED", "NO_SAFE_RECOVERY_ROUTE", "CANDIDATES_READY").contains(session.getEvidence().getState()))
+            return Map.of("state", session.getEvidence().getState(), "candidates", List.of());
         Vehicle vehicle = ownedVehicle(trip.getVehicleId(), userId);
-        double capacityKwh = batteryCapacity(vehicle);
-        VehicleChargingProfileService.ChargingProfile chargingProfile =
-                vehicleChargingProfileService.forVehicle(vehicle);
-        RouteMemory memory = routeMemory(trip.getOrigin(), trip.getDestination());
-
-        Coordinate currentStartCoord;
-        double currentBattery = trip.getCurrentBatteryPercent();
-        double completedCost = completedStops.stream().mapToDouble(AutopilotStop::getEstimatedCost).sum();
-        double completedDistanceKm = completedStops.isEmpty() ? 0 : completedStops.get(completedStops.size() - 1).getDistanceFromOriginKm();
-        int completedDurationMinutes = completedStops.stream()
-                .mapToInt(s -> s.getChargingMinutes() + s.getEstimatedWaitMinutes() + s.getConnectionMinutes())
-                .sum();
-        int completedChargingMinutes = completedStops.stream().mapToInt(AutopilotStop::getChargingMinutes).sum();
-        int completedQueueMinutes = completedStops.stream().mapToInt(AutopilotStop::getEstimatedWaitMinutes).sum();
-        int completedConnectionMinutes = completedStops.stream().mapToInt(AutopilotStop::getConnectionMinutes).sum();
-
-        if (!completedStops.isEmpty()) {
-            AutopilotStop lastCompleted = completedStops.get(completedStops.size() - 1);
-            ChargingStation lastStation = stationRepository.findById(lastCompleted.getStationId()).orElse(null);
-            if (lastStation != null) {
-                currentStartCoord = new Coordinate(lastStation.getLatitude(), lastStation.getLongitude());
-            } else {
-                currentStartCoord = locationResolver.resolve(lastCompleted.getStationAddress());
-            }
-        } else {
-            currentStartCoord = locationResolver.resolve(trip.getOrigin());
-        }
-        Coordinate destinationCoord = locationResolver.resolve(trip.getDestination());
-
-        // 4. Set excluded stations: the failed station + all completed stations
-        Set<Long> excludedStationIds = new HashSet<>();
-        excludedStationIds.add(current.getStationId());
-        completedStops.forEach(s -> excludedStationIds.add(s.getStationId()));
-
-        double remainingBudget = Math.max(100.0, trip.getMaximumChargingBudget() - completedCost);
-
-        AutopilotTripRequest replanRequest = AutopilotTripRequest.builder()
-                .vehicleId(trip.getVehicleId())
-                .origin(trip.getOrigin())
-                .destination(trip.getDestination())
-                .goal(trip.getGoal())
-                .tripPurpose(trip.getTripPurpose() == null ? null : trip.getTripPurpose().name())
-                .arrivalDeadline(trip.getArrivalDeadline())
-                .optimizeFor(trip.getOptimizeFor())
-                .autonomyMode(trip.getAutonomyMode())
-                .currentBatteryPercent(currentBattery)
-                .minimumArrivalBatteryPercent(trip.getMinimumArrivalBatteryPercent())
-                .maximumChargingBudget(remainingBudget)
-                .build();
-
-        PlanningContext replanContext = null;
         try {
-            replanContext = planJourney(
-                    vehicle,
-                    replanRequest,
-                    currentStartCoord,
-                    destinationCoord,
-                    capacityKwh,
-                    trip.getOptimizeFor(),
-                    trip.getTripPurpose(),
-                    memory,
-                    chargingProfile,
-                    null,
-                    excludedStationIds
-            );
-        } catch (Exception e) {
-            // Re-optimization failed
+            var evidence = recoveryPlanner.snapshot(trip, vehicle, ownedStop(tripId, session.getFailedStopId()));
+            evidence.setIncidentId(incidentId);
+            evidence.setAutonomyMode(normalizedAutonomyMode(trip.getAutonomyMode()));
+            session.setEvidence(evidence);
+            session.setPlans(recoveryPlanner.options(trip, vehicle, ownedStop(tripId, session.getFailedStopId()),
+                    stopRepository.findByTripIdOrderBySequenceNumberAscIdAsc(tripId), evidence));
+            evidence.setState(session.getPlans().isEmpty() ? "NO_SAFE_RECOVERY_ROUTE" : "CANDIDATES_READY");
+            evidence.setReason(session.getPlans().isEmpty()
+                    ? "No verified complete recovery route meets the current battery reserve, connector, budget and deadline constraints."
+                    : "Backend verified every leg of these complete remaining-journey options.");
+        } catch (BadRequestException | OsrmException unavailable) {
+            session.setPlans(List.of());
+            session.getEvidence().setState("NO_SAFE_RECOVERY_ROUTE");
+            session.getEvidence().setReason(unavailable.getMessage());
         }
+        recoveryStore.write(trip, session);
+        tripRepository.save(trip);
+        addAction(trip, session.getPlans().isEmpty() ? AutopilotActionState.WARNING : AutopilotActionState.INFO,
+                "Vidyut evaluated recovery chargers", session.getEvidence().getReason());
+        return Map.of("state", session.getEvidence().getState(), "evidence", session.getEvidence(),
+                "candidates", session.getPlans().stream().map(p -> Map.of("planId", p.id(), "plan", recoveryEvidence(session, p))).toList());
+    }
 
-        if (replanContext == null || replanContext.selected().isEmpty()) {
-            trip.setStatus(AutopilotTripStatus.REPLAN_REQUIRED);
-            trip.setActiveStationId(null);
-            trip.setActiveBookingId(null);
-            trip.setUpdatedAt(LocalDateTime.now());
-            tripRepository.save(trip);
-            addAction(trip, AutopilotActionState.WARNING, "No safe replacement available",
-                    "The unavailable booking was released. Stop safely and review the journey before continuing.");
-            notificationService.sendNotification(userId, "Journey needs a safe stop",
-                    current.getStationName() + " is unavailable and no compatible replacement currently satisfies your limits.",
-                    NotificationType.AGENT_REPLAN, "vidyut://autopilot?tripId=" + trip.getId());
+    @Transactional
+    public AutopilotTripResponse prepareSafeReroute(Long tripId, Long userId, String incidentId, String planId, String provider) {
+        AutopilotTrip trip = lockedTrip(tripId, userId);
+        RecoverySession session = requireRecovery(trip, incidentId);
+        if (Set.of("PREPARED", "AWAITING_APPROVAL", "SUGGESTED", "EXECUTED").contains(session.getEvidence().getState())) {
+            if (!java.util.Objects.equals(planId, session.getSelectedPlanId())) throw new BadRequestException("A different recovery plan is already prepared");
             return toResponse(trip);
         }
-
-        // 5. Build the newly optimized stops from replanContext
-        List<Candidate> newSelected = replanContext.selected();
-        ChargingRouteOptimizer.OptimizationResult newOptimized = replanContext.optimized();
-        List<AutopilotStop> newlyBuiltStops = new ArrayList<>();
-
-        double cumulativeDistanceKm = completedDistanceKm;
-        int nextSequence = completedStops.size() + 1;
-
-        double oldTotalDistance = trip.getTotalDistanceKm();
-        double oldTotalCost = trip.getEstimatedChargingCost();
-        int oldTotalDuration = trip.getTotalDurationMinutes();
-
-        for (int i = 0; i < newSelected.size(); i++) {
-            Candidate candidate = newSelected.get(i);
-            ChargingRouteOptimizer.StopDecision decision = newOptimized.stops().get(i);
-            cumulativeDistanceKm += replanContext.finalRoute().legs().get(i).distance() / 1000.0;
-
-            AutopilotStop newStop = AutopilotStop.builder()
-                    .tripId(tripId)
-                    .sequenceNumber(nextSequence++)
-                    .stationId(candidate.station().getId())
-                    .stationName(candidate.station().getName())
-                    .stationAddress(candidate.station().getAddress())
-                    .connectorType(candidate.connector().getType().name())
-                    .powerKw(round(candidate.connector().getPowerKw()))
-                    .effectivePowerKw(decision.effectivePowerKw())
-                    .distanceFromOriginKm(round(cumulativeDistanceKm))
-                    .routeOffsetKm(candidate.routeOffsetKm())
-                    .arrivalBatteryPercent(decision.arrivalBatteryPercent())
-                    .targetBatteryPercent(decision.targetBatteryPercent())
-                    .estimatedWaitMinutes(decision.queueMinutes())
-                    .chargingMinutes(decision.chargingMinutes())
-                    .connectionMinutes(decision.connectionMinutes())
-                    .estimatedCost(decision.cost())
-                    .demoData(candidate.station().isDemoData())
-                    .selectionReason(candidate.selectionReason())
-                    .status(AutopilotStopStatus.PLANNED)
-                    .build();
-
-            if (i == 0) {
-                // First new stop is the direct replacement for the failed stop
-                newStop.setSelectionType("REROUTED_REPLACEMENT");
-                newStop.setReplacesStationId(current.getStationId());
-                newStop.setReplacesStationName(current.getStationName());
-                newStop.setRerouteReason("CHARGER_FAULT");
-                newStop.setOriginalStopIndex(current.getSequenceNumber());
-            }
-
-            newlyBuiltStops.add(newStop);
-        }
-
-        // Calculate deltas from new optimization result
-        double newTotalDistance = round(completedDistanceKm + replanContext.finalRoute().distance() / 1000.0);
-        double newTotalCost = roundMoney(completedCost + newOptimized.cost());
-        int newDriveMinutes = (int) Math.ceil(replanContext.finalRoute().duration() / 60.0);
-        int newTotalDuration = completedDurationMinutes + newDriveMinutes + newOptimized.chargingMinutes()
-                + newOptimized.queueMinutes() + newOptimized.connectionMinutes();
-
-        AutopilotStop firstNewStop = newlyBuiltStops.get(0);
-        firstNewStop.setAdditionalDistanceKm(round(Math.abs(newTotalDistance - oldTotalDistance)));
-        firstNewStop.setAdditionalMinutes(Math.max(1, newTotalDuration - oldTotalDuration));
-        firstNewStop.setAdditionalCost(roundMoney(Math.abs(newTotalCost - oldTotalCost)));
-
-        // Update relationship links on current (failed stop)
-        current.setReplacedByStationId(firstNewStop.getStationId());
-        current.setReplacedByStationName(firstNewStop.getStationName());
-        stopRepository.save(current);
-
-        // Save all newly optimized stops
-        List<AutopilotStop> savedNewStops = stopRepository.saveAll(newlyBuiltStops);
-        firstNewStop = savedNewStops.get(0);
-
-        // 6. Invalidate and recompute all cached trip metrics
-        trip.setTotalDistanceKm(newTotalDistance);
-        trip.setTotalDurationMinutes(newTotalDuration);
-        trip.setEstimatedDriveMinutes(newDriveMinutes);
-        trip.setEstimatedChargingMinutes(completedChargingMinutes + newOptimized.chargingMinutes());
-        trip.setEstimatedQueueMinutes(completedQueueMinutes + newOptimized.queueMinutes());
-        trip.setConnectionOverheadMinutes(completedConnectionMinutes + newOptimized.connectionMinutes());
-        trip.setEstimatedChargingCost(newTotalCost);
-        trip.setEstimatedArrivalBatteryPercent(round(newOptimized.arrivalBatteryPercent()));
-        trip.setChargingDetourDistanceKm(round(Math.max(0, newTotalDistance - trip.getBaseRouteDistanceKm())));
-        trip.setChargingDetourMinutes((int) Math.round(trip.getChargingDetourDistanceKm() / 70.0 * 60.0));
-        trip.setFeasibleAlternativesCompared(newOptimized.feasibleAlternatives());
-        trip.setOptimizationSummary(optimizationSummary(trip.getOptimizeFor(), newOptimized, replanContext.candidates().size(), corridorLimitKm(trip.getOptimizeFor()), replanContext));
-        trip.setRouteEngine(routeEngineLabel(replanContext));
-
-        if (executeAutomatically) {
-            reserveNextStop(trip, firstNewStop, userId);
-        }
-
-        trip.setStatus(executeAutomatically
-                ? AutopilotTripStatus.REROUTED
-                : AutopilotTripStatus.REROUTE_APPROVAL_REQUIRED);
-        if (!executeAutomatically) {
-            trip.setActiveStationId(firstNewStop.getStationId());
-            trip.setActiveBookingId(null);
-        }
-        trip.setUpdatedAt(LocalDateTime.now());
+        RecoveryPlan plan = session.getPlans().stream().filter(p -> p.id().equals(planId)).findFirst()
+                .orElseThrow(() -> new BadRequestException("Select a backend-issued safe recovery candidate"));
+        plan = recoveryPlanner.revalidate(trip, ownedVehicle(trip.getVehicleId(), userId), ownedStop(tripId, session.getFailedStopId()),
+                session.getEvidence(), plan, stopRepository.findByTripIdOrderBySequenceNumberAscIdAsc(tripId));
+        session.setPlans(List.of(plan));
+        session.setSelectedPlanId(plan.id());
+        session.setAgentProvider("GEMINI".equals(provider) ? provider : "AGENT_POLICY");
+        String mode = normalizedAutonomyMode(trip.getAutonomyMode());
+        session.getEvidence().setState("FULL_AUTOPILOT".equals(mode) ? "PREPARED"
+                : "RECOMMEND_ONLY".equals(mode) ? "SUGGESTED" : "AWAITING_APPROVAL");
+        if ("AWAITING_APPROVAL".equals(session.getEvidence().getState())) trip.setStatus(AutopilotTripStatus.REROUTE_APPROVAL_REQUIRED);
+        recoveryStore.write(trip, session);
         tripRepository.save(trip);
-
-        // 7. Actions & Notifications
-        addAction(trip, AutopilotActionState.SUCCESS, "Remaining journey re-optimized",
-                "Recalculated full route to " + trip.getDestination() + " via " + firstNewStop.getStationName()
-                        + " (arrival " + firstNewStop.getArrivalBatteryPercent() + "%, target " + firstNewStop.getTargetBatteryPercent() + "%).");
-
-        if (executeAutomatically) {
-            addAction(trip, AutopilotActionState.SUCCESS, "Booking transferred",
-                    "Connector reserved under booking #" + firstNewStop.getBookingId() + " at " + firstNewStop.getStationName() + ".");
-            addAction(trip, AutopilotActionState.SUCCESS, "Route updated",
-                    "New total distance " + newTotalDistance + " km · charging estimate ₹" + newTotalCost
-                            + " · arrival reserve " + round(newOptimized.arrivalBatteryPercent()) + "%.");
-            notificationService.sendNotification(userId, "Route automatically updated",
-                    "Your charger became unavailable. " + firstNewStop.getStationName()
-                            + " is reserved and remaining journey is re-optimized.", NotificationType.FAULT_ALERT);
-        } else {
-            addAction(trip, AutopilotActionState.INFO, "Execution permission required",
-                    "Review the re-optimized remaining journey before Vidyut creates its reservation.");
-            notificationService.sendNotification(userId, "Approve a replacement charger",
-                    firstNewStop.getStationName() + " is the re-optimized replacement. Open the journey to approve it.",
-                    NotificationType.AGENT_REPLAN, "vidyut://autopilot?tripId=" + trip.getId());
-        }
-
+        addAction(trip, AutopilotActionState.SUCCESS, "Safe recovery plan selected",
+                plan.strategy() + ". Complete remaining journey validated. Selection source: " + session.getAgentProvider() + ".");
+        addAction(trip, AutopilotActionState.INFO, "Remaining journey re-optimized",
+                plan.stops().size() + " charging stops prepared; reservations and navigation remain unchanged.");
+        if (!"FULL_AUTOPILOT".equals(mode)) addAction(trip, AutopilotActionState.INFO,
+                "RECOMMEND_ONLY".equals(mode) ? "Recommendation only" : "Execution permission required",
+                "RECOMMEND_ONLY".equals(mode) ? "The suggestion will not be applied in this autonomy mode." : "Driver approval is required before any reservation or route changes.");
         return toResponse(trip);
     }
+
+    @Transactional
+    public AutopilotTripResponse executeAgentReroute(Long tripId, Long userId, String incidentId, String planId) {
+        return executeRecovery(tripId, userId, incidentId, planId, false);
+    }
+
+    private AutopilotTripResponse executeRecovery(Long tripId, Long userId, String incidentId, String planId, boolean driverApproval) {
+        AutopilotTrip trip = lockedTrip(tripId, userId);
+        RecoverySession session = requireRecovery(trip, incidentId);
+        if (!java.util.Objects.equals(planId, session.getSelectedPlanId())) throw new BadRequestException("The approved recovery proposal has changed");
+        if ("EXECUTED".equals(session.getEvidence().getState())) return toResponse(trip);
+        String mode = normalizedAutonomyMode(trip.getAutonomyMode());
+        if ("RECOMMEND_ONLY".equals(mode) || (!driverApproval && !"FULL_AUTOPILOT".equals(mode)))
+            throw new com.vidyut.common.exception.ForbiddenException("This autonomy mode does not permit automatic reroute execution");
+        if (!Set.of("PREPARED", "AWAITING_APPROVAL").contains(session.getEvidence().getState()))
+            throw new BadRequestException("No prepared recovery route is available");
+        RecoveryPlan selected = session.getPlans().stream().filter(p -> p.id().equals(planId)).findFirst().orElseThrow();
+        // Lock the exact connectors before checking them and creating bookings.
+        selected.stops().stream().map(AutopilotStop::getConnectorId).distinct().sorted().forEach(id -> {
+            ChargingConnector c = recoveryConnectors.findByIdForUpdate(id).orElseThrow(() -> new BadRequestException("Recovery connector disappeared"));
+            if (!c.isAvailable() || c.isMaintenanceMode() || c.getStatus() != ChargerStatus.ONLINE)
+                throw new BadRequestException("Recovery connector is no longer available; evaluate recovery again");
+        });
+        List<AutopilotStop> existing = stopRepository.findByTripIdOrderBySequenceNumberAscIdAsc(tripId);
+        RecoveryPlan plan = recoveryPlanner.revalidate(trip, ownedVehicle(trip.getVehicleId(), userId), ownedStop(tripId, session.getFailedStopId()),
+                session.getEvidence(), selected, existing);
+        // A materially changed quote must be reviewed again, including in autopilot.
+        if (Math.abs(plan.cost()-selected.cost()) > 0.01 || Math.abs(plan.distanceKm()-selected.distanceKm()) > 0.1
+                || plan.totalMinutes()!=selected.totalMinutes()) throw new BadRequestException("RECOVERY_STATE_CHANGED: road or charging quote changed; evaluate recovery again");
+        if (driverApproval) addAction(trip, AutopilotActionState.SUCCESS, "Driver approved reroute", "Approved proposal " + planId + ".");
+        for (AutopilotStop old : existing) {
+            if (old.getStatus()!=AutopilotStopStatus.RESERVED && old.getStatus()!=AutopilotStopStatus.PLANNED) continue;
+            if (old.getBookingId()!=null) bookingService.cancelBookingWithoutFee(old.getBookingId(), userId, "Approved safe recovery replaced this stop.");
+            old.setStatus(AutopilotStopStatus.CANCELLED);
+            old.setRemovalReason(old.getId().equals(session.getFailedStopId()) ? "CHARGER_FAULT" : "ROUTE_REOPTIMIZED");
+            old.setOriginalStopIndex(old.getSequenceNumber());
+            stopRepository.save(old);
+        }
+        int sequence = existing.stream().mapToInt(AutopilotStop::getSequenceNumber).max().orElse(0);
+        double arrivalSeconds = 0;
+        trip.setActiveStationId(null); trip.setActiveBookingId(null);
+        for (int i=0; i<plan.stops().size(); i++) {
+            AutopilotStop stop = plan.stops().get(i);
+            stop.setSequenceNumber(++sequence);
+            stop = stopRepository.save(stop);
+            arrivalSeconds += plan.route().legs().get(i).duration();
+            reserveStop(trip, stop, userId, (int)Math.ceil(arrivalSeconds/60), i==0);
+            arrivalSeconds += 60.0*(stop.getChargingMinutes()+stop.getEstimatedWaitMinutes()+stop.getConnectionMinutes());
+        }
+        positions.setNavigation(trip, plan.route());
+        trip.setTotalDistanceKm(trip.getDistanceTravelledKm()+plan.distanceKm());
+        trip.setEstimatedDriveMinutes(trip.getElapsedDriveMinutes()+plan.driveMinutes());
+        int completedCharge = existing.stream().filter(s->s.getStatus()==AutopilotStopStatus.COMPLETED).mapToInt(AutopilotStop::getChargingMinutes).sum();
+        double completedCost = existing.stream().filter(s->s.getStatus()==AutopilotStopStatus.COMPLETED).mapToDouble(AutopilotStop::getEstimatedCost).sum();
+        trip.setEstimatedChargingMinutes(completedCharge+plan.chargingMinutes());
+        trip.setEstimatedQueueMinutes(plan.queueMinutes()); trip.setConnectionOverheadMinutes(plan.connectionMinutes());
+        trip.setTotalDurationMinutes(trip.getElapsedDriveMinutes()+completedCharge+plan.totalMinutes());
+        trip.setEstimatedChargingCost(completedCost+plan.cost()); trip.setEstimatedArrivalBatteryPercent(plan.destinationArrivalSoc());
+        trip.setRouteEngine(plan.engine().name()); trip.setStatus(AutopilotTripStatus.REROUTED);
+        trip.setUpdatedAt(LocalDateTime.now());
+        session.setPlans(List.of(plan)); session.getEvidence().setState("EXECUTED");
+        session.getEvidence().setCapturedAt(AutopilotPositionService.now());
+        recoveryStore.write(trip, session); tripRepository.save(trip);
+        addAction(trip, AutopilotActionState.SUCCESS, "Navigation updated", driverApproval
+                ? "Approved recovery route applied and all recovery stops reserved."
+                : "Vidyut automatically rerouted your journey within the configured reserve, budget and deadline constraints.");
+        return toResponse(trip);
+    }
+
+    @Transactional
+    public AutopilotTripResponse updatePosition(Long tripId, Long userId, com.vidyut.autopilot.dto.AutopilotPositionRequest request) {
+        AutopilotTrip trip = lockedTrip(tripId, userId);
+        positions.recordGps(trip, request);
+        tripRepository.save(trip);
+        return toResponse(trip);
+    }
+
+    @Transactional
+    public AutopilotTripResponse refreshRecovery(Long tripId, Long userId, String incidentId) {
+        AutopilotTrip trip = lockedTrip(tripId, userId);
+        RecoverySession session = requireRecovery(trip, incidentId);
+        if ("EXECUTED".equals(session.getEvidence().getState())) throw new BadRequestException("Recovery has already executed");
+        session.setSelectedPlanId(null); session.setPlans(List.of()); session.getEvidence().setState("INCIDENT_DETECTED");
+        trip.setStatus(session.getOriginalTripStatus());
+        recoveryStore.write(trip, session); tripRepository.save(trip);
+        return toResponse(trip);
+    }
+
+    private AutopilotTrip lockedTrip(Long tripId, Long userId) {
+        return tripRepository.findOwnedForUpdate(tripId, userId).orElseThrow(() -> new ResourceNotFoundException("Autopilot trip not found for this account"));
+    }
+
+    private RecoverySession requireRecovery(AutopilotTrip trip, String incidentId) {
+        RecoverySession session = recoveryStore.read(trip);
+        if (session==null || !session.getIncidentId().equals(incidentId) || !activeTripStatuses().contains(trip.getStatus()))
+            throw new BadRequestException("No matching active recovery incident");
+        return session;
+    }
+
+    private com.vidyut.autopilot.dto.AutopilotRecoveryResponse recoveryView(AutopilotTrip trip) {
+        RecoverySession session = recoveryStore.read(trip);
+        if (session==null) return null;
+        return session.getPlans().stream().filter(p -> p.id().equals(session.getSelectedPlanId())).findFirst()
+                .map(p -> recoveryEvidence(session,p)).orElse(session.getEvidence());
+    }
+
+    private com.vidyut.autopilot.dto.AutopilotRecoveryResponse recoveryEvidence(RecoverySession session, RecoveryPlan plan) {
+        var e = session.getEvidence().toBuilder().build();
+        e.setPlanId(plan.id()); e.setStrategy(plan.strategy()); e.setAgentProvider(session.getAgentProvider());
+        e.setProposedStops(plan.stops().stream().map(this::mapStop).toList());
+        if (!plan.stops().isEmpty()) {
+            AutopilotStop bridge = plan.stops().get(0);
+            e.setBridgeConnectorId(bridge.getConnectorId()); e.setPredictedArrivalSoc(bridge.getArrivalBatteryPercent());
+            e.setDepartureTargetSoc(bridge.getTargetBatteryPercent());
+        }
+        e.setDistanceToBridgeKm(plan.route().legs().get(0).distance()/1000); e.setEnergyToBridgeKwh(plan.firstLegEnergyKwh());
+        e.setOriginalRemainingDistanceKm(plan.originalRemainingDistanceKm()); e.setOriginalRemainingMinutes(plan.originalRemainingMinutes());
+        e.setNewRemainingDistanceKm(plan.distanceKm()); e.setNewRemainingMinutes(plan.totalMinutes());
+        e.setAdditionalDistanceKm(plan.originalRemainingDistanceKm()==null ? null : plan.distanceKm()-plan.originalRemainingDistanceKm());
+        e.setAdditionalMinutes(plan.originalRemainingMinutes()==null ? null : plan.totalMinutes()-plan.originalRemainingMinutes());
+        e.setAdditionalCost(plan.cost()-plan.originalRemainingCost()); e.setRemainingCost(plan.cost());
+        e.setEstimatedArrivalTime(session.getEvidence().getCapturedAt().plusMinutes(plan.totalMinutes())); e.setRouteEngine(plan.engine().name());
+        return e;
+    }
+
 
     private Set<AutopilotTripStatus> activeTripStatuses() {
         return Set.of(
@@ -1020,12 +1121,31 @@ public class AutopilotService {
 
     @Transactional
     public AutopilotTripResponse completeCharging(Long tripId, Long userId) {
-        AutopilotTrip trip = ownedTrip(tripId, userId);
+        AutopilotTrip trip = lockedTrip(tripId, userId);
         if (trip.getStatus() == AutopilotTripStatus.COMPLETED) return toResponse(trip);
 
         AutopilotStop activeStop = stopRepository
                 .findFirstByTripIdAndStatusOrderBySequenceNumberAsc(tripId, AutopilotStopStatus.RESERVED)
                 .orElseThrow(() -> new BadRequestException("This trip has no active charging reservation"));
+
+        RecoverySession recovery = recoveryStore.read(trip);
+        if (recovery!=null && recovery.getFailedStopId().equals(activeStop.getId()) && !"EXECUTED".equals(recovery.getEvidence().getState()))
+            throw new BadRequestException("The failed connector cannot complete charging. Resolve the recovery incident first.");
+
+        Vehicle vehicle = ownedVehicle(trip.getVehicleId(), userId);
+        ChargingStation chargingSite = stationRepository.findById(activeStop.getStationId()).orElseThrow(() -> new BadRequestException("Charging station no longer exists"));
+        Coordinate sitePoint = new Coordinate(chargingSite.getLatitude(),chargingSite.getLongitude());
+        boolean demo = demoDataEnabled && AutopilotPositionService.demoVehicle(vehicle) && "DEMO_ROUTE_PROGRESS".equals(trip.getPositionSource());
+        if (demo) {
+            double remainingKm = Math.max(0,activeStop.getDistanceFromOriginKm()-trip.getDistanceTravelledKm());
+            double drop = remainingKm*vehicleEnergyPerKmKwh(vehicle)/batteryCapacity(vehicle)*100;
+            SafeRecoveryPlanner.requireReserve(trip.getCurrentBatteryPercent()-drop,trip.getMinimumArrivalBatteryPercent());
+            positions.advanceDemo(trip,drop,batteryCapacity(vehicle),vehicleEnergyPerKmKwh(vehicle));
+            trip.setCurrentLatitude(sitePoint.latitude()); trip.setCurrentLongitude(sitePoint.longitude());
+            trip.setDistanceTravelledKm(activeStop.getDistanceFromOriginKm()); trip.setPositionRecordedAt(AutopilotPositionService.now());
+        } else if (RecoveryRoadService.distanceKm(positions.current(trip),sitePoint)>0.5) {
+            throw new BadRequestException("Fresh vehicle telemetry at this charger is required before completing charging");
+        }
 
         WalletResponse wallet = walletService.getWalletByUserId(userId);
         List<AutoRechargeRuleResponse> rules = walletService.getAutoRechargeRules(userId);
@@ -1053,7 +1173,7 @@ public class AutopilotService {
 
         activeStop.setStatus(AutopilotStopStatus.COMPLETED);
         stopRepository.save(activeStop);
-        trip.setCurrentBatteryPercent(round(activeStop.getTargetBatteryPercent()));
+        trip.setCurrentBatteryPercent(activeStop.getTargetBatteryPercent());
         AutopilotStop nextStop = stopRepository
                 .findFirstByTripIdAndStatusOrderBySequenceNumberAsc(tripId, AutopilotStopStatus.RESERVED)
                 .orElse(null);
@@ -1067,7 +1187,7 @@ public class AutopilotService {
                 reserveNextStop(trip, nextStop, userId);
             }
         }
-        trip.setStatus(nextStop == null ? AutopilotTripStatus.COMPLETED : AutopilotTripStatus.MONITORING);
+        trip.setStatus(AutopilotTripStatus.MONITORING);
         trip.setActiveStationId(nextStop == null ? null : nextStop.getStationId());
         trip.setActiveBookingId(nextStop == null ? null : nextStop.getBookingId());
         trip.setPaymentMessage("Paid with Vidyut AutoPay · " + payment.getGatewayTransactionId());
@@ -1079,8 +1199,8 @@ public class AutopilotService {
         addAction(trip, AutopilotActionState.SUCCESS, "Wallet paid automatically",
                 "₹" + roundMoney(activeStop.getEstimatedCost()) + " paid · " + payment.getGatewayTransactionId() + ".");
         addAction(trip, AutopilotActionState.SUCCESS,
-                nextStop == null ? "Journey completed" : "Journey continues",
-                nextStop == null ? "All timing-matched charging stops are complete."
+                "Journey continues",
+                nextStop == null ? "Charging stops are complete; navigation continues to the destination."
                         : "Navigation resumed toward " + nextStop.getStationName() + ".");
         remember(trip, activeStop.getStationId(), RouteExperienceOutcome.SUCCESS,
                 "Charging completed and AutoPay succeeded at " + activeStop.getStationName() + ".", 5, 0);
@@ -1139,6 +1259,8 @@ public class AutopilotService {
         stop.setStationId(station.getId());
         stop.setStationName(station.getName());
         stop.setStationAddress(station.getAddress());
+        stop.setConnectorId(connector.getId());
+        stop.setChargerCode(connector.getChargerCode());
         stop.setConnectorType(connector.getType().name());
         stop.setPowerKw(connector.getPowerKw());
         stop.setDistanceFromOriginKm(alternative.getDistanceFromOriginKm());
@@ -1226,8 +1348,9 @@ public class AutopilotService {
             Set<Long> excludedStationIds
     ) {
         BaseRoute baseRoute = getBestBaseRoute(origin, destination);
-        List<Candidate> candidates = routeCandidates(
+        CandidateDiscovery discovery = routeCandidates(
                 vehicle, baseRoute.route(), optimizeFor, purpose, memory, excludedStationIds);
+        List<Candidate> candidates = discovery.candidates();
         List<Coordinate> matrixCoordinates = new ArrayList<>();
         matrixCoordinates.add(origin);
         candidates.stream().map(this::stationCoordinate).forEach(matrixCoordinates::add);
@@ -1332,10 +1455,13 @@ public class AutopilotService {
                 optimized,
                 finalRoute,
                 finalRouteSelection.engine(),
-                matrixSelection);
+                matrixSelection,
+                discovery.dbBoundCandidates(),
+                discovery.postCorridorCandidates(),
+                discovery.corridorKm());
     }
 
-    private List<Candidate> routeCandidates(
+    private CandidateDiscovery routeCandidates(
             Vehicle vehicle,
             OsrmRoute baseRoute,
             String optimizeFor,
@@ -1345,7 +1471,7 @@ public class AutopilotService {
         return routeCandidates(vehicle, baseRoute, optimizeFor, purpose, memory, Collections.emptySet());
     }
 
-    private List<Candidate> routeCandidates(
+    private CandidateDiscovery routeCandidates(
             Vehicle vehicle,
             OsrmRoute baseRoute,
             String optimizeFor,
@@ -1354,22 +1480,108 @@ public class AutopilotService {
             Set<Long> excludedStationIds
     ) {
         boolean isReplan = excludedStationIds != null && !excludedStationIds.isEmpty();
-        double corridorKm = isReplan ? Math.max(corridorLimitKm(optimizeFor) * 2.5, 45.0) : corridorLimitKm(optimizeFor);
+        boolean isEstimated = baseRoute.geometry() != null && baseRoute.geometry().coordinates() != null && baseRoute.geometry().coordinates().size() <= 2;
+        double corridorKm = isReplan ? Math.max(corridorLimitKm(optimizeFor) * 5.0, 260.0)
+                : isEstimated ? Math.max(corridorLimitKm(optimizeFor) * 8.0, 260.0)
+                : corridorLimitKm(optimizeFor);
         double baseDistanceKm = baseRoute.distance() / 1000.0;
-        List<Candidate> candidates = evaluateCandidates(
+        CandidateEvaluation evaluation = evaluateCandidates(
                 vehicle, baseRoute, corridorKm, baseDistanceKm, optimizeFor, purpose, memory, excludedStationIds);
-        if (candidates.size() < 4) {
-            double expandedCorridorKm = Math.max(corridorKm * 2.2, 55.0);
-            candidates = evaluateCandidates(
-                    vehicle, baseRoute, expandedCorridorKm, baseDistanceKm, optimizeFor, purpose, memory, excludedStationIds);
+        if (corridorKm < 260.0 && (evaluation.candidates().size() < 4
+                || needsChargingCoverageExpansion(vehicle, evaluation.candidates(), baseDistanceKm))) {
+            corridorKm = Math.max(corridorKm * 3.5, 260.0);
+            evaluation = evaluateCandidates(
+                    vehicle, baseRoute, corridorKm, baseDistanceKm, optimizeFor, purpose, memory, excludedStationIds);
         }
-        return candidates.stream()
-                .sorted(Comparator.comparingDouble(Candidate::distanceFromOriginKm))
-                .limit(60)
-                .toList();
+        List<Candidate> optimizerCandidates = optimizerCandidates(
+                evaluation.candidates(), baseDistanceKm);
+        return new CandidateDiscovery(
+                optimizerCandidates,
+                evaluation.dbBoundCandidates(),
+                evaluation.candidates().size(),
+                corridorKm);
     }
 
-    private List<Candidate> evaluateCandidates(
+    private List<Candidate> optimizerCandidates(List<Candidate> candidates, double baseDistanceKm) {
+        Comparator<Candidate> routeOrder = Comparator.comparingDouble(Candidate::distanceFromOriginKm);
+        if (candidates.size() <= 60) {
+            return candidates.stream().sorted(routeOrder).toList();
+        }
+
+        int binCount = 20;
+        Map<Integer, List<Candidate>> byProgressBin = candidates.stream()
+                .collect(java.util.stream.Collectors.groupingBy(candidate -> Math.min(
+                        binCount - 1,
+                        Math.max(0, (int) Math.floor(
+                                candidate.distanceFromOriginKm() / Math.max(1, baseDistanceKm) * binCount)))));
+        Comparator<Candidate> binPreference = Comparator
+                .comparingInt((Candidate candidate) -> isDistrictHub(candidate.station()) ? 1 : 0)
+                .thenComparingDouble(Candidate::routeOffsetKm)
+                .thenComparingDouble(Candidate::impactMinutes)
+                .thenComparing(Comparator.comparingDouble(
+                        (Candidate candidate) -> candidate.connector().getPowerKw()).reversed());
+
+        Map<Long, Candidate> selected = new LinkedHashMap<>();
+        candidates.stream()
+                .filter(this::isCanonicalDemoHub)
+                .sorted(routeOrder)
+                .forEach(candidate -> selected.putIfAbsent(candidate.station().getId(), candidate));
+
+        Map<Integer, List<Candidate>> rankedBins = new TreeMap<>();
+        byProgressBin.forEach((bin, values) -> rankedBins.put(
+                bin, values.stream().sorted(binPreference).toList()));
+        for (int rank = 0; selected.size() < 60; rank++) {
+            boolean foundCandidateAtRank = false;
+            for (List<Candidate> bin : rankedBins.values()) {
+                if (rank >= bin.size()) continue;
+                foundCandidateAtRank = true;
+                Candidate candidate = bin.get(rank);
+                selected.putIfAbsent(candidate.station().getId(), candidate);
+                if (selected.size() >= 60) break;
+            }
+            if (!foundCandidateAtRank) break;
+        }
+        return selected.values().stream().sorted(routeOrder).toList();
+    }
+
+    private boolean isCanonicalDemoHub(Candidate candidate) {
+        String seedKey = candidate.station().getDemoSeedKey();
+        return seedKey != null && seedKey.endsWith("_DEMO_01");
+    }
+
+    private boolean isDistrictHub(ChargingStation station) {
+        return station.getDemoSeedKey() != null && station.getDemoSeedKey().startsWith("SOI-");
+    }
+
+    private boolean needsChargingCoverageExpansion(
+            Vehicle vehicle,
+            List<Candidate> candidates,
+            double baseDistanceKm
+    ) {
+        if (candidates.isEmpty()) {
+            return true;
+        }
+        double conservativeChargedRangeKm = batteryCapacity(vehicle) * 0.75
+                / vehicleEnergyPerKmKwh(vehicle);
+        double maximumProgressGapKm = 0;
+        double previousProgressKm = 0;
+        for (Candidate candidate : candidates.stream()
+                .sorted(Comparator.comparingDouble(Candidate::distanceFromOriginKm))
+                .toList()) {
+            maximumProgressGapKm = Math.max(
+                    maximumProgressGapKm,
+                    candidate.distanceFromOriginKm() - previousProgressKm);
+            previousProgressKm = candidate.distanceFromOriginKm();
+        }
+        maximumProgressGapKm = Math.max(maximumProgressGapKm, baseDistanceKm - previousProgressKm);
+
+        // Route progress is shorter than the true road distance between off-centre
+        // stations. Expand before optimization when the coarse corridor has less
+        // than a 15% reachability margin for a charged leg.
+        return maximumProgressGapKm > conservativeChargedRangeKm * 0.85;
+    }
+
+    private CandidateEvaluation evaluateCandidates(
             Vehicle vehicle,
             OsrmRoute baseRoute,
             double corridorKm,
@@ -1381,8 +1593,12 @@ public class AutopilotService {
     ) {
         RouteBounds routeBounds = routeBounds(baseRoute.geometry(), corridorKm);
         List<Candidate> candidates = new ArrayList<>();
+        List<ChargingStation> boundedStations = stationRepository.findPublishedStationsWithinBounds(
+                routeBounds.minimumLatitude(), routeBounds.maximumLatitude(),
+                routeBounds.minimumLongitude(), routeBounds.maximumLongitude(),
+                demoDataEnabled);
 
-        for (ChargingStation station : stationRepository.findPublishedStations(demoDataEnabled)) {
+        for (ChargingStation station : boundedStations) {
             if (excludedStationIds != null && excludedStationIds.contains(station.getId())) {
                 continue;
             }
@@ -1443,7 +1659,7 @@ public class AutopilotService {
             ));
         }
 
-        return candidates;
+        return new CandidateEvaluation(candidates, boundedStations.size());
     }
 
     private RouteBounds routeBounds(OsrmGeometry geometry, double corridorKm) {
@@ -1487,11 +1703,13 @@ public class AutopilotService {
                     .stationId(candidate.station().getId())
                     .stationName(candidate.station().getName())
                     .stationAddress(candidate.station().getAddress())
+                    .connectorId(candidate.connector().getId())
+                    .chargerCode(candidate.connector().getChargerCode())
                     .connectorType(candidate.connector().getType().name())
                     .powerKw(round(candidate.connector().getPowerKw()))
                     .effectivePowerKw(decision.effectivePowerKw())
                     .distanceFromOriginKm(round(cumulativeDistanceKm))
-                    .routeOffsetKm(candidate.routeOffsetKm())
+                    .routeOffsetKm(finalRouteOffsetKm(candidate, plan.finalRoute()))
                     .arrivalBatteryPercent(decision.arrivalBatteryPercent())
                     .targetBatteryPercent(decision.targetBatteryPercent())
                     .estimatedWaitMinutes(decision.queueMinutes())
@@ -1504,6 +1722,17 @@ public class AutopilotService {
                     .build());
         }
         return stops;
+    }
+
+    private double finalRouteOffsetKm(Candidate candidate, OsrmRoute finalRoute) {
+        try {
+            return round(routeCorridorService.match(stationCoordinate(candidate), finalRoute.geometry()).offsetKm());
+        } catch (IllegalArgumentException ignored) {
+            // The selected station is an explicit final-route waypoint. If an
+            // estimated routing fallback has no usable geometry, report zero
+            // rather than leaking its distance from the superseded base route.
+            return 0;
+        }
     }
 
     private double corridorLimitKm(String optimizeFor) {
@@ -1558,217 +1787,6 @@ public class AutopilotService {
             return base + "_WITH_ESTIMATED_CHARGER_LEGS";
         }
         return base;
-    }
-
-    private boolean needsCharging(
-            double routeDistance,
-            double capacityKwh,
-            double currentBatteryPercent,
-            double minimumBatteryPercent
-    ) {
-        double safeRange = capacityKwh * Math.max(0, currentBatteryPercent - minimumBatteryPercent)
-                / 100.0 / ENERGY_PER_KM_KWH;
-        return routeDistance > safeRange;
-    }
-
-    private boolean purposeRequiresStop(TripPurpose purpose) {
-        return purpose == TripPurpose.MALL_VISIT
-                || purpose == TripPurpose.REST_STOP
-                || purpose == TripPurpose.DESTINATION_CHARGING;
-    }
-
-    private List<Candidate> compatibleCandidates(
-            Vehicle vehicle,
-            Coordinate origin,
-            Coordinate destination,
-            double routeDistance,
-            double capacityKwh,
-            String optimizeFor,
-            TripPurpose purpose,
-            RouteMemory memory
-    ) {
-        List<Candidate> onRoute = new ArrayList<>();
-        List<Candidate> allCompatible = new ArrayList<>();
-        List<ChargingStation> allStations = stationRepository.findPublishedStations(demoDataEnabled);
-
-        List<ChargingStation> validStations = allStations.stream()
-                .filter(station -> station.getStatus() == StationStatus.ACTIVE
-                        && station.getAvailability() != StationAvailability.UNAVAILABLE
-                        && !station.isEmergencyDisabled())
-                .filter(station -> withinCorridor(station, origin, destination))
-                .filter(station -> bestConnector(station, vehicle.getConnectorType()) != null)
-                .toList();
-
-        if (validStations.isEmpty()) {
-            throw new BadRequestException("No online charger matches " + vehicle.getConnectorType() + " for this route");
-        }
-
-        // Use real OSRM road matrix table if available
-        List<Coordinate> stationCoords = validStations.stream()
-                .map(s -> new Coordinate(s.getLatitude(), s.getLongitude()))
-                .toList();
-
-        Map<Integer, double[]> roadMetrics = new HashMap<>();
-        for (OsrmClient.MatrixBatch batch : osrmClient.getBestMatrixTables(
-                origin, stationCoords, destination, OsrmClient.RouteEngine.PRIMARY)) {
-            OsrmTableResponse table = batch.response();
-            if (table == null || !"Ok".equals(table.code())
-                    || table.distances() == null || table.distances().isEmpty()) {
-                throw new BadRequestException("The routing engine could not evaluate charging stops for this route");
-            }
-            int batchStationCount = batch.stationCoordinates().size();
-            for (int localIndex = 0; localIndex < batchStationCount; localIndex++) {
-                Double fromOriginM = matrixValue(table.distances(), 0, localIndex);
-                Double toDestinationM = matrixValue(
-                        table.distances(), localIndex + 1, batchStationCount);
-                if (fromOriginM != null && toDestinationM != null) {
-                    roadMetrics.put(
-                            batch.stationIndexes().get(localIndex),
-                            new double[]{fromOriginM / 1000.0, toDestinationM / 1000.0}
-                    );
-                }
-            }
-        }
-
-        for (int i = 0; i < validStations.size(); i++) {
-            ChargingStation station = validStations.get(i);
-            ChargingConnector connector = bestConnector(station, vehicle.getConnectorType());
-            double[] metric = roadMetrics.get(i);
-            if (metric == null) {
-                continue;
-            }
-            double fromOrigin = round(metric[0]);
-            double toDestination = round(metric[1]);
-            double detour = round(Math.max(0, fromOrigin + toDestination - routeDistance));
-
-            int waitMinutes = Math.max(0, station.getQueueCount() * 7)
-                    + (int) Math.round(station.getOccupancyPercent() / 20.0 * 3);
-            int sampleChargeMinutes = Math.max(8,
-                    (int) Math.ceil(capacityKwh * 0.35 / Math.max(7.4, connector.getPowerKw()) * 60) + 3);
-            double reliabilityPenalty = Math.max(0, 5 - station.getRating()) * 8;
-            MemorySignal signal = memory.stationSignals().getOrDefault(station.getId(), MemorySignal.EMPTY);
-            double memoryPenalty = signal.failures() * 55 + signal.averageDelayMinutes() * 0.7
-                    + signal.lowRatings() * 18 - signal.successes() * 4;
-            String amenities = station.getAmenities() == null ? "" : station.getAmenities().toLowerCase(Locale.ROOT);
-            boolean restFriendly = amenities.matches(".*(restroom|restaurant|food|cafe|lounge|hotel|washroom).*");
-            double purposePenalty = switch (purpose) {
-                case MALL_VISIT, DESTINATION_CHARGING -> toDestination * 1.8;
-                case REST_STOP -> restFriendly ? 0 : 90;
-                case COMMUTE -> waitMinutes * 0.8;
-                default -> 0;
-            };
-            double timeImpact = waitMinutes + sampleChargeMinutes + detour * 0.65 + reliabilityPenalty
-                    + memoryPenalty + purposePenalty;
-            double priceImpact = station.getPricePerKwh() * 2.2;
-            double impact = switch (optimizeFor) {
-                case "COST" -> timeImpact * 0.45 + priceImpact * 1.8;
-                case "BALANCED" -> timeImpact * 0.8 + priceImpact;
-                default -> timeImpact + priceImpact * 0.25;
-            };
-            String reason = selectionReason(purpose, station, round(toDestination), restFriendly, signal);
-            Candidate candidate = new Candidate(station, connector, round(fromOrigin), round(toDestination), round(detour),
-                    round(detour / 2.0), waitMinutes, impact, restFriendly, reason);
-            allCompatible.add(candidate);
-            double routeUpperBound = purpose == TripPurpose.MALL_VISIT || purpose == TripPurpose.DESTINATION_CHARGING
-                    ? routeDistance + 20 : routeDistance - 5;
-            if (fromOrigin > 10 && fromOrigin < routeUpperBound && detour <= Math.max(90, routeDistance * 0.22)) {
-                onRoute.add(candidate);
-            }
-        }
-
-        List<Candidate> result = onRoute.isEmpty() ? allCompatible : onRoute;
-        if (result.isEmpty()) {
-            throw new BadRequestException(
-                    "No online " + vehicle.getConnectorType()
-                            + " charger is routable inside the configured map coverage");
-        }
-        return result.stream()
-                .sorted(Comparator.comparingDouble(Candidate::distanceFromOriginKm))
-                .toList();
-    }
-
-    private boolean withinCorridor(
-            ChargingStation station,
-            Coordinate origin,
-            Coordinate destination
-    ) {
-        double margin = Math.max(0, corridorMarginDegrees);
-        return station.getLatitude() >= Math.min(origin.latitude(), destination.latitude()) - margin
-                && station.getLatitude() <= Math.max(origin.latitude(), destination.latitude()) + margin
-                && station.getLongitude() >= Math.min(origin.longitude(), destination.longitude()) - margin
-                && station.getLongitude() <= Math.max(origin.longitude(), destination.longitude()) + margin;
-    }
-
-    private List<Candidate> selectReachableStops(
-            List<Candidate> candidates,
-            double routeDistance,
-            double capacityKwh,
-            double startingBattery,
-            double minimumBattery,
-            TripPurpose purpose,
-            String optimizeFor
-    ) {
-        List<Candidate> selected = new ArrayList<>();
-        Set<Long> used = new HashSet<>();
-        double marker = 0;
-        double availableBattery = startingBattery;
-
-        while (selected.size() < MAX_STOPS) {
-            double safeRange = capacityKwh * Math.max(0, availableBattery - minimumBattery)
-                    / 100.0 / ENERGY_PER_KM_KWH;
-            if (routeDistance - marker <= safeRange) break;
-
-            double maximumMarker = marker + safeRange * 0.95;
-            double minimumMarker = marker + Math.min(15, safeRange * 0.15);
-            List<Candidate> reachable = candidates.stream()
-                    .filter(candidate -> !used.contains(candidate.station().getId()))
-                    .filter(candidate -> candidate.distanceFromOriginKm() > minimumMarker)
-                    .filter(candidate -> candidate.distanceFromOriginKm() <= maximumMarker)
-                    .toList();
-
-            if (reachable.isEmpty()) {
-                throw new BadRequestException("No compatible charger is safely reachable before the "
-                        + round(minimumBattery) + "% battery reserve");
-            }
-
-            double furthestMarker = reachable.stream()
-                    .mapToDouble(Candidate::distanceFromOriginKm)
-                    .max()
-                    .orElseThrow();
-            double progressWindowKm = switch (optimizeFor) {
-                case "COST" -> 105;
-                case "BALANCED" -> 60;
-                default -> 35;
-            };
-            Candidate chosen = reachable.stream()
-                    .filter(candidate -> candidate.distanceFromOriginKm() >= furthestMarker - progressWindowKm)
-                    .min(Comparator.comparingDouble(Candidate::impactMinutes))
-                    .orElseThrow();
-            selected.add(chosen);
-            used.add(chosen.station().getId());
-            marker = chosen.distanceFromOriginKm();
-            availableBattery = 80;
-        }
-
-        if (routeDistance - marker > capacityKwh * (80 - minimumBattery) / 100.0 / ENERGY_PER_KM_KWH) {
-            throw new BadRequestException("A safe route could not be produced with the available charging network");
-        }
-        if (selected.isEmpty() && purposeRequiresStop(purpose)) {
-            Comparator<Candidate> convenienceComparator = switch (purpose) {
-                case MALL_VISIT, DESTINATION_CHARGING -> Comparator.comparingDouble(candidate ->
-                        candidate.distanceToDestinationKm() * 2 + candidate.impactMinutes() * 0.15);
-                case REST_STOP -> Comparator.comparingDouble(candidate ->
-                        (candidate.restFriendly() ? 0 : 500)
-                                + Math.abs(candidate.distanceFromOriginKm() - routeDistance * 0.5)
-                                + candidate.impactMinutes() * 0.2);
-                default -> Comparator.comparingDouble(candidate ->
-                        Math.abs(candidate.distanceFromOriginKm() - routeDistance * 0.55)
-                                + candidate.impactMinutes());
-            };
-            Candidate convenienceStop = candidates.stream().min(convenienceComparator).orElseThrow();
-            selected.add(convenienceStop);
-        }
-        return selected;
     }
 
     private Double matrixValue(List<List<Double>> matrix, int row, int column) {
@@ -1998,6 +2016,8 @@ public class AutopilotService {
                     .stationId(candidate.station().getId())
                     .stationName(candidate.station().getName())
                     .stationAddress(candidate.station().getAddress())
+                    .connectorId(candidate.connector().getId())
+                    .chargerCode(candidate.connector().getChargerCode())
                     .connectorType(candidate.connector().getType().name())
                     .powerKw(round(candidate.connector().getPowerKw()))
                     .distanceFromOriginKm(candidate.distanceFromOriginKm())
@@ -2044,7 +2064,9 @@ public class AutopilotService {
                 .stationId(candidate.station().getId())
                 .stationName(candidate.station().getName())
                 .stationAddress(candidate.station().getAddress())
-                .connectorType(candidate.connector().getType().name())
+                .connectorId(candidate.connector().getId())
+                    .chargerCode(candidate.connector().getChargerCode())
+                    .connectorType(candidate.connector().getType().name())
                 .powerKw(round(candidate.connector().getPowerKw()))
                 .effectivePowerKw(round(chargeEstimate.effectivePowerKw()))
                 .distanceFromOriginKm(candidate.distanceFromOriginKm())
@@ -2082,6 +2104,7 @@ public class AutopilotService {
                              int arrivalMinutes, boolean makeActive) {
         BookingResponse booking = bookingService.createBooking(BookingCreateRequest.builder()
                 .stationId(stop.getStationId())
+                .connectorId(stop.getConnectorId())
                 .vehicleId(trip.getVehicleId())
                 .startTime(LocalDateTime.now().plusMinutes(arrivalMinutes))
                 .durationHours(Math.max(1, (int) Math.ceil(stop.getChargingMinutes() / 60.0)))
@@ -2203,7 +2226,14 @@ public class AutopilotService {
                         .remainingRangeKm(round(capacity * trip.getCurrentBatteryPercent() / 100.0
                                 / vehicleEnergyPerKmKwh(vehicle)))
                         .state(telemetryState(trip.getStatus()))
+                        .latitude(trip.getCurrentLatitude()).longitude(trip.getCurrentLongitude())
+                        .positionRecordedAt(trip.getPositionRecordedAt()).positionSource(trip.getPositionSource())
+                        .distanceTravelledKm(trip.getDistanceTravelledKm())
+                        .safeReachableDistanceKm(Math.max(0, trip.getCurrentBatteryPercent()-trip.getMinimumArrivalBatteryPercent())
+                                /100 * capacity / vehicleEnergyPerKmKwh(vehicle))
                         .build())
+                .recovery(recoveryView(trip))
+                .routeCoordinates(trip.getNavigationRouteJson()==null ? null : positions.navigation(trip).geometry().coordinates())
                 .stops(stopRepository.findByTripIdOrderBySequenceNumberAscIdAsc(trip.getId()).stream()
                         .map(this::mapStop)
                         .toList())
@@ -2216,13 +2246,17 @@ public class AutopilotService {
     }
 
     private AutopilotStopResponse mapStop(AutopilotStop stop) {
+        ChargingStation station = stationRepository.findById(stop.getStationId()).orElse(null);
         return AutopilotStopResponse.builder()
+                .latitude(station==null ? null : station.getLatitude()).longitude(station==null ? null : station.getLongitude())
                 .id(stop.getId())
                 .sequenceNumber(stop.getSequenceNumber())
                 .stationId(stop.getStationId())
                 .bookingId(stop.getBookingId())
                 .stationName(stop.getStationName())
                 .stationAddress(stop.getStationAddress())
+                .connectorId(stop.getConnectorId())
+                .chargerCode(stop.getChargerCode())
                 .connectorType(stop.getConnectorType())
                 .powerKw(stop.getPowerKw())
                 .effectivePowerKw(stop.getEffectivePowerKw())
@@ -2449,28 +2483,6 @@ public class AutopilotService {
         };
     }
 
-    private String selectionReason(
-            TripPurpose purpose,
-            ChargingStation station,
-            double toDestination,
-            boolean restFriendly,
-            MemorySignal signal
-    ) {
-        String base = switch (purpose) {
-            case MALL_VISIT, DESTINATION_CHARGING -> round(toDestination) + " km from destination";
-            case REST_STOP -> restFriendly ? "Rest & food friendly" : "Fast charging on corridor";
-            case COMMUTE -> station.getQueueCount() == 0 ? "Zero wait commuter stop" : station.getQueueCount() + " in queue";
-            default -> station.getAvailableSlots() + " slot(s) available · " + round(station.getPricePerKwh()) + " ₹/kWh";
-        };
-        if (signal.successes() > 0 && signal.failures() == 0) {
-            return base + " · route memory: reliable stop (" + signal.successes() + " success)";
-        }
-        if (signal.failures() > 0) {
-            return base + " · route memory: flagged " + signal.failures() + " issue(s)";
-        }
-        return base;
-    }
-
     private String telemetryState(AutopilotTripStatus status) {
         return switch (status) {
             case RESERVED -> "STANDBY";
@@ -2619,7 +2631,22 @@ public class AutopilotService {
             ChargingRouteOptimizer.OptimizationResult optimized,
             OsrmRoute finalRoute,
             OsrmClient.RouteEngine finalRouteEngine,
-            OsrmClient.MatrixSelection matrixSelection
+            OsrmClient.MatrixSelection matrixSelection,
+            int dbBoundCandidates,
+            int postCorridorCandidates,
+            double corridorKm
+    ) {}
+
+    private record CandidateDiscovery(
+            List<Candidate> candidates,
+            int dbBoundCandidates,
+            int postCorridorCandidates,
+            double corridorKm
+    ) {}
+
+    private record CandidateEvaluation(
+            List<Candidate> candidates,
+            int dbBoundCandidates
     ) {}
 
     private record Candidate(
@@ -2663,21 +2690,63 @@ public class AutopilotService {
         List<ChargingStation> stations = stationRepository.findAll();
         for (ChargingStation s : stations) {
             if (s.isDemoData()) {
-                s.setAvailability(StationAvailability.AVAILABLE);
                 s.setStatus(StationStatus.ACTIVE);
                 s.setEmergencyDisabled(false);
+                String seedKey = s.getDemoSeedKey();
+                boolean districtHub = seedKey != null && seedKey.startsWith("SOI-");
+                boolean canonicalHub = seedKey != null && seedKey.endsWith("_DEMO_01");
+                int stateBucket = districtHub
+                        ? Math.floorMod(seedKey.hashCode() * 31, 100) : 0;
+                s.setAvailability(!districtHub ? StationAvailability.AVAILABLE
+                        : stateBucket < 80 ? StationAvailability.AVAILABLE
+                        : stateBucket < 90 ? StationAvailability.CHARGING : StationAvailability.UNAVAILABLE);
+                s.setOccupancyPercent(!districtHub ? (canonicalHub ? 15 : 20)
+                        : stateBucket < 80 ? 20 + Math.floorMod(seedKey.hashCode(), 36)
+                        : stateBucket < 90 ? 85 + Math.floorMod(seedKey.hashCode(), 11) : 0);
+                s.setQueueCount(districtHub && stateBucket >= 80 && stateBucket < 90
+                        ? 2 + Math.floorMod(seedKey.hashCode(), 4) : 0);
                 if (s.getConnectors() != null) {
-                    for (ChargingConnector c : s.getConnectors()) {
-                        c.setAvailable(true);
-                        c.setMaintenanceMode(false);
-                        c.setStatus(ChargerStatus.ONLINE);
-                        c.setFaultCode(null);
-                        c.setHealthScore(98);
+                    for (int connectorIndex = 0; connectorIndex < s.getConnectors().size(); connectorIndex++) {
+                        ChargingConnector c = s.getConnectors().get(connectorIndex);
+                        ChargerStatus restoredStatus = !districtHub || stateBucket < 80 ? ChargerStatus.ONLINE
+                                : stateBucket < 90 && connectorIndex == 0 ? ChargerStatus.CHARGING
+                                : stateBucket < 90 ? ChargerStatus.ONLINE
+                                : stateBucket < 95 ? ChargerStatus.MAINTENANCE : ChargerStatus.FAULT;
+                        c.setStatus(restoredStatus);
+                        c.setAvailable(restoredStatus == ChargerStatus.ONLINE);
+                        c.setMaintenanceMode(restoredStatus == ChargerStatus.MAINTENANCE);
+                        c.setFaultCode(restoredStatus == ChargerStatus.FAULT ? "SYNTHETIC_DEMO_FAULT" : null);
+                        c.setHealthScore(restoredStatus == ChargerStatus.FAULT ? 38
+                                : restoredStatus == ChargerStatus.MAINTENANCE ? 60
+                                : restoredStatus == ChargerStatus.CHARGING ? 94 : 98);
                     }
                 }
             }
         }
         stationRepository.saveAll(stations);
+
+        Map<String, double[]> vehicleState = Map.of(
+                "DEMO-EV-001", new double[]{85, 260},
+                "DEMO-EV-002", new double[]{88, 435},
+                "DEMO-EV-003", new double[]{80, 310},
+                "DEMO-EV-004", new double[]{92, 240},
+                "DEMO-EV-005", new double[]{75, 275},
+                "DEMO-EV-006", new double[]{85, 332});
+        List<Vehicle> restoredVehicles = new ArrayList<>();
+        Set<Long> demoUserIds = new HashSet<>();
+        vehicleState.forEach((registration, values) -> vehicleRepository.findByRegistrationNumber(registration)
+                .ifPresent(vehicle -> {
+                    vehicle.setBatteryPercent((int) values[0]);
+                    vehicle.setRemainingRangeKm(values[1]);
+                    vehicle.setCharging(false);
+                    vehicle.setTelemetryUpdatedAt(LocalDateTime.now());
+                    restoredVehicles.add(vehicle);
+                    demoUserIds.add(vehicle.getUserId());
+                }));
+        vehicleRepository.saveAll(restoredVehicles);
+        if (!demoUserIds.isEmpty()) {
+            experienceRepository.deleteByUserIdIn(demoUserIds);
+        }
     }
 
     private record VehicleEvaluation(

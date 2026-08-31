@@ -503,6 +503,8 @@ export function VehicleDetailView({
     return (
       <section className="vehicle-detail-page vehicle-detail-loading" aria-live="polite">
         <RefreshCw className="spinning" size={25} />
+
+
         <strong>Loading vehicle data…</strong>
       </section>
     );
@@ -523,7 +525,7 @@ export function VehicleDetailView({
   const connectionClass = vehicle.connectionStatus.toLowerCase();
   const chargeLabel = vehicle.charging == null ? 'Not reported' : vehicle.charging ? 'Charging' : 'Not charging';
   const ringStyle = { '--vehicle-battery-level': `${battery ?? 0}%` } as CSSProperties;
-  const isDemoTelemetry = vehicle.telemetrySource === 'BLUETOOTH_DEMO';
+  const isDemoTelemetry = vehicle.telemetrySource === 'BLUETOOTH_DEMO' || vehicle.registrationNumber?.startsWith('DEMO-') || vehicle.registrationNumber?.startsWith('PRI-');
   const canRefreshBluetooth = Boolean(bluetoothCharacteristic.current && bluetoothDevice.current?.gatt?.connected);
 
   return (
@@ -541,7 +543,7 @@ export function VehicleDetailView({
           </div>
         </div>
         <div className="vehicle-detail-header-actions">
-          <span className={`vehicle-detail-status ${connectionClass}`}><i />{vehicle.connectionStatus === 'CONNECTED' ? 'Connected' : vehicle.connectionStatus === 'DISCONNECTED' ? 'Offline' : 'Not synced'}</span>
+          <span className={`vehicle-detail-status ${connectionClass}`}><i />{isDemoTelemetry ? 'Demo telemetry' : vehicle.connectionStatus === 'CONNECTED' ? 'Connected' : vehicle.connectionStatus === 'DISCONNECTED' ? 'Offline' : 'Not synced'}</span>
           <button type="button" className="vehicle-secondary-button" onClick={openEditor}><PencilLine size={15} /> Update data</button>
         </div>
       </header>
@@ -553,7 +555,7 @@ export function VehicleDetailView({
         <article>
           <span><Bluetooth size={19} /></span>
           <small>Connection</small>
-          <strong>{vehicle.connectionStatus === 'CONNECTED' ? 'Connected' : vehicle.connectionStatus === 'DISCONNECTED' ? 'Offline' : 'Not synced'}</strong>
+          <strong>{isDemoTelemetry ? 'Demo telemetry' : vehicle.connectionStatus === 'CONNECTED' ? 'Connected' : vehicle.connectionStatus === 'DISCONNECTED' ? 'Offline' : 'Not synced'}</strong>
           <p>{vehicle.bluetoothDeviceName || 'No device name saved'}{isDemoTelemetry ? ' · Demo' : ''}</p>
         </article>
         <article>
@@ -580,7 +582,7 @@ export function VehicleDetailView({
         <article className={`vehicle-live-card ${vehicle.charging ? 'charging' : ''}`}>
           <div className="vehicle-live-copy">
             <span className="vehicle-live-eyebrow">{isDemoTelemetry ? 'BLUETOOTH DEMO ADAPTER' : 'CURRENT VEHICLE STATE'}</span>
-            <h2>{isDemoTelemetry && vehicle.connectionStatus === 'CONNECTED' ? 'Demo telemetry connected' : vehicle.charging ? 'Charging now' : vehicle.connectionStatus === 'CONNECTED' ? 'Vehicle connected' : 'Ready when you are'}</h2>
+            <h2>{isDemoTelemetry ? 'Demo telemetry active' : vehicle.charging ? 'Charging now' : vehicle.connectionStatus === 'CONNECTED' ? 'Vehicle connected' : 'Ready when you are'}</h2>
             <p>{isDemoTelemetry
               ? `${vehicle.bluetoothDeviceName || 'The selected Bluetooth device'} supplies a demonstration battery value. It is not direct EV hardware telemetry.`
               : vehicle.charging

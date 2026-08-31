@@ -82,6 +82,26 @@ export default function LoginPage({ onLogin, onBack, onRegister }: LoginPageProp
     }
   };
 
+  const handleDemoLogin = async (demoEmail: string, demoPass: string) => {
+    try {
+      setIsSubmitting(true);
+      setError("");
+      setForm({ email: demoEmail, password: demoPass });
+
+      const auth = await apiRequest<AuthData>("/auth/login", {
+        method: "POST",
+        body: JSON.stringify({ email: demoEmail, password: demoPass }),
+      });
+
+      saveAuthSession(auth);
+      onLogin(auth);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to log in with demo account.");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
   const googleLogin = useGoogleLogin({
     onSuccess: async (tokenResponse) => {
       try {
@@ -216,6 +236,94 @@ export default function LoginPage({ onLogin, onBack, onRegister }: LoginPageProp
                 <span>{isSubmitting ? "Authenticating..." : "Login"}</span>
               </button>
             </form>
+
+            {/* Quick Demo Access Buttons for Hackathon Judges */}
+            <div className="demo-accounts-box" style={{ marginTop: "16px", marginBottom: "8px" }}>
+              <div className="divider" style={{ margin: "10px 0 12px" }}>
+                <hr />
+                <span style={{ fontSize: "11px", letterSpacing: "0.5px", textTransform: "uppercase", color: "var(--text-muted, #94a3b8)" }}>
+                  ⚡ Quick Demo Access
+                </span>
+                <hr />
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "8px" }}>
+                <button
+                  type="button"
+                  id="btn-demo-driver"
+                  onClick={() => handleDemoLogin("demo.driver@vidyut.com", "VidyutDemo@2026")}
+                  disabled={isSubmitting}
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "center",
+                    gap: "4px",
+                    background: "rgba(0, 212, 255, 0.08)",
+                    border: "1px solid rgba(0, 212, 255, 0.35)",
+                    borderRadius: "8px",
+                    padding: "8px 4px",
+                    color: "var(--color-primary, #00d4ff)",
+                    fontSize: "11px",
+                    fontWeight: 600,
+                    cursor: "pointer",
+                    transition: "all 0.2s ease"
+                  }}
+                  title="Log in as Vidyut Demo Driver (EV Owner)"
+                >
+                  <span style={{ fontSize: "14px" }}>🚗</span>
+                  <span>Try as EV Owner</span>
+                </button>
+                <button
+                  type="button"
+                  id="btn-demo-host"
+                  onClick={() => handleDemoLogin("demo.host@vidyut.com", "VidyutDemo@2026")}
+                  disabled={isSubmitting}
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "center",
+                    gap: "4px",
+                    background: "rgba(16, 185, 129, 0.08)",
+                    border: "1px solid rgba(16, 185, 129, 0.35)",
+                    borderRadius: "8px",
+                    padding: "8px 4px",
+                    color: "#10b981",
+                    fontSize: "11px",
+                    fontWeight: 600,
+                    cursor: "pointer",
+                    transition: "all 0.2s ease"
+                  }}
+                  title="Log in as Vidyut Demo Host"
+                >
+                  <span style={{ fontSize: "14px" }}>🏢</span>
+                  <span>Try as Host</span>
+                </button>
+                <button
+                  type="button"
+                  id="btn-demo-company"
+                  onClick={() => handleDemoLogin("demo.company@vidyut.com", "VidyutDemo@2026")}
+                  disabled={isSubmitting}
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "center",
+                    gap: "4px",
+                    background: "rgba(245, 158, 11, 0.08)",
+                    border: "1px solid rgba(245, 158, 11, 0.35)",
+                    borderRadius: "8px",
+                    padding: "8px 4px",
+                    color: "#f59e0b",
+                    fontSize: "11px",
+                    fontWeight: 600,
+                    cursor: "pointer",
+                    transition: "all 0.2s ease"
+                  }}
+                  title="Log in as Tata EV Charging Demo (Company)"
+                >
+                  <span style={{ fontSize: "14px" }}>⚡</span>
+                  <span>Try as Company</span>
+                </button>
+              </div>
+            </div>
 
             <p className="signup-text">
               Don&apos;t have an account?{" "}

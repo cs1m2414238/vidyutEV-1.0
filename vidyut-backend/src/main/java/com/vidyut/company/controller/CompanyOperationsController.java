@@ -67,8 +67,8 @@ public class CompanyOperationsController {
     }
 
     @GetMapping("/stations")
-    public ResponseEntity<ApiResponse<List<StationResponse>>> stations() {
-        return ResponseEntity.ok(ApiResponse.success(operationsService.getStations(accountId())));
+    public ResponseEntity<ApiResponse<List<StationResponse>>> stations(@RequestParam(required = false) String q) {
+        return ResponseEntity.ok(ApiResponse.success(operationsService.getStations(accountId(), q)));
     }
 
     @PostMapping("/stations")
@@ -89,8 +89,8 @@ public class CompanyOperationsController {
     }
 
     @GetMapping("/chargers")
-    public ResponseEntity<ApiResponse<List<ChargerResponse>>> chargers() {
-        return ResponseEntity.ok(ApiResponse.success(operationsService.getChargers(accountId())));
+    public ResponseEntity<ApiResponse<List<ChargerResponse>>> chargers(@RequestParam(required = false) String q) {
+        return ResponseEntity.ok(ApiResponse.success(operationsService.getChargers(accountId(), q)));
     }
 
     @PostMapping("/chargers")
@@ -162,6 +162,13 @@ public class CompanyOperationsController {
             @Valid @RequestBody AiAssistantRequest request) {
         return ResponseEntity.ok(ApiResponse.success(
                 operationsService.askAssistant(accountId(), request.getQuestion(), authorization)));
+    }
+
+    @PostMapping("/ai/context")
+    public ResponseEntity<ApiResponse<CompanyAgentResponse>> assistantContext(
+            @Valid @RequestBody AiAssistantRequest request) {
+        return ResponseEntity.ok(ApiResponse.success(
+                operationsService.askAssistant(accountId(), request.getQuestion())));
     }
 
     @GetMapping("/ai/settings")

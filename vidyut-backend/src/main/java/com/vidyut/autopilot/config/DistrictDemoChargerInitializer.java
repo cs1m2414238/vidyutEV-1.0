@@ -40,9 +40,16 @@ public class DistrictDemoChargerInitializer implements ApplicationRunner {
     private final ChargingStationRepository stationRepository;
     private final ObjectMapper objectMapper;
 
+    @org.springframework.beans.factory.annotation.Value("${demo.seed.enabled:false}")
+    private boolean demoSeedEnabled;
+
     @Override
     @Transactional
     public void run(ApplicationArguments args) throws IOException {
+        if (demoSeedEnabled) {
+            return;
+        }
+
         List<DistrictSeed> seeds;
         try (var input = new ClassPathResource(SEED_RESOURCE).getInputStream()) {
             seeds = objectMapper.readValue(input, new TypeReference<>() {});

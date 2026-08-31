@@ -285,10 +285,27 @@ public class OsrmClient {
     }
 
     /**
-     * Returns the preferred routing engine's matrix when possible, then tries the other
-     * configured engine. Missing cells are conservatively estimated so a temporary table
-     * outage cannot discard an otherwise usable Autopilot plan.
+     * Recovery-only matrix: use a verified routing engine, preserving unreachable
+     * cells as null. Never fill a routing outage with estimated distances.
      */
+    public MatrixSelection getVerifiedFullTable(List<Coordinate> coordinates, RouteEngine preferredEngine) {
+        for (RouteEngine engine : matrixEngines(preferredEngine)) {
+            if (engine == RouteEngine.ESTIMATED) continue;
+            try {
+                OsrmTableResponse response = getFullTable(coordinates, engine);
+                if (response != null && "Ok".equals(response.code())
+                        && hasMatrixShape(response.distances(), coordinates.size())
+                        && hasMatrixShape(response.durations(), coordinates.size())) {
+                    // Null cells mean no verified road route, not permission to estimate one.
+                    return new MatrixSelection(response, engine, false);
+                }
+            } catch (OsrmException ignored) {
+                // Another real road engine may be available. Never use estimated cells.
+            }
+        }
+        throw new OsrmException("No verified road-distance matrix is available for recovery");
+    }
+
     public MatrixSelection getBestFullTable(List<Coordinate> coordinates, RouteEngine preferredEngine) {
         if (coordinates == null || coordinates.size() < 2) {
             throw new IllegalArgumentException("At least two matrix locations are required");

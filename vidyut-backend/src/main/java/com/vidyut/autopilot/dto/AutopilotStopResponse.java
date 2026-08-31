@@ -11,10 +11,14 @@ import lombok.NoArgsConstructor;
 @NoArgsConstructor
 @AllArgsConstructor
 public class AutopilotStopResponse {
+    private Double latitude;
+    private Double longitude;
     private Long id;
     private int sequenceNumber;
     private Long stationId;
     private Long bookingId;
+    private Long connectorId;
+    private String chargerCode;
     private String stationName;
     private String stationAddress;
     private String connectorType;

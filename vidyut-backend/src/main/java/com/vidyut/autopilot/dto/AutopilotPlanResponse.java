@@ -47,6 +47,8 @@ public class AutopilotPlanResponse {
     private double energyConsumptionKwhPer100Km;
     private double vehicleMaxChargingPowerKw;
     private double chargingEfficiencyPercent;
+    private int dbBoundCandidatesEvaluated;
+    private int postCorridorCandidatesEvaluated;
     private int compatibleChargersEvaluated;
     private int feasibleAlternativesCompared;
     private String optimizationSummary;

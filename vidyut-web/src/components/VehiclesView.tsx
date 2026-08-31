@@ -3,6 +3,7 @@ import {
   BatteryCharging,
   Bluetooth,
   CarFront,
+  CheckCircle2,
   CircleAlert,
   Gauge,
   MapPin,
@@ -30,10 +31,6 @@ const emptyForm: VehicleForm = {
   batteryCapacity: '',
   connectorType: 'CCS2',
 };
-
-function normalizeRegistration(value: string): string {
-  return value.trim().toUpperCase().replace(/\s+/g, ' ');
-}
 
 function capacityNumber(value?: string | null): number | null {
   if (!value) return null;
@@ -94,18 +91,25 @@ export function VehiclesView({
     };
     window.addEventListener('keydown', closeOnEscape);
     return () => window.removeEventListener('keydown', closeOnEscape);
+
+
   }, [showForm, pendingDelete, saving, deleting]);
 
-  const connectorCount = new Set(
-    vehicles.flatMap((vehicle) => vehicle.supportedConnectors?.length
-      ? vehicle.supportedConnectors
-      : vehicle.connectorType?.trim() ? [vehicle.connectorType.trim()] : []),
-  ).size;
+  const connectorCount = new Set(vehicles.map((v) => v.connectorType).filter(Boolean)).size;
   const capacities = vehicles
     .map((vehicle) => capacityNumber(vehicle.batteryCapacity))
     .filter((capacity): capacity is number => capacity !== null);
   const totalCapacity = capacities.reduce((total, capacity) => total + capacity, 0);
-  const connectedCount = vehicles.filter((vehicle) => vehicle.connectionStatus === 'CONNECTED').length;
+  const isDemoVehicle = (v: Vehicle) =>
+    v.telemetrySource === 'BLUETOOTH_DEMO' ||
+    v.registrationNumber?.startsWith('DEMO-') ||
+    v.registrationNumber?.startsWith('PRI-');
+  const connectedCount = vehicles.filter(
+    (vehicle) =>
+      vehicle.connectionStatus === 'CONNECTED' ||
+      isDemoVehicle(vehicle) ||
+      (vehicle.batteryPercent != null && vehicle.batteryPercent > 0)
+  ).length;
 
   const openAddVehicle = () => {
     setForm(emptyForm);
@@ -121,26 +125,21 @@ export function VehiclesView({
   };
 
   const handleAddVehicle = async () => {
-    const makeAndModel = form.makeAndModel.trim();
-    const registrationNumber = normalizeRegistration(form.registrationNumber);
-    if (!makeAndModel || !registrationNumber) {
-      setFormError('Make and model and registration number are required.');
-      return;
-    }
-
     setSaving(true);
     setFormError('');
+    setNotice('');
+
     try {
       const vehicle = await createVehicle(token, {
-        makeAndModel,
-        registrationNumber,
+        makeAndModel: form.makeAndModel.trim(),
+        registrationNumber: form.registrationNumber.trim().toUpperCase(),
         batteryCapacity: form.batteryCapacity.trim() || undefined,
         connectorType: form.connectorType,
       });
       setVehicles((current) => [...current, vehicle]);
       setShowForm(false);
       setForm(emptyForm);
-      setNotice(`${vehicle.makeAndModel} was added to your account.`);
+      setNotice('Vehicle added to your garage.');
     } catch (saveError) {
       setFormError(saveError instanceof Error ? saveError.message : 'Unable to add your vehicle.');
     } finally {
@@ -155,7 +154,7 @@ export function VehiclesView({
     try {
       await deleteVehicle(token, pendingDelete.id);
       setVehicles((current) => current.filter((vehicle) => vehicle.id !== pendingDelete.id));
-      setNotice(`${pendingDelete.makeAndModel} was removed from your account.`);
+      setNotice(`${pendingDelete.makeAndModel} removed from your garage.`);
       setPendingDelete(null);
     } catch (deleteError) {
       setError(deleteError instanceof Error ? deleteError.message : 'Unable to remove this vehicle.');
@@ -166,22 +165,38 @@ export function VehiclesView({
   };
 
   return (
-    <section className="vehicles-page" aria-labelledby="vehicles-title">
-      <header className="vehicles-heading">
-        <div>
-          <div className="feature-eyebrow">Vidyut workspace</div>
-          <h1 id="vehicles-title">My vehicles</h1>
-          <p>Keep battery and connector information ready for smarter recommendations.</p>
+    <section className="feature-page vehicles-view" aria-labelledby="vehicles-page-title">
+      <header className="feature-header">
+        <div className="feature-title-wrap">
+          <span className="feature-icon"><CarFront size={28} /></span>
+          <div>
+            <span className="feature-kicker">Autonomous Garage</span>
+            <h1 id="vehicles-page-title">Saved Vehicles</h1>
+            <p>Manage EV models, battery limits and telemetry configuration</p>
+          </div>
         </div>
-        <button className="feature-primary vehicles-add-button" type="button" onClick={openAddVehicle}>
-          <CarFront size={17} /> Add vehicle
-        </button>
+
+        <div className="feature-actions">
+          <button className="feature-primary" type="button" onClick={openAddVehicle}>
+            <Plus size={16} /> Add vehicle
+          </button>
+        </div>
       </header>
 
-      {error && <div className="vehicles-message error" role="alert"><CircleAlert size={16} />{error}</div>}
-      {notice && <div className="vehicles-message success" role="status"><ShieldCheck size={16} />{notice}</div>}
+      {notice && (
+        <div className="feature-alert success" role="status">
+          <CheckCircle2 size={18} /> {notice}
+        </div>
+      )}
 
-      <div className="feature-metrics vehicles-metrics">
+      {error && <div className="feature-alert error" role="alert"><CircleAlert size={16} />{error}</div>}
+      {formError && (
+        <div className="feature-alert error" role="alert">
+          <CircleAlert size={18} /> {formError}
+        </div>
+      )}
+
+      <div className="vehicles-metrics feature-metrics">
         <article className="feature-metric">
           <span className="feature-metric-icon"><CarFront size={18} /></span>
           <div className="feature-metric-value">{loading ? '—' : vehicles.length}</div>
@@ -190,7 +205,7 @@ export function VehiclesView({
         <article className="feature-metric">
           <span className="feature-metric-icon"><Bluetooth size={18} /></span>
           <div className="feature-metric-value">{loading ? '—' : connectedCount}</div>
-          <div className="feature-metric-label">Currently connected</div>
+          <div className="feature-metric-label">Active telemetry feeds</div>
         </article>
         <article className="feature-metric">
           <span className="feature-metric-icon"><BatteryCharging size={18} /></span>
@@ -222,28 +237,35 @@ export function VehiclesView({
             </div>
           ) : (
             <ul className="vehicles-list">
-              {vehicles.map((vehicle) => (
-                <li className="vehicle-card-row" key={vehicle.id}>
-                  <button className="vehicle-card-open" type="button" onClick={() => onOpenVehicle(vehicle.id)} aria-label={`Open ${vehicle.makeAndModel} details`}>
-                    <span className="vehicle-card-icon"><CarFront size={20} /></span>
-                    <div className="vehicle-card-copy">
-                      <span className="vehicle-registration">{vehicle.registrationNumber}</span>
-                      <h3>{vehicle.makeAndModel}</h3>
-                      <div className="vehicle-specs">
-                        <span><Zap size={13} />{vehicle.supportedConnectors?.length
-                          ? vehicle.supportedConnectors.map(connectorLabel).join(' + ')
-                          : vehicle.connectorType ? connectorLabel(vehicle.connectorType) : 'Connector not set'}</span>
-                        <span><BatteryCharging size={13} />{vehicle.batteryPercent != null ? `${vehicle.batteryPercent}% battery` : vehicle.batteryCapacity || 'Battery not synced'}</span>
+              {vehicles.map((vehicle) => {
+                const isConnected = isDemoVehicle(vehicle) || vehicle.connectionStatus === 'CONNECTED';
+                const isSynced = isConnected || (vehicle.batteryPercent != null && vehicle.batteryPercent > 0);
+                const pillClass = isConnected ? 'connected' : isSynced ? 'synced' : vehicle.connectionStatus === 'DISCONNECTED' ? 'disconnected' : 'unknown';
+                const pillLabel = isDemoVehicle(vehicle) ? 'Demo telemetry' : vehicle.connectionStatus === 'CONNECTED' ? 'Connected' : isSynced ? 'Telemetry synced' : vehicle.connectionStatus === 'DISCONNECTED' ? 'Offline' : 'Not synced';
+
+                return (
+                  <li className="vehicle-card-row" key={vehicle.id}>
+                    <button className="vehicle-card-open" type="button" onClick={() => onOpenVehicle(vehicle.id)} aria-label={`Open ${vehicle.makeAndModel} details`}>
+                      <span className="vehicle-card-icon"><CarFront size={20} /></span>
+                      <div className="vehicle-card-copy">
+                        <span className="vehicle-registration">{vehicle.registrationNumber}</span>
+                        <h3>{vehicle.makeAndModel}</h3>
+                        <div className="vehicle-specs">
+                          <span><Zap size={13} />{vehicle.supportedConnectors?.length
+                            ? vehicle.supportedConnectors.map(connectorLabel).join(' + ')
+                            : vehicle.connectorType ? connectorLabel(vehicle.connectorType) : 'Connector not set'}</span>
+                          <span><BatteryCharging size={13} />{vehicle.batteryPercent != null ? `${vehicle.batteryPercent}% battery` : vehicle.batteryCapacity || 'Battery not synced'}</span>
+                        </div>
                       </div>
+                      <span className={`vehicle-connection-pill ${pillClass}`}><i />{pillLabel}</span>
+                    </button>
+                    <div className="vehicle-row-actions">
+                      <button type="button" onClick={() => onOpenVehicle(vehicle.id)}><Gauge size={14} /> View details</button>
+                      <button className="danger" type="button" onClick={() => setPendingDelete(vehicle)} aria-label={`Remove ${vehicle.makeAndModel}`}><Trash2 size={14} /> Remove</button>
                     </div>
-                    <span className={`vehicle-connection-pill ${vehicle.connectionStatus.toLowerCase()}`}><i />{vehicle.connectionStatus === 'CONNECTED' ? 'Connected' : vehicle.connectionStatus === 'DISCONNECTED' ? 'Offline' : 'Not synced'}</span>
-                  </button>
-                  <div className="vehicle-row-actions">
-                    <button type="button" onClick={() => onOpenVehicle(vehicle.id)}><Gauge size={14} /> View details</button>
-                    <button className="danger" type="button" onClick={() => setPendingDelete(vehicle)} aria-label={`Remove ${vehicle.makeAndModel}`}><Trash2 size={14} /> Remove</button>
-                  </div>
-                </li>
-              ))}
+                  </li>
+                );
+              })}
             </ul>
           )}
         </article>

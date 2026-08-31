@@ -48,6 +48,27 @@ class ToolTests(unittest.IsolatedAsyncioTestCase):
             authenticated=False,
         )
 
+    async def test_host_context_uses_only_host_role_endpoint(self) -> None:
+        with patch.object(agent_tools.backend, "request", new_callable=AsyncMock) as request:
+            request.return_value = {"networkPortfolio": [{"stationName": "Agra Demo Charging Hub"}]}
+            result = await agent_tools.get_host_operations_context("Show my properties")
+
+        self.assertTrue(result["ok"])
+        request.assert_awaited_once_with(
+            "POST", "/api/host/ai/context", json={"question": "Show my properties"}
+        )
+
+    async def test_company_context_uses_only_company_role_endpoint(self) -> None:
+        with patch.object(agent_tools.backend, "request", new_callable=AsyncMock) as request:
+            request.return_value = {"network": {"faults": 1}}
+            result = await agent_tools.get_company_operations_context("Which connector needs service?")
+
+        self.assertTrue(result["ok"])
+        request.assert_awaited_once_with(
+            "POST", "/api/company/ai/context",
+            json={"question": "Which connector needs service?"},
+        )
+
     async def test_booking_needs_explicit_user_intent(self) -> None:
         with patch.object(
             agent_tools.backend, "request", new_callable=AsyncMock
@@ -214,20 +235,18 @@ class ToolTests(unittest.IsolatedAsyncioTestCase):
     async def test_charger_unavailable_event_runs_recovery_tool(self) -> None:
         reset_request_context(self.context)
         self.context = set_request_context(
-            authorization="Bearer test-user-token",
-            request_id="request-12345678",
+            authorization="Bearer test-user-token", request_id="request-12345678",
             user_message='{"type":"CHARGER_UNAVAILABLE","tripId":12}',
         )
-        with patch.object(
-            agent_tools.backend, "request", new_callable=AsyncMock
-        ) as request:
-            request.return_value = {"id": 12, "status": "REROUTED"}
+        with patch.object(agent_tools.backend, "request", new_callable=AsyncMock) as request, \
+             patch("vidyut_agent.recovery.run_recovery", new_callable=AsyncMock) as orchestrate:
+            request.return_value = {"id": 12, "recovery": {"incidentId": "incident-12", "state": "INCIDENT_DETECTED"}}
+            orchestrate.return_value = {"journey": {"id": 12, "recovery": {"state": "AWAITING_APPROVAL"}}}
             result = await agent_tools.handle_charger_unavailable(12)
-
         self.assertTrue(result["ok"])
-        request.assert_awaited_once_with(
-            "POST", "/api/ev/autopilot/trips/12/simulate-fault", json={}
-        )
+        self.assertEqual(result["data"]["recovery"]["state"], "AWAITING_APPROVAL")
+        request.assert_awaited_once_with("GET", "/api/ev/autopilot/trips/12")
+        orchestrate.assert_awaited_once_with(12, "incident-12")
 
     async def test_complete_charging_requires_explicit_intent(self) -> None:
         with patch.object(
@@ -276,6 +295,127 @@ class ToolTests(unittest.IsolatedAsyncioTestCase):
             redact_sensitive(value),
             {"id": 1, "nested": [{"batteryPercent": 68}]},
         )
+
+    async def test_get_host_properties_calls_land_listings(self) -> None:
+        with patch.object(agent_tools.backend, "request", new_callable=AsyncMock) as request:
+            request.return_value = [{"id": 1, "title": "Agra Highway Hub"}]
+            result = await agent_tools.get_host_properties()
+
+        self.assertTrue(result["ok"])
+        request.assert_awaited_once_with("GET", "/api/host/land-listings")
+
+    async def test_prepare_property_listing_detects_duplicates(self) -> None:
+        with patch.object(agent_tools.backend, "request", new_callable=AsyncMock) as request:
+            request.return_value = {"status": "DUPLICATE_FOUND", "existingPropertyId": 1}
+            result = await agent_tools.prepare_property_listing(
+                title="Faizabad Airport EV Hub",
+                address="Near Terminal",
+                city="Faizabad",
+                available_parking_bays=4,
+                available_load_kw=80.0,
+                property_type="COMMERCIAL_PARKING",
+                operating_hours="06:00-23:00",
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["data"]["status"], "DUPLICATE_FOUND")
+        request.assert_awaited_once_with(
+            "POST",
+            "/api/host/ai/prepare-property-draft",
+            json={
+                "title": "Faizabad Airport EV Hub",
+                "address": "Near Terminal",
+                "city": "Faizabad",
+                "state": "Uttar Pradesh",
+                "availableParkingBays": 4,
+                "availableLoadKw": 80.0,
+                "propertyType": "COMMERCIAL_PARKING",
+                "operatingHours": "06:00-23:00",
+                "powerPhase": "NOT_SURE",
+                "discoverable": False,
+            },
+        )
+
+    async def test_create_property_draft_persists_via_backend(self) -> None:
+        reset_request_context(self.context)
+        self.context = set_request_context(
+            authorization="Bearer test-user-token",
+            request_id="request-create-draft",
+            user_message="Yes, create the draft",
+        )
+        with patch.object(agent_tools.backend, "request", new_callable=AsyncMock) as request:
+            request.return_value = {"status": "CREATED", "propertyId": 99}
+            result = await agent_tools.create_property_draft(
+                title="Faizabad Hub",
+                address="Highway 27",
+                city="Faizabad",
+                available_parking_bays=4,
+                available_load_kw=100.0,
+                property_type="COMMERCIAL_PARKING",
+                operating_hours="Open 24 hours",
+            )
+
+        self.assertTrue(result["ok"])
+        request.assert_awaited_once_with(
+            "POST",
+            "/api/host/ai/actions",
+            json={
+                "action": "CREATE_PROPERTY_DRAFT",
+                "approved": True,
+                "payload": {
+                    "title": "Faizabad Hub",
+                    "address": "Highway 27",
+                    "city": "Faizabad",
+                    "state": "Uttar Pradesh",
+                    "availableParkingBays": 4,
+                    "availableLoadKw": 100.0,
+                    "propertyType": "COMMERCIAL_PARKING",
+                    "operatingHours": "Open 24 hours",
+                    "powerPhase": "NOT_SURE",
+                    "discoverable": False,
+                },
+            },
+        )
+
+    async def test_create_property_draft_requires_explicit_approval(self) -> None:
+        with patch.object(agent_tools.backend, "request", new_callable=AsyncMock) as request:
+            result = await agent_tools.create_property_draft(
+                title="Faizabad Hub",
+                address="Highway 27",
+                city="Faizabad",
+                available_parking_bays=4,
+                available_load_kw=100.0,
+                property_type="COMMERCIAL_PARKING",
+                operating_hours="Open 24 hours",
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["confirmationRequired"])
+        request.assert_not_awaited()
+
+    async def test_get_property_readiness_calls_endpoint(self) -> None:
+        with patch.object(agent_tools.backend, "request", new_callable=AsyncMock) as request:
+            request.return_value = {"rankedProperties": []}
+            result = await agent_tools.get_property_readiness()
+
+        self.assertTrue(result["ok"])
+        request.assert_awaited_once_with("GET", "/api/host/ai/readiness")
+
+    async def test_compare_company_offers_calls_endpoint(self) -> None:
+        with patch.object(agent_tools.backend, "request", new_callable=AsyncMock) as request:
+            request.return_value = {"offers": []}
+            result = await agent_tools.compare_company_offers("Agra")
+
+        self.assertTrue(result["ok"])
+        request.assert_awaited_once_with("GET", "/api/host/ai/offers", params={"property": "Agra"})
+
+    async def test_get_hosted_charger_health_calls_endpoint(self) -> None:
+        with patch.object(agent_tools.backend, "request", new_callable=AsyncMock) as request:
+            request.return_value = {"totalHostedChargers": 4}
+            result = await agent_tools.get_hosted_charger_health()
+
+        self.assertTrue(result["ok"])
+        request.assert_awaited_once_with("GET", "/api/host/ai/charger-health")
 
 
 if __name__ == "__main__":

@@ -17,6 +17,7 @@ public record CompanyAgentResponse(
         List<SiteRecommendation> siteRecommendations,
         List<RecommendedAction> actions,
         Map<String, Object> offerDraft,
+        Map<String, Object> operations,
         String assistantModel,
         String assistantProvider,
         boolean assistantFallback,
@@ -45,7 +46,7 @@ public record CompanyAgentResponse(
             String stationName,
             String issue,
             int affectedBookings,
-            int estimatedDowntimeMinutes,
+            Integer estimatedDowntimeMinutes,
             double estimatedRevenueAtRisk,
             List<String> compatibleBackups
     ) {}
@@ -54,10 +55,10 @@ public record CompanyAgentResponse(
             long sessions,
             double energySoldKwh,
             double chargingRevenue,
-            double estimatedHostPayouts,
-            double estimatedVidyutFees,
+            Double estimatedHostPayouts,
+            Double estimatedVidyutFees,
             double refunds,
-            double estimatedCompanyRevenue,
+            Double estimatedCompanyRevenue,
             String bestPerformingStation,
             String lowestPerformingStation
     ) {}
@@ -69,7 +70,7 @@ public record CompanyAgentResponse(
             double nearbyAveragePricePerKwh,
             double recommendedPricePerKwh,
             double currentUtilizationPercent,
-            double expectedUtilizationPercent,
+            Double expectedUtilizationPercent,
             String timeWindow
     ) {}
 
@@ -79,7 +80,7 @@ public record CompanyAgentResponse(
             String location,
             int parkingBays,
             double availableLoadKw,
-            double nearestActiveStationKm,
+            Double nearestActiveStationKm,
             double expansionScore,
             int recommendedChargerCount,
             double recommendedPowerKw,
@@ -95,6 +96,12 @@ public record CompanyAgentResponse(
             Long chargerId,
             Long stationId,
             Double proposedPricePerKwh,
-            String reason
-    ) {}
+            String reason,
+            com.vidyut.station.entity.ChargerStatus expectedStatus
+    ) {
+        public RecommendedAction(CompanyAgentActionType action, String label, String risk, boolean requiresApproval,
+                Long chargerId, Long stationId, Double proposedPricePerKwh, String reason) {
+            this(action, label, risk, requiresApproval, chargerId, stationId, proposedPricePerKwh, reason, null);
+        }
+    }
 }

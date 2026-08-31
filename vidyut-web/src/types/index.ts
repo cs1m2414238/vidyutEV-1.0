@@ -19,6 +19,7 @@ export interface Charger {
   availability?: string;
   outletPartner?: boolean;
   outletInstitutionName?: string;
+  demoData?: boolean;
 }
 
 export interface User {

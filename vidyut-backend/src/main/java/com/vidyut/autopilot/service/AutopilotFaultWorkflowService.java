@@ -28,50 +28,42 @@ import java.util.Map;
 @RequiredArgsConstructor
 public class AutopilotFaultWorkflowService {
 
-    private static final int DEMO_DOWNTIME_MINUTES = 180;
+    private static final int DEMO_DOWNTIME_MINUTES = 0;
 
     private final AutopilotService autopilotService;
+    private final com.vidyut.autopilot.repository.AutopilotTripRepository tripRepository;
     private final AutopilotStopRepository stopRepository;
     private final ChargingStationRepository stationRepository;
     private final ChargingConnectorRepository connectorRepository;
     private final AdminControlService adminControlService;
 
-    /**
-     * Runs the complete demo event as one transaction: hardware state, journey
-     * recovery, Company work order, Host/Company notification and Admin incident.
-     */
     @Transactional
     public AutopilotTripResponse simulateAndPropagate(Long tripId, Long userId) {
-        AutopilotStop stop = stopRepository
-                .findFirstByTripIdAndStatusOrderBySequenceNumberAsc(tripId, AutopilotStopStatus.RESERVED)
+        return simulateAndPropagate(tripId, userId, "CHARGER_NOT_STARTING", null);
+    }
+
+    /**
+     * Records a driver report and requests journey recovery without changing hardware or battery telemetry.
+     */
+    @Transactional
+    public AutopilotTripResponse simulateAndPropagate(Long tripId, Long userId, String issueCategory, String userComment) {
+        com.vidyut.autopilot.entity.AutopilotTrip trip = tripRepository.findById(tripId)
+                .orElseThrow(() -> new ResourceNotFoundException("Trip not found"));
+        if (!java.util.Objects.equals(trip.getUserId(), userId)) throw new com.vidyut.common.exception.ForbiddenException("Journey belongs to another driver");
+        AutopilotStop stop = stopRepository.findFirstByTripIdAndStatusOrderBySequenceNumberAsc(tripId, AutopilotStopStatus.RESERVED)
                 .orElseThrow(() -> new BadRequestException("This trip has no active charger reservation"));
         ChargingStation station = stationRepository.findById(stop.getStationId())
                 .orElseThrow(() -> new ResourceNotFoundException("Reserved charging station not found"));
         ChargingConnector connector = matchingConnector(station, stop);
 
-        String reason = "Autopilot demo detected a sudden charger heartbeat failure during journey #" + tripId;
-        connector.setAvailable(false);
-        connector.setMaintenanceMode(true);
-        connector.setStatus(ChargerStatus.FAULT);
-        connector.setFaultCode("AUTOPILOT_HEARTBEAT_LOSS");
-        connector.setHealthScore(Math.min(connector.getHealthScore(), 25));
-        connector.setCurrentPowerKw(0);
-        connector.setLastHeartbeat(LocalDateTime.now());
-        connectorRepository.save(connector);
+        String categoryLabel = issueCategory != null ? issueCategory.replace('_', ' ') : "Charger not starting";
+        String reason = "Driver reported charger issue: " + categoryLabel + " at " + station.getName() + " · " + connector.getChargerCode();
 
-        boolean stationHasHealthyConnector = station.getConnectors().stream().anyMatch(candidate ->
-                !candidate.getId().equals(connector.getId())
-                        && candidate.isAvailable()
-                        && !candidate.isMaintenanceMode()
-                        && candidate.getStatus() == ChargerStatus.ONLINE);
-        if (!stationHasHealthyConnector) {
-            station.setAvailability(StationAvailability.UNAVAILABLE);
-            stationRepository.save(station);
-        }
-
-        AutopilotTripResponse recovered = autopilotService.simulateChargerFault(tripId, userId);
+        // A driver report creates an incident for operator review, never global hardware telemetry.
+        if (userComment != null && !userComment.isBlank()) reason += ": " + userComment.substring(0, Math.min(500, userComment.length()));
+        AutopilotTripResponse recovered = autopilotService.simulateChargerFault(tripId, userId, stop.getId());
         Map<String, Object> impact = impact(recovered.getStatus());
-        NetworkIncident incident = adminControlService.recordDetectedIncident(station, connector, IncidentSeverity.CRITICAL,
+        NetworkIncident incident = adminControlService.recordDetectedIncident(station, connector, IncidentSeverity.HIGH,
                 reason, DEMO_DOWNTIME_MINUTES, impact);
         return autopilotService.recordOperationalPropagation(tripId, userId,
                 incident.getIncidentCode(), incident.getMaintenanceTicketId());
@@ -80,8 +72,7 @@ public class AutopilotFaultWorkflowService {
     private ChargingConnector matchingConnector(ChargingStation station, AutopilotStop stop) {
         return station.getConnectors().stream()
                 .filter(connector -> connector.getType().name().equalsIgnoreCase(stop.getConnectorType()))
-                .filter(ChargingConnector::isAvailable)
-                .filter(connector -> !connector.isMaintenanceMode() && connector.getStatus() == ChargerStatus.ONLINE)
+                .filter(connector -> stop.getConnectorId() == null || stop.getConnectorId().equals(connector.getId()))
                 .min(Comparator.comparingDouble(connector -> Math.abs(connector.getPowerKw() - stop.getPowerKw())))
                 .orElseThrow(() -> new BadRequestException(
                         "The reserved station has no online " + stop.getConnectorType() + " connector to simulate"));

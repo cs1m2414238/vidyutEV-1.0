@@ -38,6 +38,10 @@ STATE_CHANGING_TOOLS = {
     "reroute",
     "cancel_booking",
     "top_up_wallet",
+    "create_property_draft",
+    "update_property",
+    "submit_property_for_verification",
+    "publish_property",
 }
 
 
@@ -100,6 +104,26 @@ app = FastAPI(
     docs_url="/docs",
     redoc_url=None,
 )
+
+
+class RecoveryRequest(BaseModel):
+    tripId: int = Field(gt=0)
+    incidentId: str = Field(min_length=1, max_length=100)
+
+
+@app.post("/v1/recovery")
+async def recover_journey(request: RecoveryRequest, authorization: str = Header(..., alias="Authorization")):
+    from .recovery import run_recovery
+    if not authorization.startswith("Bearer ") or len(authorization) <= len("Bearer "):
+        raise HTTPException(status_code=401, detail="A valid Vidyut login is required")
+    tokens = set_request_context(authorization=authorization, request_id=str(uuid.uuid4()),
+                                user_message="Handle the current planned-connector incident under the journey's stored autonomy policy.")
+    try:
+        return await run_recovery(request.tripId, request.incidentId)
+    except BackendError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    finally:
+        reset_request_context(tokens)
 
 
 class TripContext(BaseModel):
@@ -181,6 +205,16 @@ def _record_tool_events(
         if data is not None and response.name == "preview_autopilot_trip":
             artifacts["plan"] = data
         if data is not None and response.name in {
+            "get_host_operations_context",
+            "get_company_operations_context",
+            "get_host_properties",
+            "check_property_duplicate",
+            "get_property_readiness",
+            "compare_company_offers",
+            "get_hosted_charger_health",
+        }:
+            artifacts["workspaceContext"] = data
+        if data is not None and response.name in {
             "launch_autopilot_trip",
             "start_autopilot_monitoring",
             "handle_charger_unavailable",
@@ -190,6 +224,11 @@ def _record_tool_events(
             "reroute",
             "cancel_booking",
             "top_up_wallet",
+            "create_property_draft",
+            "update_property",
+            "submit_property_for_verification",
+            "publish_property",
+            "prepare_property_listing",
         }:
             artifacts["actionResult"] = data
 
@@ -284,6 +323,26 @@ def _grounded_fallback(request: ChatRequest) -> str:
         return ""
     answer = request.groundingContext.get("deterministicAnswer")
     return answer.strip() if isinstance(answer, str) else ""
+
+
+def _rejects_available_context(reply: str) -> bool:
+    """Detect model replies that deny facts present in the authoritative payload."""
+    normalized = reply.casefold()
+    return any(
+        phrase in normalized
+        for phrase in (
+            "does not explicitly",
+            "not explicitly stated",
+            "not explicitly provided",
+            "additional information is needed",
+            "additional information would be needed",
+            "more information would be necessary",
+            "information is unavailable",
+            "data is unavailable",
+            "cannot determine from the provided",
+            "would need more specific information",
+        )
+    )
 
 
 async def _planning_fallback(
@@ -443,19 +502,59 @@ async def chat(
                     tool_states=tool_states,
                     artifacts=artifacts,
                     system_instruction=WORKSPACE_INSTRUCTIONS.get(workspace_key, WORKSPACE_INSTRUCTIONS["EV_OWNER"]),
-                    tools_enabled=workspace_key == "EV_OWNER",
+                    tools_enabled=True,
+                    allowed_tool_names=(
+                        None if workspace_key == "EV_OWNER"
+                        else {
+                            "get_host_operations_context",
+                            "get_host_properties",
+                            "check_property_duplicate",
+                            "prepare_property_listing",
+                            "create_property_draft",
+                            "update_property",
+                            "submit_property_for_verification",
+                            "publish_property",
+                            "get_property_readiness",
+                            "compare_company_offers",
+                            "get_hosted_charger_health",
+                        } if workspace_key == "HOST"
+                        else {"get_company_operations_context"}
+                    ),
                 )
                 if openrouter_reply:
                     plan = artifacts.get("plan")
-                    reply = (_planning_reply(plan)
-                             if plan is not None and _looks_like_tool_protocol(openrouter_reply)
-                             else openrouter_reply)
+                    workspace_context = artifacts.get("workspaceContext")
+                    if _looks_like_tool_protocol(openrouter_reply) and plan is not None:
+                        reply = _planning_reply(plan)
+                    elif _looks_like_tool_protocol(openrouter_reply) and isinstance(workspace_context, dict):
+                        reply = str(workspace_context.get("answer") or "").strip()
+                    elif not _looks_like_tool_protocol(openrouter_reply):
+                        reply = openrouter_reply
                     used_model = openrouter_used_model
                     used_provider = "OPENROUTER"
             except Exception as or_exc:
                 logger.warning("OpenRouter fallback invocation failed: %s", or_exc)
                 if last_quota_error is None:
                     last_quota_error = or_exc
+
+        workspace_context = artifacts.get("workspaceContext")
+        if (
+            workspace_key in {"HOST", "COMPANY"}
+            and reply
+            and _rejects_available_context(reply)
+            and isinstance(workspace_context, dict)
+        ):
+            authoritative_answer = workspace_context.get("answer")
+            if isinstance(authoritative_answer, str) and authoritative_answer.strip():
+                reply = authoritative_answer.strip()
+                used_model = f"deterministic-{workspace_key.lower()}-tool-fallback"
+                used_provider = "DETERMINISTIC"
+        if not reply and isinstance(workspace_context, dict):
+            authoritative_answer = workspace_context.get("answer")
+            if isinstance(authoritative_answer, str) and authoritative_answer.strip():
+                reply = authoritative_answer.strip()
+                used_model = f"deterministic-{workspace_key.lower()}-tool-fallback"
+                used_provider = "DETERMINISTIC"
 
         # Host and Company retain the authoritative Spring answer if both model
         # providers are unavailable. The EV Owner retains its route-engine fallback.

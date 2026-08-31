@@ -282,9 +282,8 @@ export function TripPlannerView({ token }: { token: string }) {
                     style={{ height: '100%', width: '100%' }}
                   >
                     <TileLayer
-                      attribution='&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap</a> &copy; <a href="https://carto.com/">CARTO</a>'
-                      url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
-                      subdomains="abcd"
+                      attribution='&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap</a> contributors'
+                      url="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
                       maxZoom={19}
                     />
                     <TripMapBoundsController points={polylineCoords} />

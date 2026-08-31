@@ -48,6 +48,7 @@ class VidyutBackendClient:
         params: dict[str, Any] | None = None,
         json: dict[str, Any] | None = None,
         authenticated: bool = True,
+        timeout_seconds: float | None = None,
     ) -> Any:
         if not path.startswith("/api/"):
             raise BackendError("Invalid Vidyut backend path", status_code=500)
@@ -71,7 +72,7 @@ class VidyutBackendClient:
         try:
             async with httpx.AsyncClient(
                 base_url=settings.backend_base_url,
-                timeout=settings.backend_timeout_seconds,
+                timeout=timeout_seconds or settings.backend_timeout_seconds,
             ) as client:
                 response = await client.request(
                     method,

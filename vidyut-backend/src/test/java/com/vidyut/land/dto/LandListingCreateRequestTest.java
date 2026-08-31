@@ -17,13 +17,11 @@ class LandListingCreateRequestTest {
     }
 
     @Test
-    void rejectsPropertyWithoutOwnershipEvidence() {
+    void acceptsDraftWithoutOwnershipEvidence() {
         LandListingCreateRequest request = validRequest();
         request.setOwnershipDocumentUrl("");
 
-        assertThat(validator.validate(request))
-                .anyMatch(violation -> violation.getPropertyPath().toString().equals("ownershipDocumentUrl")
-                        && violation.getMessage().equals("Ownership document URL is required"));
+        assertThat(validator.validate(request)).isEmpty();
     }
 
     @Test

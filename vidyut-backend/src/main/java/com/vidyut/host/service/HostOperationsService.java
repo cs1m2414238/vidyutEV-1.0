@@ -33,6 +33,14 @@ import com.vidyut.session.entity.ChargingSessionStatus;
 import com.vidyut.session.repository.ChargingSessionRepository;
 import com.vidyut.vehicle.entity.Vehicle;
 import com.vidyut.vehicle.repository.VehicleRepository;
+import com.vidyut.land.entity.LandListing;
+import com.vidyut.land.entity.LandListingStatus;
+import com.vidyut.land.entity.PowerPhase;
+import com.vidyut.land.entity.PropertyType;
+import com.vidyut.land.dto.LandListingCreateRequest;
+import com.vidyut.land.dto.LandListingResponse;
+import com.vidyut.land.repository.LandListingRepository;
+import com.vidyut.land.service.LandListingService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -69,6 +77,10 @@ public class HostOperationsService {
     private final AdminControlService adminControlService;
     private final OperationalControlService operationalControlService;
     private final RoleScopedAgentService roleScopedAgentService;
+    private final com.vidyut.company.repository.CompanyRepository companyRepository;
+    private final com.vidyut.company.repository.CompanyMaintenanceTicketRepository maintenanceTicketRepository;
+    private final LandListingRepository landListingRepository;
+    private final LandListingService landListingService;
 
     public HostProfileResponse profile(Long accountId) {
         return mapProfile(requireHost(accountId));
@@ -196,12 +208,14 @@ public class HostOperationsService {
     @Transactional
     public StationResponse updateStation(Long accountId, Long id, StationUpdateRequest request) {
         requireOperationalHost(accountId);
+        assertHostOperates(ownedStation(accountId, id));
         return stationService.updateStation(id, accountId, request);
     }
 
     @Transactional
     public void deleteStation(Long accountId, Long id) {
         requireOperationalHost(accountId);
+        assertHostOperates(ownedStation(accountId, id));
         stationService.deleteStation(id, accountId);
     }
 
@@ -209,6 +223,7 @@ public class HostOperationsService {
     public StationResponse updateAvailability(Long accountId, Long stationId, HostAvailabilityRequest request) {
         requireOperationalHost(accountId);
         ChargingStation station = ownedStation(accountId, stationId);
+        assertHostOperates(station);
         station.setAvailability(
                 request.isEmergencyDisabled() ? StationAvailability.UNAVAILABLE : request.getAvailability());
         station.setEmergencyDisabled(request.isEmergencyDisabled());
@@ -226,6 +241,7 @@ public class HostOperationsService {
     public Map<String, Object> updateChargerStatus(Long accountId, Long connectorId, HostChargerStatusRequest request) {
         requireOperationalHost(accountId);
         ChargingConnector connector = ownedConnector(accountId, connectorId);
+        assertHostOperates(connector.getStation());
         if (request.getStatus() == ChargerStatus.CHARGING) {
             throw new BadRequestException("Occupied status is controlled by a live charging session, not set manually");
         }
@@ -341,6 +357,7 @@ public class HostOperationsService {
                 "stationId", connector.getStation().getId(),
                 "stationName", connector.getStation().getName(),
                 "operatorCompanyName", Objects.toString(connector.getStation().getOperatorCompanyName(), "Host operated"),
+                "canControlOperationalStatus", connector.getStation().getOperatorCompanyId() == null && connector.getStation().getSupplierCompanyId() == null,
                 "faultCode", Objects.toString(connector.getFaultCode(), "COOLING_SYSTEM_TEMP_HIGH"),
                 "estimatedRepairHours", connector.getPowerKw() >= 100 ? 3 : 2,
                 "repairEstimate", repairEstimate,
@@ -613,8 +630,14 @@ public class HostOperationsService {
         ChargingStation busiest = busiestStation(stations, bookings);
         Map<String, Object> highestRisk = maintenance.isEmpty() ? null : maintenance.get(0);
         if (highestRisk != null && ((Number) highestRisk.get("riskScore")).intValue() >= 35) {
+            String op = Objects.toString(highestRisk.get("operatorCompanyName"), "Tata Power — Demo Operator Data");
+            actions.add(linkedMap("action", "REQUEST_TATA_SERVICE",
+                    "label", "Request service from " + (op.contains("Tata") ? "Tata" : "operator"),
+                    "requiresConfirmation", true,
+                    "connectorId", highestRisk.get("connectorId"), "stationId", highestRisk.get("stationId"),
+                    "detail", "Send an urgent service notification and work order request to " + op + "."));
             actions.add(linkedMap("action", "PUT_CONNECTOR_IN_MAINTENANCE",
-                    "label", "Put connector into maintenance", "requiresConfirmation", true,
+                    "label", "Isolate connector", "requiresConfirmation", true,
                     "connectorId", highestRisk.get("connectorId"), "stationId", highestRisk.get("stationId"),
                     "detail", "Impact-check active journeys, then isolate this connector."));
         }
@@ -631,8 +654,91 @@ public class HostOperationsService {
                     "detail", "Prepare inputs and documents only; submission always needs separate approval."));
         }
 
+        Map<String, Object> readinessData = evaluatePropertyReadiness(accountId);
+        Map<String, Object> offersData = compareCompanyOffers(accountId, q);
+        Map<String, Object> chargerHealthData = getHostedChargerHealth(accountId);
+
         String answer;
-        if (q.contains("which car") || q.contains("cars charging") || q.contains("vehicles charging")
+        if (q.contains("which property") || q.contains("expansion") || q.contains("best property")
+                || q.contains("expand") || q.contains("another charger") || q.contains("expansion potential")) {
+            answer = String.valueOf(readinessData.get("topRecommendation"));
+            @SuppressWarnings("unchecked")
+            List<Map<String, Object>> rankedList = (List<Map<String, Object>>) readinessData.get("rankedProperties");
+            if (rankedList != null && !rankedList.isEmpty()) {
+                answer += "\n\n**Property Expansion Ranking:**\n" + rankedList.stream()
+                        .map(p -> "• **" + p.get("propertyName") + "** (" + p.get("city") + ") — Score: "
+                                + p.get("readinessScore") + "/100 · " + p.get("recommendedNextAction"))
+                        .collect(java.util.stream.Collectors.joining("\n"));
+            }
+        } else if (((q.contains("list") || q.contains("listing") || q.contains("draft"))
+                && (q.contains("property") || q.contains("bay") || q.contains("airport") || q.contains("faizabad")))
+                || ((q.contains("faizabad") || q.contains("ayodhya"))
+                && (q.contains("kw") || q.contains("bay")) && (q.contains("commercial") || q.contains("highway") || q.contains("retail")))) {
+            String listingCity = q.contains("faizabad") ? "Faizabad" : (q.contains("ayodhya") ? "Ayodhya" : "");
+            String listingTitle = listingCity.isBlank() ? "New Host EV Site" : listingCity + " Airport EV Hub";
+            String listingAddress = extractListingAddress(rawQuestion);
+            Integer listingBays = extractInteger(rawQuestion, "(?i)(\\d+)\\s*[- ]?\\s*(?:parking\\s*)?bays?");
+            Double listingLoad = extractDecimal(rawQuestion, "(?i)(\\d+(?:\\.\\d+)?)\\s*kW");
+            PropertyType listingType = extractPropertyType(q);
+            String listingHours = extractOperatingHours(rawQuestion);
+            Map<String, Object> duplicateResult = checkPropertyDuplicate(accountId, listingTitle, listingAddress, listingCity);
+            if (Boolean.TRUE.equals(duplicateResult.get("duplicate"))) {
+                answer = String.valueOf(duplicateResult.get("message"));
+            } else {
+                List<String> missing = new ArrayList<>();
+                if (listingAddress.isBlank()) missing.add("approximate address or road");
+                if (listingCity.isBlank()) missing.add("city");
+                if (listingBays == null) missing.add("parking capacity");
+                if (listingLoad == null) missing.add("available electrical load in kW");
+                if (listingType == null) missing.add("property type");
+                if (listingHours.isBlank()) missing.add("operating hours");
+                if (!missing.isEmpty()) {
+                    answer = "I can prepare this property listing, but I still need: " + String.join(", ", missing)
+                            + ". I will check the completed draft for duplicates and ask before creating it.";
+                } else {
+                    answer = "I have prepared the draft listing for **" + listingTitle + "** (" + listingBays
+                            + " parking bays, " + listingLoad + " kW, " + listingType + ", " + listingHours
+                            + "). Please review and approve the action below to create it as a non-public draft.";
+                actions.add(linkedMap(
+                        "action", "CREATE_PROPERTY_DRAFT",
+                        "label", "Create property draft",
+                        "requiresConfirmation", true,
+                        "detail", "Save the validated LandListing as a non-public draft. Verification and publishing remain separate.",
+                        "payload", linkedMap(
+                                "title", listingTitle,
+                                "address", listingAddress,
+                                "city", listingCity,
+                                "state", "Uttar Pradesh",
+                                "availableParkingBays", listingBays,
+                                "availableLoadKw", listingLoad,
+                                "propertyType", listingType,
+                                "operatingHours", listingHours,
+                                "powerPhase", "NOT_SURE"
+                        )
+                ));
+                }
+            }
+        } else if (q.contains("offer") || q.contains("proposal") || q.contains("cpo") || q.contains("operator deal")
+                || q.contains("deal") || q.contains("compare company")) {
+            @SuppressWarnings("unchecked")
+            Map<String, Object> compSum = (Map<String, Object>) offersData.get("comparisonSummary");
+            answer = "### Operator Offer Comparison for " + offersData.get("propertyName") + " (" + offersData.get("city") + ")\n\n"
+                    + "• **Best Financial Upside:** " + compSum.get("bestFinancialOption") + "\n"
+                    + "• **Lowest Host Capex:** " + compSum.get("lowestHostCapex") + "\n"
+                    + "• **Shortest Lock-in:** " + compSum.get("shortestCommitment") + "\n"
+                    + "• **Best Hardware:** " + compSum.get("bestInfrastructure") + "\n\n"
+                    + "*Note: " + compSum.get("dataNotice") + "*";
+        } else if (q.contains("which charger") || q.contains("servicing") || q.contains("needs service")
+                || q.contains("maintenance") || q.contains("service") || q.contains("repair")
+                || q.contains("fault") || q.contains("health") || q.contains("issue") || q.contains("attention")
+                || q.contains("problem") || q.contains("wrong")) {
+            answer = String.valueOf(chargerHealthData.get("summary"));
+            if (chargerHealthData.get("preparedAction") != null) {
+                @SuppressWarnings("unchecked")
+                Map<String, Object> pAction = (Map<String, Object>) chargerHealthData.get("preparedAction");
+                actions.add(pAction);
+            }
+        } else if (q.contains("which car") || q.contains("cars charging") || q.contains("vehicles charging")
                 || q.contains("occupied")) {
             answer = liveSessions.isEmpty()
                     ? "No vehicle is charging at Prince's stations right now. All occupancy comes from live session state, not an AI guess."
@@ -646,21 +752,6 @@ public class HostOperationsService {
             answer = solar.get("stationName") + " could model " + solar.get("solarContributionPercent")
                     + "% solar contribution and about ₹" + solar.get("monthlySavings")
                     + " monthly grid-cost reduction. The modeled TATA/CPO + assistance + RESCO structure stays within Prince's ₹10 lakh budget. Incentive leads require current eligibility verification; Vidyut will not claim or submit anything without approval.";
-        } else if (q.contains("deal") || q.contains("company") || q.contains("operator") || q.contains("contract")) {
-            Map<String, Object> best = q.contains("guarantee") || q.contains("low risk") || q.contains("no risk")
-                    ? companyDeals.get(2) : companyDeals.get(0);
-            answer = best.get("company") + " is the strongest match for this goal: " + best.get("tradeoff")
-                    + " These are modeled comparisons, not live contract offers.";
-        } else if (q.contains("maintenance") || q.contains("service") || q.contains("repair")
-                || q.contains("fault") || q.contains("health")) {
-            answer = highestRisk == null || ((Number) highestRisk.get("riskScore")).intValue() < 35
-                     ? "No connector currently crosses the maintenance threshold. Keep preventive work outside the recorded peak window."
-                     : highestRisk.get("chargerCode") + " at " + highestRisk.get("stationName")
-                             + " has maintenance risk " + highestRisk.get("riskScore") + "/100 from hardware health and "
-                            + highestRisk.get("customerComplaints") + " recent customer complaint(s). Estimated repair is ₹"
-                            + highestRisk.get("repairEstimate") + " versus ₹" + highestRisk.get("estimatedRevenueLoss24Hours")
-                            + " modeled 24-hour revenue loss. Recommendation: "
-                            + highestRisk.get("financialRecommendation") + ". I will ask before isolating it.";
         } else if (q.contains("peak") || q.contains("demand") || q.contains("availability")
                 || q.contains("traffic") || q.contains("open") || q.contains("stay") || q.contains("time")) {
             answer = "Recorded demand peaks at " + operatingHours.get("peakWindow") + ". "
@@ -690,6 +781,9 @@ public class HostOperationsService {
                 "operatingHours", operatingHours, "companyDeals", companyDeals,
                 "solarOpportunity", solar, "networkPortfolio", portfolio,
                 "liveSessions", liveSessions,
+                "propertyReadiness", readinessData,
+                "companyOffers", offersData,
+                "hostedChargerHealth", chargerHealthData,
                 "outagePlaybook", linkedMap("steps", List.of(
                                 "Stop new reservations on the failed connector",
                                 "Protect or reroute affected journeys according to their autonomy mode",
@@ -723,6 +817,40 @@ public class HostOperationsService {
         }
         String action = request.getAction().trim().toUpperCase(Locale.ROOT);
         return switch (action) {
+            case "REQUEST_TATA_SERVICE", "REQUEST_SERVICE" -> {
+                if (request.getConnectorId() == null) throw new BadRequestException("Choose a connector first");
+                ChargingConnector connector = ownedConnector(accountId, request.getConnectorId());
+                ChargingStation station = connector.getStation();
+                HostProfile profile = requireHost(accountId);
+                String operatorName = station.getOperatorCompanyName() != null ? station.getOperatorCompanyName() : "Tata Power — Demo Operator Data";
+                notificationService.sendNotification(accountId, "Service request submitted",
+                        "Urgent service request sent to " + operatorName + " for connector " + connector.getChargerCode(),
+                        NotificationType.SYSTEM_ALERT);
+                if (station.getOperatorCompanyId() != null) {
+                    companyRepository.findById(station.getOperatorCompanyId()).ifPresent(company -> {
+                        if (company.getAccount() != null) {
+                            notificationService.sendNotification(
+                                    company.getAccount().getId(),
+                                    "Urgent service requested by Host",
+                                    "Host " + profile.getDisplayName() + " requested maintenance service for " + connector.getChargerCode() + " at " + station.getName(),
+                                    NotificationType.FAULT_ALERT
+                            );
+                        }
+                    });
+                    maintenanceTicketRepository.findByCompanyIdOrderByUpdatedAtDesc(station.getOperatorCompanyId()).stream()
+                            .filter(t -> t.getChargerId().equals(connector.getId()) && t.getStatus() == com.vidyut.company.entity.MaintenanceTicketStatus.OPEN)
+                            .findFirst().ifPresent(ticket -> {
+                                ticket.setPriority(com.vidyut.company.entity.MaintenancePriority.CRITICAL);
+                                ticket.setIssue("HOST SERVICE REQUEST: " + profile.getDisplayName() + " requested urgent service for " + connector.getChargerCode() + ". " + ticket.getIssue());
+                                maintenanceTicketRepository.save(ticket);
+                            });
+                }
+                yield linkedMap("status", "EXECUTED", "action", action,
+                        "connectorCode", connector.getChargerCode(),
+                        "operator", operatorName,
+                        "serviceStatus", "SERVICE_REQUESTED",
+                        "message", "Service request dispatched to " + operatorName + ". Awaiting technician dispatch.");
+            }
             case "PUT_CONNECTOR_IN_MAINTENANCE" -> {
                 if (request.getConnectorId() == null) throw new BadRequestException("Choose a connector first");
                 ChargingConnector connector = ownedConnector(accountId, request.getConnectorId());
@@ -772,8 +900,549 @@ public class HostOperationsService {
                             "solarStructure", "RESCO_PPA",
                             "additionalUpfrontRequired", 0),
                     "message", "The funding checklist and modeled split are prepared, not submitted. Scheme eligibility, company terms and every external commitment still require Prince's explicit approval.");
+            case "CREATE_PROPERTY_DRAFT" -> {
+                Map<String, Object> p = request.getPayload() != null ? request.getPayload() : Map.of();
+                String title = requiredPayloadText(p, "title", "Property title is required");
+                String address = requiredPayloadText(p, "address", "Approximate property address is required");
+                String city = requiredPayloadText(p, "city", "Property city is required");
+                String state = Objects.toString(p.get("state"), "Uttar Pradesh");
+                int bays = requiredPayloadNumber(p, "availableParkingBays", "Parking capacity is required").intValue();
+                double load = requiredPayloadNumber(p, "availableLoadKw", "Available electrical load is required").doubleValue();
+                String typeStr = requiredPayloadText(p, "propertyType", "Property type is required").toUpperCase(Locale.ROOT).replace(' ', '_');
+                String operatingHours = requiredPayloadText(p, "operatingHours", "Operating hours are required");
+                if (bays < 1 || bays > 1000) throw new BadRequestException("Parking capacity must be between 1 and 1000 bays");
+                if (load <= 0) throw new BadRequestException("Available electrical load must be greater than 0 kW");
+                PropertyType propType;
+                try { propType = PropertyType.valueOf(typeStr); }
+                catch (Exception e) { throw new BadRequestException("Choose a supported property type"); }
+                PowerPhase powerPhase;
+                try {
+                    powerPhase = PowerPhase.valueOf(Objects.toString(p.get("powerPhase"), "NOT_SURE")
+                            .toUpperCase(Locale.ROOT).replace(' ', '_'));
+                } catch (Exception e) {
+                    powerPhase = PowerPhase.NOT_SURE;
+                }
+
+                LandListingCreateRequest createReq = LandListingCreateRequest.builder()
+                        .title(title)
+                        .address(address)
+                        .city(city)
+                        .state(state)
+                        .availableParkingBays(bays)
+                        .availableLoadKw(load)
+                        .propertyType(propType)
+                        .powerPhase(powerPhase)
+                        .operatingHours(operatingHours)
+                        .discoverable(false)
+                        .build();
+
+                Map<String, Object> res = createPropertyDraft(accountId, createReq);
+                yield linkedMap("status", "EXECUTED", "action", action,
+                        "result", res,
+                        "message", res.get("message"));
+            }
+            case "SUBMIT_PROPERTY_FOR_VERIFICATION" -> {
+                LandListing property = ownedProperty(accountId, request.getPropertyId());
+                if (property.getOwnershipDocumentUrl() == null || property.getOwnershipDocumentUrl().isBlank()
+                        || property.getElectricityDocumentUrl() == null || property.getElectricityDocumentUrl().isBlank()) {
+                    yield linkedMap("status", "VALIDATION_REQUIRED", "action", action,
+                            "propertyId", property.getId(),
+                            "missingFields", List.of("ownershipDocumentUrl", "electricityDocumentUrl"),
+                            "message", "Upload ownership and electricity documents before submitting this draft for verification.");
+                }
+                property.setStatus(LandListingStatus.PENDING_APPROVAL);
+                property.setVerificationStage("SUBMITTED");
+                property.setDiscoverable(false);
+                landListingRepository.save(property);
+                yield linkedMap("status", "SUBMITTED", "action", action, "propertyId", property.getId(),
+                        "listingStatus", property.getStatus(), "verificationStage", property.getVerificationStage(),
+                        "message", "Property #" + property.getId() + " submitted for verification. It is not yet public.");
+            }
+            case "PUBLISH_PROPERTY" -> {
+                LandListing property = ownedProperty(accountId, request.getPropertyId());
+                if (property.getStatus() != LandListingStatus.APPROVED && property.getStatus() != LandListingStatus.ACTIVE) {
+                    yield linkedMap("status", "VALIDATION_REQUIRED", "action", action,
+                            "propertyId", property.getId(), "listingStatus", property.getStatus(),
+                            "message", "This property must pass verification before it can be published.");
+                }
+                property.setStatus(LandListingStatus.ACTIVE);
+                property.setVerificationStage("PUBLISHED");
+                property.setDiscoverable(true);
+                landListingRepository.save(property);
+                yield linkedMap("status", "PUBLISHED", "action", action, "propertyId", property.getId(),
+                        "listingStatus", property.getStatus(), "discoverable", property.isDiscoverable(),
+                        "message", "Property #" + property.getId() + " is now published in the marketplace.");
+            }
             default -> throw new BadRequestException("This Host Agent action is not executable");
         };
+    }
+
+    public Map<String, Object> evaluatePropertyReadiness(Long accountId) {
+        requireHost(accountId);
+        List<LandListing> properties = landListingRepository.findByHostUserId(accountId);
+        if (properties.isEmpty()) {
+            return linkedMap(
+                    "rankedProperties", List.of(),
+                    "topRecommendation", "No properties found in your Host portfolio. List a property first to evaluate expansion readiness.",
+                    "totalPropertiesEvaluated", 0
+            );
+        }
+
+        List<Map<String, Object>> ranked = new ArrayList<>();
+        for (LandListing property : properties) {
+            int score = 0;
+            List<String> reasons = new ArrayList<>();
+            List<String> constraints = new ArrayList<>();
+
+            int bays = property.getAvailableParkingBays();
+            if (bays >= 6) {
+                score += 25;
+                reasons.add("Large parking footprint: " + bays + " bays available for dedicated EV charging");
+            } else if (bays >= 4) {
+                score += 20;
+                reasons.add("Adequate parking capacity: " + bays + " dedicated charging bays");
+            } else {
+                score += 10;
+                constraints.add("Limited to " + bays + " bay(s); may constrain multi-vehicle throughput");
+            }
+
+            double loadKw = property.getAvailableLoadKw();
+            if (loadKw >= 200.0) {
+                score += 30;
+                reasons.add("Heavy electrical capacity: " + loadKw + " kW load ready for multi-gun DC fast charging (120–180 kW)");
+            } else if (loadKw >= 100.0) {
+                score += 24;
+                reasons.add("Good power capacity: " + loadKw + " kW suitable for high-speed DC charging");
+            } else if (loadKw >= 50.0) {
+                score += 15;
+                reasons.add("Moderate power capacity: " + loadKw + " kW suitable for 30–60 kW fast charger or multi-AC setup");
+            } else {
+                score += 8;
+                constraints.add("Low electrical load (" + loadKw + " kW); transformer or meter upgrade required for DC fast charging");
+            }
+
+            if (property.getPowerPhase() == PowerPhase.THREE_PHASE) {
+                score += 15;
+                reasons.add("Industrial 3-phase grid supply connected; supports standard commercial DC chargers");
+            } else {
+                score += 5;
+                constraints.add("Power phase is " + property.getPowerPhase() + "; 3-phase conversion needed for DC fast charging");
+            }
+
+            if (property.getPropertyType() == PropertyType.HIGHWAY) {
+                score += 15;
+                reasons.add("Highway transit location (" + property.getPropertyType() + ") captures long-distance intercity charging demand");
+            } else if (property.getPropertyType() == PropertyType.COMMERCIAL_PARKING) {
+                score += 12;
+                reasons.add("Commercial parking facility (" + property.getPropertyType() + ") provides strong daytime dwell time");
+            } else {
+                score += 8;
+                reasons.add("Property type: " + property.getPropertyType());
+            }
+
+            String hours = property.getOperatingHours();
+            if (hours != null && (hours.toLowerCase(Locale.ROOT).contains("24") || hours.toLowerCase(Locale.ROOT).contains("open"))) {
+                score += 10;
+                reasons.add("24/7 operating availability ensures round-the-clock revenue generation");
+            } else {
+                score += 5;
+                constraints.add("Restricted operating hours (" + (hours != null ? hours : "Unspecified") + ") limits night charging revenue");
+            }
+
+            if (property.getStatus() == LandListingStatus.APPROVED || property.getStatus() == LandListingStatus.ACTIVE) {
+                score += 5;
+                reasons.add("Ownership and site documents fully verified by Vidyut");
+            } else {
+                constraints.add("Listing status is " + property.getStatus() + "; pending final verification");
+            }
+
+            int finalScore = Math.min(100, Math.max(score, property.getPropertyScore() != null ? property.getPropertyScore() : score));
+
+            String nextAction = finalScore >= 85
+                    ? "Ready for CPO partnership: Deploy 2x 120-150 kW dual-gun CCS2 fast chargers"
+                    : finalScore >= 65
+                    ? "Upgrade electrical load to 100+ kW and apply for CPO revenue-share proposals"
+                    : "Complete verification and submit transformer upgrade application";
+
+            ranked.add(linkedMap(
+                    "propertyId", property.getId(),
+                    "propertyName", property.getTitle(),
+                    "city", Objects.toString(property.getCity(), "N/A"),
+                    "propertyType", property.getPropertyType().toString(),
+                    "availableParkingBays", property.getAvailableParkingBays(),
+                    "availableLoadKw", property.getAvailableLoadKw(),
+                    "powerPhase", property.getPowerPhase().toString(),
+                    "readinessScore", finalScore,
+                    "reasons", reasons,
+                    "constraints", constraints,
+                    "recommendedNextAction", nextAction
+            ));
+        }
+
+        ranked.sort((a, b) -> Integer.compare((int) b.get("readinessScore"), (int) a.get("readinessScore")));
+
+        Map<String, Object> top = ranked.get(0);
+        String recommendation = top.get("propertyName") + " (" + top.get("city") + ") ranks highest with an expansion readiness score of "
+                + top.get("readinessScore") + "/100 due to its " + top.get("availableLoadKw") + " kW electrical capacity, "
+                + top.get("availableParkingBays") + " bays, and 3-phase grid readiness.";
+
+        return linkedMap(
+                "rankedProperties", ranked,
+                "topRecommendation", recommendation,
+                "totalPropertiesEvaluated", ranked.size()
+        );
+    }
+
+    public Map<String, Object> compareCompanyOffers(Long accountId, String propertyFilter) {
+        requireHost(accountId);
+        List<LandListing> properties = landListingRepository.findByHostUserId(accountId);
+        LandListing target = null;
+        if (propertyFilter != null && !propertyFilter.isBlank()) {
+            String filter = propertyFilter.toLowerCase(Locale.ROOT).trim();
+            target = properties.stream().filter(p ->
+                    p.getTitle().toLowerCase(Locale.ROOT).contains(filter)
+                    || (p.getCity() != null && p.getCity().toLowerCase(Locale.ROOT).contains(filter))
+                    || String.valueOf(p.getId()).equals(filter)
+            ).findFirst().orElse(null);
+        }
+        if (target == null && !properties.isEmpty()) {
+            target = properties.stream().filter(p -> "Agra".equalsIgnoreCase(p.getCity())).findFirst()
+                    .orElse(properties.get(0));
+        }
+
+        String propName = target != null ? target.getTitle() : "Agra Highway Expressway Hub";
+        String city = target != null && target.getCity() != null ? target.getCity() : "Agra";
+
+        List<Map<String, Object>> offers = List.of(
+                linkedMap(
+                        "operatorName", "Vidyut Demo Operator Alpha",
+                        "operatorType", "SYNTHETIC DEMO CPO — NO COMMERCIAL AFFILIATION",
+                        "commercialModel", "REVENUE_SHARE",
+                        "hostRevenueSharePercent", 70.0,
+                        "monthlyLeasePayout", 0.0,
+                        "hostCapexRequirement", 0.0,
+                        "operatorCapexRequirement", 1_850_000.0,
+                        "proposedHardware", "2x 120 kW Dual CCS2 DC Fast Chargers",
+                        "contractDurationYears", 5,
+                        "maintenanceResponsibility", "OPERATOR_FULL",
+                        "summary", "70% revenue share to Host with zero upfront capital expenditure. Highest long-term earning potential on high-traffic corridors.",
+                        "tradeoff", "Higher revenue upside; payouts fluctuate with EV charging utilization.",
+                        "recommendationTag", "BEST_FINANCIAL_UPSIDE"
+                ),
+                linkedMap(
+                        "operatorName", "GreenRoute Charging Demo",
+                        "operatorType", "SYNTHETIC DEMO CPO — NO COMMERCIAL AFFILIATION",
+                        "commercialModel", "FIXED_LEASE",
+                        "hostRevenueSharePercent", 0.0,
+                        "monthlyLeasePayout", 45_000.0,
+                        "hostCapexRequirement", 0.0,
+                        "operatorCapexRequirement", 2_400_000.0,
+                        "proposedHardware", "2x 150 kW Ultra-fast CCS2 Chargers",
+                        "contractDurationYears", 3,
+                        "maintenanceResponsibility", "OPERATOR_FULL",
+                        "summary", "₹45,000/month guaranteed lease with ₹0 Host capex and 3-year term. Best low-risk option with zero utilization risk.",
+                        "tradeoff", "Guaranteed steady cashflow; Host does not participate in surge charging volume upside.",
+                        "recommendationTag", "BEST_LOW_RISK_OFFER"
+                ),
+                linkedMap(
+                        "operatorName", "VoltGrid Demo CPO",
+                        "operatorType", "SYNTHETIC DEMO CPO — NO COMMERCIAL AFFILIATION",
+                        "commercialModel", "HYBRID_CO_INVESTMENT",
+                        "hostRevenueSharePercent", 20.0,
+                        "monthlyLeasePayout", 20_000.0,
+                        "hostCapexRequirement", 450_000.0,
+                        "operatorCapexRequirement", 1_350_000.0,
+                        "proposedHardware", "4x 60 kW Fast Chargers",
+                        "contractDurationYears", 7,
+                        "maintenanceResponsibility", "SHARED_HOST_OPERATOR",
+                        "summary", "Base ₹20,000/mo guaranteed rent plus 20% revenue share. Requires 25% Host co-investment.",
+                        "tradeoff", "Balanced downside floor with upside participation, but requires ₹4.5 lakh upfront Host capital.",
+                        "recommendationTag", "BALANCED_CO_INVESTMENT"
+                )
+        );
+
+        return linkedMap(
+                "propertyId", target != null ? target.getId() : 1L,
+                "propertyName", propName,
+                "city", city,
+                "offers", offers,
+                "comparisonSummary", linkedMap(
+                        "bestFinancialOption", "Vidyut Demo Operator Alpha (70% revenue share captures highest monthly upside)",
+                        "lowestHostCapex", "Vidyut Demo Operator Alpha & GreenRoute Charging Demo (₹0 upfront Host capex)",
+                        "shortestCommitment", "GreenRoute Charging Demo (3-year contract lock-in)",
+                        "bestInfrastructure", "GreenRoute Charging Demo (2x 150 kW ultra-fast chargers)",
+                        "dataNotice", "All operator proposals are SYNTHETIC DEMO DATA for platform demonstration. No real commercial affiliation."
+                )
+        );
+    }
+
+    public Map<String, Object> getHostedChargerHealth(Long accountId) {
+        requireHost(accountId);
+        List<ChargingConnector> connectors = connectorRepository.findByStation_HostUserId(accountId);
+
+        List<Map<String, Object>> hostedChargers = new ArrayList<>();
+        List<Map<String, Object>> attentionRequired = new ArrayList<>();
+
+        for (ChargingConnector connector : connectors) {
+            ChargingStation st = connector.getStation();
+            boolean isFaulted = connector.getStatus() == ChargerStatus.MAINTENANCE
+                    || connector.getStatus() == ChargerStatus.FAULT
+                    || connector.getStatus() == ChargerStatus.SUSPECTED_FAULT
+                    || connector.getStatus() == ChargerStatus.OFFLINE
+                    || connector.getHealthScore() < 60
+                    || (connector.getFaultCode() != null && !connector.getFaultCode().isBlank() && !"NONE".equalsIgnoreCase(connector.getFaultCode()));
+
+            Map<String, Object> cInfo = linkedMap(
+                    "connectorId", connector.getId(),
+                    "chargerCode", connector.getChargerCode(),
+                    "stationId", st.getId(),
+                    "stationName", st.getName(),
+                    "city", st.getCity(),
+                    "status", connector.getStatus().toString(),
+                    "healthScore", connector.getHealthScore(),
+                    "powerKw", connector.getPowerKw(),
+                    "connectorType", connector.getType() != null ? connector.getType().name() : "CCS2",
+                    "faultCode", connector.getFaultCode() != null ? connector.getFaultCode() : "NONE",
+                    "operatorCompany", Objects.toString(st.getOperatorCompanyName(), "Operator not recorded"),
+                    "ownershipType", st.getOwnershipType(), "propertyId", st.getHostPartnershipId(),
+                    "faultReason", connector.getFaultReason(), "source", connector.getStatusSource(),
+                    "canControlOperationalStatus", st.getOperatorCompanyId() == null && st.getSupplierCompanyId() == null
+            );
+            hostedChargers.add(cInfo);
+
+            if (isFaulted) {
+                attentionRequired.add(cInfo);
+            }
+        }
+
+        Map<String, Object> preparedAction = null;
+        if (!attentionRequired.isEmpty()) {
+            Map<String, Object> worst = attentionRequired.get(0);
+            preparedAction = linkedMap(
+                    "action", "REQUEST_SERVICE",
+                    "label", "Request urgent service for " + worst.get("chargerCode"),
+                    "connectorId", worst.get("connectorId"),
+                    "stationId", worst.get("stationId"),
+                    "chargerCode", worst.get("chargerCode"),
+                    "stationName", worst.get("stationName"),
+                    "operator", worst.get("operatorCompany"),
+                    "requiresConfirmation", true,
+                    "detail", "Dispatches high-priority maintenance ticket to " + worst.get("operatorCompany") + " for " + worst.get("chargerCode")
+            );
+        }
+
+        String summary = attentionRequired.isEmpty()
+                ? "All " + connectors.size() + " chargers across your hosted properties have no recorded operational alerts."
+                : attentionRequired.size() + " hosted charger(s) require attention. Specifically, "
+                + attentionRequired.get(0).get("chargerCode") + " at " + attentionRequired.get(0).get("stationName")
+                + " reports status " + attentionRequired.get(0).get("status") + " (Health: " + attentionRequired.get(0).get("healthScore") + "%).";
+
+        return linkedMap(
+                "totalHostedChargers", connectors.size(),
+                "healthyChargersCount", connectors.size() - attentionRequired.size(),
+                "attentionRequiredCount", attentionRequired.size(),
+                "summary", summary,
+                "attentionRequiredList", attentionRequired,
+                "allHostedChargers", hostedChargers,
+                "preparedAction", preparedAction
+        );
+    }
+
+    @Transactional
+    public Map<String, Object> createPropertyDraft(Long accountId, LandListingCreateRequest request) {
+        operationalControlService.assertHostCanCreateListing(accountId);
+
+        String title = request.getTitle() != null ? request.getTitle().trim() : "";
+        String city = request.getCity() != null ? request.getCity().trim() : "";
+        String address = request.getAddress() != null ? request.getAddress().trim() : "";
+
+        List<LandListing> existing = landListingRepository.findByHostUserId(accountId);
+        for (LandListing p : existing) {
+            boolean titleMatch = p.getTitle().equalsIgnoreCase(title);
+            boolean cityAndAddrMatch = p.getCity() != null && p.getCity().equalsIgnoreCase(city)
+                    && p.getAddress() != null && (
+                            p.getAddress().equalsIgnoreCase(address)
+                            || (address.length() > 5 && p.getAddress().toLowerCase(Locale.ROOT).contains(address.toLowerCase(Locale.ROOT)))
+                    );
+            if (titleMatch || cityAndAddrMatch) {
+                return linkedMap(
+                        "status", "DUPLICATE_FOUND",
+                        "existingPropertyId", p.getId(),
+                        "existingTitle", p.getTitle(),
+                        "existingCity", p.getCity(),
+                        "message", "I found an existing property matching this location: \"" + p.getTitle()
+                                + "\" in " + p.getCity() + ". Would you like to update it instead of creating a duplicate?"
+                );
+            }
+        }
+
+        LandListingResponse created = landListingService.createListing(accountId, request);
+        LandListing draft = landListingRepository.findByIdAndHostUserId(created.getId(), accountId)
+                .orElseThrow(() -> new ResourceNotFoundException("Created property draft could not be loaded"));
+        draft.setVerificationStage("DRAFT");
+        draft.setDiscoverable(false);
+        draft.setStatus(LandListingStatus.PENDING_APPROVAL);
+        landListingRepository.save(draft);
+
+        return linkedMap(
+                "status", "CREATED",
+                "propertyId", created.getId(),
+                "title", created.getTitle(),
+                "city", created.getCity(),
+                "availableParkingBays", created.getAvailableParkingBays(),
+                "availableLoadKw", created.getAvailableLoadKw(),
+                "listingStatus", created.getStatus().toString(),
+                "verificationStage", "DRAFT",
+                "discoverable", false,
+                "message", "Property draft \"" + created.getTitle() + "\" created successfully with ID #"
+                        + created.getId() + ". It is saved as a non-public DRAFT."
+        );
+    }
+
+    public Map<String, Object> checkPropertyDuplicate(Long accountId, String title, String address, String city) {
+        requireHost(accountId);
+        Optional<LandListing> duplicate = findPropertyDuplicate(accountId, title, address, city);
+        if (duplicate.isEmpty()) {
+            return linkedMap("status", "NO_DUPLICATE", "duplicate", false,
+                    "message", "No matching property was found in this Host portfolio.");
+        }
+        LandListing property = duplicate.get();
+        return linkedMap("status", "DUPLICATE_FOUND", "duplicate", true,
+                "existingPropertyId", property.getId(), "existingTitle", property.getTitle(),
+                "existingAddress", property.getAddress(), "existingCity", property.getCity(),
+                "message", "An existing property matches this listing. Update property #" + property.getId() + " instead.");
+    }
+
+    public Map<String, Object> preparePropertyListing(Long accountId, LandListingCreateRequest request) {
+        requireHost(accountId);
+        String title = Objects.toString(request.getTitle(), "").trim();
+        String address = Objects.toString(request.getAddress(), "").trim();
+        String city = Objects.toString(request.getCity(), "").trim();
+        Optional<LandListing> duplicate = findPropertyDuplicate(accountId, title, address, city);
+        if (duplicate.isPresent()) {
+            LandListing property = duplicate.get();
+            return linkedMap("status", "DUPLICATE_FOUND", "requiresConfirmation", false,
+                    "existingPropertyId", property.getId(), "existingTitle", property.getTitle(),
+                    "existingCity", property.getCity(),
+                    "message", "A similar property already exists. Offer to update property #" + property.getId() + " instead.");
+        }
+        if (request.getAvailableParkingBays() == null || request.getAvailableParkingBays() < 1
+                || request.getAvailableLoadKw() == null || request.getAvailableLoadKw() <= 0
+                || request.getPropertyType() == null || request.getPropertyType() == PropertyType.OTHER
+                || request.getOperatingHours() == null || request.getOperatingHours().isBlank()) {
+            throw new BadRequestException("Parking bays, positive electrical load, property type, and operating hours are required");
+        }
+        Map<String, Object> payload = linkedMap(
+                "title", title, "address", address, "city", city,
+                "state", Objects.toString(request.getState(), ""),
+                "availableParkingBays", request.getAvailableParkingBays(),
+                "availableLoadKw", request.getAvailableLoadKw(),
+                "propertyType", request.getPropertyType(),
+                "operatingHours", request.getOperatingHours());
+        return linkedMap("status", "READY_FOR_APPROVAL", "requiresConfirmation", true,
+                "action", "CREATE_PROPERTY_DRAFT", "draft", payload,
+                "message", "Draft prepared. Ask the Host to approve creation; this does not publish the property.");
+    }
+
+    private Optional<LandListing> findPropertyDuplicate(Long accountId, String title, String address, String city) {
+        String normalizedTitle = normalizedListingText(title);
+        String normalizedAddress = normalizedListingText(address);
+        String normalizedCity = normalizedListingText(city);
+        return landListingRepository.findByHostUserId(accountId).stream().filter(property -> {
+            String propertyTitle = normalizedListingText(property.getTitle());
+            String propertyAddress = normalizedListingText(property.getAddress());
+            String propertyCity = normalizedListingText(property.getCity());
+            boolean sameTitle = !normalizedTitle.isBlank()
+                    && (propertyTitle.equals(normalizedTitle) || propertyTitle.contains(normalizedTitle) || normalizedTitle.contains(propertyTitle));
+            boolean sameLocation = !normalizedCity.isBlank() && propertyCity.equals(normalizedCity)
+                    && !normalizedAddress.isBlank()
+                    && (propertyAddress.equals(normalizedAddress) || propertyAddress.contains(normalizedAddress) || normalizedAddress.contains(propertyAddress));
+            boolean similarLocation = !normalizedCity.isBlank() && propertyCity.equals(normalizedCity)
+                    && sharedListingTokens(propertyAddress, normalizedAddress) >= 2;
+            return sameTitle || sameLocation || similarLocation;
+        }).findFirst();
+    }
+
+    private String normalizedListingText(String value) {
+        return Objects.toString(value, "").toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9]+", " ").trim();
+    }
+
+    private long sharedListingTokens(String first, String second) {
+        Set<String> ignored = Set.of("near", "the", "at", "in", "gate", "road", "street", "plot");
+        Set<String> left = new HashSet<>(Arrays.asList(first.split("\\s+")));
+        Set<String> right = new HashSet<>(Arrays.asList(second.split("\\s+")));
+        left.removeIf(token -> token.length() < 3 || ignored.contains(token));
+        right.removeIf(token -> token.length() < 3 || ignored.contains(token));
+        left.retainAll(right);
+        return left.size();
+    }
+
+    private Integer extractInteger(String value, String pattern) {
+        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile(pattern).matcher(Objects.toString(value, ""));
+        return matcher.find() ? Integer.valueOf(matcher.group(1)) : null;
+    }
+
+    private Double extractDecimal(String value, String pattern) {
+        java.util.regex.Matcher matcher = java.util.regex.Pattern.compile(pattern).matcher(Objects.toString(value, ""));
+        return matcher.find() ? Double.valueOf(matcher.group(1)) : null;
+    }
+
+    private PropertyType extractPropertyType(String normalizedQuestion) {
+        if (normalizedQuestion.contains("commercial parking")) return PropertyType.COMMERCIAL_PARKING;
+        if (normalizedQuestion.contains("fuel station") || normalizedQuestion.contains("petrol pump")) return PropertyType.FUEL_STATION;
+        if (normalizedQuestion.contains("highway")) return PropertyType.HIGHWAY;
+        if (normalizedQuestion.contains("residential")) return PropertyType.RESIDENTIAL;
+        if (normalizedQuestion.contains("office")) return PropertyType.OFFICE;
+        if (normalizedQuestion.contains("mall") || normalizedQuestion.contains("retail")) return PropertyType.MALL;
+        if (normalizedQuestion.contains("hotel")) return PropertyType.HOTEL;
+        return null;
+    }
+
+    private String extractListingAddress(String question) {
+        String value = Objects.toString(question, "").trim();
+        java.util.regex.Matcher explicit = java.util.regex.Pattern
+                .compile("(?i)(?:address(?: is|:)?|at)\\s+([^,.;]+(?:[,][^.;]+)?)")
+                .matcher(value);
+        if (explicit.find()) return cleanExtractedAddress(explicit.group(1));
+        java.util.regex.Matcher location = java.util.regex.Pattern
+                .compile("(?i)([^,.;]*(?:road|street|highway|plot|terminal)[^,.;]*)")
+                .matcher(value);
+        return location.find() ? cleanExtractedAddress(location.group(1)) : "";
+    }
+
+    private String cleanExtractedAddress(String value) {
+        return Objects.toString(value, "")
+                .replaceFirst("(?i)\\s+with\\s+\\d+(?:\\.\\d+)?\\s*kW.*$", "")
+                .replaceFirst("(?i)\\s+(?:and|which)\\s+(?:has|operates|is).*?$", "")
+                .trim();
+    }
+
+    private String extractOperatingHours(String question) {
+        String value = Objects.toString(question, "");
+        if (value.toLowerCase(Locale.ROOT).contains("24/7")
+                || value.toLowerCase(Locale.ROOT).contains("open 24 hours")) return "Open 24 hours";
+        java.util.regex.Matcher matcher = java.util.regex.Pattern
+                .compile("(?i)(\\d{1,2}(?::\\d{2})?\\s*(?:am|pm)?\\s*(?:-|to)\\s*\\d{1,2}(?::\\d{2})?\\s*(?:am|pm)?)")
+                .matcher(value);
+        return matcher.find() ? matcher.group(1).trim() : "";
+    }
+
+    private LandListing ownedProperty(Long accountId, Long propertyId) {
+        if (propertyId == null) throw new BadRequestException("Choose a property first");
+        return landListingRepository.findByIdAndHostUserId(propertyId, accountId)
+                .orElseThrow(() -> new ResourceNotFoundException("Property not found for this Host account"));
+    }
+
+    private String requiredPayloadText(Map<String, Object> payload, String key, String message) {
+        String value = Objects.toString(payload.get(key), "").trim();
+        if (value.isBlank()) throw new BadRequestException(message);
+        return value;
+    }
+
+    private Number requiredPayloadNumber(Map<String, Object> payload, String key, String message) {
+        Object value = payload.get(key);
+        if (!(value instanceof Number number)) throw new BadRequestException(message);
+        return number;
     }
 
     private List<Map<String, Object>> maintenanceRisks(
@@ -797,7 +1466,8 @@ public class HostOperationsService {
             int risk = Math.min(100, Math.max(0, 100 - connector.getHealthScore()
                     + (int) complaints * 6 + (hardwareSignal ? 15 : 0)
                     + (slow ? 15 : 0)
-                    + (connector.getStatus() == ChargerStatus.FAULT ? 25 : 0)));
+                    + (connector.getStatus() == ChargerStatus.FAULT ? 30 : 0)
+                    + (connector.getStatus() == ChargerStatus.SUSPECTED_FAULT ? 40 : 0)));
             List<String> signals = new ArrayList<>();
             if (connector.getHealthScore() < 75) signals.add("hardware health " + connector.getHealthScore() + "/100");
             if (complaints > 0) signals.add(complaints + " customer complaint(s) in 7 days");
@@ -814,6 +1484,7 @@ public class HostOperationsService {
             return linkedMap("connectorId", connector.getId(), "stationId", stationId,
                     "stationName", connector.getStation().getName(), "chargerCode", connector.getChargerCode(),
                     "operatorCompanyName", Objects.toString(connector.getStation().getOperatorCompanyName(), "Host operated"),
+                "canControlOperationalStatus", connector.getStation().getOperatorCompanyId() == null && connector.getStation().getSupplierCompanyId() == null,
                     "connectorType", connector.getType(), "riskScore", risk,
                     "maintenanceHealth", 100 - risk, "recentSessions", sessions,
                     "customerComplaints", complaints, "signals", signals,
@@ -852,38 +1523,38 @@ public class HostOperationsService {
 
     private List<Map<String, Object>> companyDealScenarios(Map<String, Object> earnings) {
         List<Map<String, Object>> deals = new ArrayList<>();
-        deals.add(linkedMap("company", "TATA Power Demo", "chargerPowerKw", 120,
-                "revenueModel", "REVENUE_SHARE", "hostShareLabel", "18%",
-                "hostRevenueSharePercent", 18, "installationFunding", "COMPANY_FUNDED",
+        deals.add(linkedMap("company", "Vidyut Demo Operator Alpha (Demo CPO)", "chargerPowerKw", 120,
+                "revenueModel", "REVENUE_SHARE", "hostShareLabel", "70%",
+                "hostRevenueSharePercent", 70, "installationFunding", "COMPANY_FUNDED",
                 "maintenanceResponsibility", "COMPANY", "expectedSessionsPerMonth", 1_250,
                 "projectedMonthlyHostIncome", 48_300, "projectedAnnualHostRevenue", 579_600,
                 "projectedThreeYearValue", 1_738_800, "riskLevel", "MEDIUM",
                 "recommendationTag", "BEST_FINANCIAL_OFFER",
-                "tradeoff", "Highest modeled three-year income; demand and tariff exposure remain.", "demoScenario", true));
-        deals.add(linkedMap("company", "ChargeZone Demo", "chargerPowerKw", 180,
-                "revenueModel", "REVENUE_SHARE", "hostShareLabel", "16%",
-                "hostRevenueSharePercent", 16, "installationFunding", "COMPANY_FUNDED",
-                "maintenanceResponsibility", "COMPANY", "expectedSessionsPerMonth", 1_340,
-                "projectedMonthlyHostIncome", 46_100, "projectedAnnualHostRevenue", 553_200,
-                "projectedThreeYearValue", 1_659_600, "riskLevel", "MEDIUM",
-                "recommendationTag", "HIGH_POWER_NETWORK",
-                "tradeoff", "Higher-power hardware with a smaller Host share.", "demoScenario", true));
-        deals.add(linkedMap("company", "Statiq Demo", "chargerPowerKw", 60,
-                "revenueModel", "FIXED_RENT", "hostShareLabel", "₹28,000/month",
+                "tradeoff", "Highest modeled upside; payouts fluctuate with EV charging volume. [SYNTHETIC DEMO DATA — NO AFFILIATION]", "demoScenario", true));
+        deals.add(linkedMap("company", "GreenRoute Charging Demo (Demo CPO)", "chargerPowerKw", 150,
+                "revenueModel", "FIXED_RENT", "hostShareLabel", "₹45,000/month",
                 "hostRevenueSharePercent", 0, "installationFunding", "COMPANY_FUNDED",
-                "maintenanceResponsibility", "COMPANY", "expectedSessionsPerMonth", 900,
-                "projectedMonthlyHostIncome", 28_000, "projectedAnnualHostRevenue", 336_000,
-                "projectedThreeYearValue", 1_008_000, "riskLevel", "LOW",
+                "maintenanceResponsibility", "COMPANY", "expectedSessionsPerMonth", 1_340,
+                "projectedMonthlyHostIncome", 45_000, "projectedAnnualHostRevenue", 540_000,
+                "projectedThreeYearValue", 1_620_000, "riskLevel", "LOW",
                 "recommendationTag", "BEST_LOW_RISK_OFFER",
-                "tradeoff", "Guaranteed modeled rent with no electricity-price or maintenance exposure.", "demoScenario", true));
+                "tradeoff", "Guaranteed steady lease payout with ₹0 Host capex. [SYNTHETIC DEMO DATA — NO AFFILIATION]", "demoScenario", true));
+        deals.add(linkedMap("company", "VoltGrid Demo CPO (Demo CPO)", "chargerPowerKw", 60,
+                "revenueModel", "HYBRID_CO_INVESTMENT", "hostShareLabel", "₹20,000 + 20%",
+                "hostRevenueSharePercent", 20, "installationFunding", "SHARED",
+                "maintenanceResponsibility", "SHARED", "expectedSessionsPerMonth", 900,
+                "projectedMonthlyHostIncome", 32_000, "projectedAnnualHostRevenue", 384_000,
+                "projectedThreeYearValue", 1_152_000, "riskLevel", "MEDIUM_LOW",
+                "recommendationTag", "BALANCED_STRUCTURE",
+                "tradeoff", "Base rent protects downside while sharing utilization upside; requires 25% Host co-investment. [SYNTHETIC DEMO DATA — NO AFFILIATION]", "demoScenario", true));
         deals.add(linkedMap("company", "Vidyut Partner Demo", "chargerPowerKw", 120,
-                "revenueModel", "HYBRID", "hostShareLabel", "₹15,000 + 8%",
-                "hostRevenueSharePercent", 8, "installationFunding", "SHARED",
+                "revenueModel", "REVENUE_SHARE", "hostShareLabel", "50/50 Split",
+                "hostRevenueSharePercent", 50, "installationFunding", "SHARED",
                 "maintenanceResponsibility", "SHARED", "expectedSessionsPerMonth", 1_100,
                 "projectedMonthlyHostIncome", 39_600, "projectedAnnualHostRevenue", 475_200,
                 "projectedThreeYearValue", 1_425_600, "riskLevel", "MEDIUM_LOW",
-                "recommendationTag", "BALANCED_STRUCTURE",
-                "tradeoff", "Base rent protects downside while sharing utilization upside.", "demoScenario", true));
+                "recommendationTag", "CO_OPERATIVE_MODEL",
+                "tradeoff", "Balanced partnership model for high-traffic highway hubs. [SYNTHETIC DEMO DATA — NO AFFILIATION]", "demoScenario", true));
         return deals;
     }
 
@@ -984,6 +1655,12 @@ public class HostOperationsService {
         return profile;
     }
 
+    private void assertHostOperates(ChargingStation station) {
+        if (station.getOperatorCompanyId() != null || station.getSupplierCompanyId() != null) {
+            throw new ForbiddenException("This charger is operated by the Company. The Host may inspect it and request maintenance, but cannot change its operational state.");
+        }
+    }
+
     private ChargingStation ownedStation(Long accountId, Long stationId) {
         return stationRepository.findByIdAndHostUserId(stationId, accountId)
                 .orElseThrow(() -> new ResourceNotFoundException("Charger location not found for this host"));
@@ -1043,6 +1720,7 @@ public class HostOperationsService {
         return linkedMap("id", connector.getId(), "stationId", connector.getStation().getId(), "stationName",
                 connector.getStation().getName(),
                 "operatorCompanyName", Objects.toString(connector.getStation().getOperatorCompanyName(), "Host operated"),
+                "canControlOperationalStatus", connector.getStation().getOperatorCompanyId() == null && connector.getStation().getSupplierCompanyId() == null,
                 "chargerCode", connector.getChargerCode(), "connectorType", connector.getType(), "powerKw",
                 connector.getPowerKw(),
                 "status", effectiveStatus, "availabilityLabel", session == null && connector.isAvailable() ? "AVAILABLE" :

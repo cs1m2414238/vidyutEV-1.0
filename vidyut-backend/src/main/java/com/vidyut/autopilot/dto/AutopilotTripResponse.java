@@ -14,6 +14,7 @@ import java.util.List;
 @NoArgsConstructor
 @AllArgsConstructor
 public class AutopilotTripResponse {
+    private java.util.List<java.util.List<Double>> routeCoordinates;
     private Long id;
     private String idempotencyKey;
     private String goal;
@@ -47,6 +48,7 @@ public class AutopilotTripResponse {
     private String paymentMessage;
     private double walletBalance;
     private AutopilotTelemetryResponse telemetry;
+    private AutopilotRecoveryResponse recovery;
     private List<AutopilotStopResponse> stops;
     private List<AutopilotActionResponse> timeline;
     private LocalDateTime createdAt;

@@ -58,9 +58,8 @@ function errorMessage(response: Response, body: unknown): string {
   return `The request could not be completed (HTTP ${response.status}).`;
 }
 
-const API_BASE_URL = (
-  import.meta.env.VITE_API_BASE_URL?.trim() || '/api'
-).replace(/\/+$/, '');
+const rawBaseUrl = (import.meta.env.VITE_API_BASE_URL?.trim() || '/api').replace(/\/+$/, '');
+const API_BASE_URL = rawBaseUrl.endsWith('/api') ? rawBaseUrl : `${rawBaseUrl}/api`;
 
 export async function apiRequest<T>(path: string, init: RequestInit): Promise<T> {
   let response: Response;

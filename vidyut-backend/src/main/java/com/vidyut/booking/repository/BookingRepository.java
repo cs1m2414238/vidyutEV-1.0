@@ -20,6 +20,11 @@ public interface BookingRepository extends JpaRepository<Booking, Long> {
     Optional<Booking> findByIdAndUserId(Long id, Long userId);
     Optional<Booking> findByUserIdAndIdempotencyKey(Long userId, String idempotencyKey);
     List<Booking> findByStationId(Long stationId);
+    @Query("select count(b) from Booking b where b.connectorId = :connectorId " +
+            "and b.status in :statuses and b.startTime < :endTime and b.endTime > :startTime")
+    long countConnectorOverlapping(@Param("connectorId") Long connectorId,
+                          @Param("startTime") LocalDateTime startTime, @Param("endTime") LocalDateTime endTime,
+                          @Param("statuses") Collection<BookingStatus> statuses);
     List<Booking> findByStationIdInOrderByStartTimeDesc(List<Long> stationIds);
     long countByUserIdAndSeenFalseAndStatusIn(Long userId, Collection<BookingStatus> statuses);
 

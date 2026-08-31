@@ -99,7 +99,7 @@ export function ChargerDetailModal({ charger, onClose, onConfirmBooking, token, 
         <div className="charger-dialog-body">
           <div className="charger-dialog-heading">
             <div>
-              <span className="charger-dialog-eyebrow">Verified charging station</span>
+              <span className="charger-dialog-eyebrow">{charger.demoData ? 'SYNTHETIC DEMO STATION' : 'Verified charging station'}</span>
               <h2 id="charger-dialog-title">{charger.name}</h2>
               <p><MapPin size={13} />{charger.address}</p>
             </div>

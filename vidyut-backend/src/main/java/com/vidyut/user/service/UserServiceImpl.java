@@ -83,6 +83,9 @@ public class UserServiceImpl implements UserService {
     public void deleteUser(Long id) {
         Account account = accountRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Account not found with id: " + id));
+        if (account.getEmail() != null && account.getEmail().toLowerCase().startsWith("demo.") && account.getEmail().toLowerCase().endsWith("@vidyut.com")) {
+            throw new com.vidyut.common.exception.BadRequestException("Public demo accounts cannot be deleted.");
+        }
         account.setEnabled(false);
         account.setGoogleSubject(null);
         account.setEmailVerified(false);

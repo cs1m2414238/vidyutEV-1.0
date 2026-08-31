@@ -26,6 +26,7 @@ export interface HostProperty {
   electricityDocumentUrl?: string;
   videoVerificationUrl?: string;
   adminReviewNote?: string;
+  verificationStage?: string;
   discoverable: boolean;
   status: string;
 }

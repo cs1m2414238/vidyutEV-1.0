@@ -21,6 +21,7 @@ public class BookingCreateRequest {
     private Long stationId;
 
     private Long vehicleId;
+    private Long connectorId;
 
     private LocalDateTime startTime;
 

@@ -174,6 +174,7 @@ interface Monitor {
   connectorType: string;
   powerKw: number;
   status: "ONLINE" | "OFFLINE" | "CHARGING" | "MAINTENANCE" | "FAULT";
+  canControlOperationalStatus?: boolean;
   availabilityLabel?: "AVAILABLE" | "OCCUPIED" | "ONLINE" | "OFFLINE" | "MAINTENANCE" | "FAULT";
   available: boolean;
   currentPowerKw: number;
@@ -279,13 +280,19 @@ interface AgentMaintenanceRisk {
 interface AgentAction {
   action:
     | "PUT_CONNECTOR_IN_MAINTENANCE"
+    | "REQUEST_TATA_SERVICE"
+    | "REQUEST_SERVICE"
     | "EXTEND_HOURS"
     | "OPEN_MARKETPLACE"
-    | "PREPARE_GREEN_FINANCE";
+    | "CREATE_PROPERTY_DRAFT"
+    | "PREPARE_GREEN_FINANCE"
+    | (string & {});
   label: string;
   requiresConfirmation: boolean;
   stationId?: number;
   connectorId?: number;
+  propertyId?: number;
+  payload?: Record<string, unknown>;
   detail: string;
 }
 interface HostAgentInsight {
@@ -529,7 +536,7 @@ export function HostWorkspace({
   const [reviewAction, setReviewAction] = useState<ReviewAction>(null);
   const [reviewMessage, setReviewMessage] = useState("");
   const [withdrawAmount, setWithdrawAmount] = useState("");
-  const [question, setQuestion] = useState("Which cars are charging now?");
+  const [question, setQuestion] = useState("Which property is best for expansion?");
   const [answer, setAnswer] = useState(
     "Ask which cars are charging, which connector needs service, or when a station should stay open.",
   );
@@ -938,6 +945,7 @@ export function HostWorkspace({
   };
   const executeAgentAction = async () => {
     if (!pendingAgentAction) return;
+    const approvedAction = pendingAgentAction;
     try {
       setSaving(true);
       setError("");
@@ -950,6 +958,8 @@ export function HostWorkspace({
             action: pendingAgentAction.action,
             stationId: pendingAgentAction.stationId,
             connectorId: pendingAgentAction.connectorId,
+            propertyId: pendingAgentAction.propertyId,
+            payload: pendingAgentAction.payload,
             approved: true,
           }),
         },
@@ -957,7 +967,11 @@ export function HostWorkspace({
       setNotice(result.message || `${pendingAgentAction.label} completed.`);
       setPendingAgentAction(null);
       await loadAll();
-      await ask();
+      if (approvedAction.action === "CREATE_PROPERTY_DRAFT") {
+        onNavigate("properties");
+      } else {
+        await ask();
+      }
     } catch (e) {
       setError(
         e instanceof Error
@@ -1172,6 +1186,80 @@ export function HostWorkspace({
           {notice}
         </div>
       )}
+
+      {/* Real-time Incident Alert for Host Prince */}
+      {monitoring.some((m) => m.status === 'FAULT' || m.status === 'MAINTENANCE' || (m as any).status === 'SUSPECTED_FAULT' || (m.faultCode && m.faultCode.includes('SUSPECTED_FAULT'))) && (
+        <section className="host-urgent-incident-banner" role="alert" style={{
+          background: 'linear-gradient(135deg, rgba(239, 68, 68, 0.12) 0%, rgba(220, 38, 38, 0.18) 100%)',
+          border: '1px solid rgba(239, 68, 68, 0.4)',
+          borderRadius: 14,
+          padding: '14px 18px',
+          marginBottom: 20,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 16,
+          flexWrap: 'wrap'
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+            <div style={{
+              width: 42,
+              height: 42,
+              borderRadius: 10,
+              background: 'rgba(239, 68, 68, 0.2)',
+              color: '#ef4444',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              flexShrink: 0
+            }}>
+              <AlertTriangle size={22} />
+            </div>
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
+                <span style={{
+                  background: '#ef4444',
+                  color: '#fff',
+                  fontSize: 10,
+                  fontWeight: 800,
+                  padding: '2px 6px',
+                  borderRadius: 4,
+                  textTransform: 'uppercase'
+                }}>POTENTIAL CHARGER FAULT</span>
+                <span style={{ fontSize: 11, color: '#fca5a5' }}>1 active trip rerouted</span>
+              </div>
+              <strong style={{ color: '#f8fafc', fontSize: 14 }}>Prince Highway Charging Hub (Dausa) — Tata CCS2 #1</strong>
+              <p style={{ margin: '3px 0 0 0', fontSize: 12, color: '#cbd5e1' }}>
+                Driver reported session could not start. Equipment operator <em>Tata Power — Demo Operator Data</em> has been notified.
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              onNavigate("ai");
+              setQuestion("Which charger needs servicing?");
+            }}
+            style={{
+              background: '#ef4444',
+              color: '#fff',
+              border: 'none',
+              borderRadius: 8,
+              padding: '8px 16px',
+              fontSize: 13,
+              fontWeight: 700,
+              cursor: 'pointer',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6
+            }}
+          >
+            <Wrench size={14} />
+            Ask Host Agent to Service
+          </button>
+        </section>
+      )}
+
       {tab === "dashboard" && (
         <HostDashboardPanel
           dashboard={dashboard}
@@ -1863,7 +1951,7 @@ function MonitoringPanel({
                   {item.status === "CHARGING" ? (
                     <div className="live-vehicle-session"><CarFront size={20} /><div><strong>{item.vehicleName || "Connected EV"}</strong><small>{item.vehicleRegistration || `Session #${item.sessionId}`} · {item.currentBatteryPercent ?? "—"}% → {item.targetBatteryPercent ?? "—"}%</small></div><span><strong>{item.currentPowerKw} kW</strong><small>{item.sessionEnergyKwh} kWh · {item.remainingMinutes ?? 0} min left</small></span></div>
                   ) : (
-                    <div className="monitor-control"><span>{item.currentPowerKw} kW now · {item.sessionEnergyKwh} kWh session</span><select aria-label={`Set operational state for ${item.chargerCode}`} value={item.status} onChange={(event) => void onStatus(item, event.target.value as Monitor["status"])}><option>ONLINE</option><option>OFFLINE</option><option>MAINTENANCE</option><option>FAULT</option></select></div>
+                    <div className="monitor-control"><span>{item.currentPowerKw} kW now · {item.sessionEnergyKwh} kWh session</span><select disabled={item.canControlOperationalStatus !== true} title={item.canControlOperationalStatus !== true ? "Company-operated equipment: ask the Host Agent to prepare a maintenance request" : undefined} aria-label={`Set operational state for ${item.chargerCode}`} value={item.status} onChange={(event) => void onStatus(item, event.target.value as Monitor["status"])}><option>ONLINE</option><option>OFFLINE</option><option>MAINTENANCE</option><option>FAULT</option></select></div>
                   )}
                   {item.faultCode && <p className="monitor-fault"><AlertTriangle size={14} />{item.faultCode}</p>}
                 </section>
@@ -1973,25 +2061,23 @@ function HostAiPanel({
   const showExtendedAnalysis = false;
   const liveSessions = insight?.liveSessions ?? monitoring.filter((item) => item.status === "CHARGING");
   const serviceRisk = insight?.maintenanceRisks[0];
-  const operationalActions = insight?.proposedActions.filter((action) =>
-    action.action === "PUT_CONNECTOR_IN_MAINTENANCE" || action.action === "EXTEND_HOURS",
-  ) ?? [];
+  const operationalActions = insight?.proposedActions ?? [];
   return (
     <div className="host-agent-workspace">
       <article className="host-card host-ai-card host-agent-conversation">
         <div className="host-ai-orb">
           <Bot size={29} />
         </div>
-        <div className="feature-eyebrow">VIDYUT HOST AGENT · PRINCE</div>
-        <h2>Ask Prince’s operations assistant</h2>
+        <div className="feature-eyebrow">VIDYUT HOST AGENT · OPERATIONS & PARTNERSHIPS</div>
+        <h2>Ask Prince’s host operations assistant</h2>
         <p>
-          Ask one simple question about live cars, charger health or opening
-          hours. Vidyut reads real sessions and asks before making a change.
+          Evaluate property expansion, compare CPO offers, check hosted charger health,
+          or prepare a new property draft. Vidyut checks backend records and asks before execution.
         </p>
         <div className="host-ai-answer">
           <Gauge size={25} />
           <div>
-            <strong>{answer}</strong>
+            <strong style={{ whiteSpace: "pre-wrap" }}>{answer}</strong>
             {insight?.assistantProvider && (
               <small className={`agent-provider ${insight.assistantFallback ? "fallback" : ""}`}>
                 {insight.assistantFallback ? "Rules fallback" : insight.assistantProvider}
@@ -2007,7 +2093,7 @@ function HostAiPanel({
             onKeyDown={(event) => {
               if (event.key === "Enter") void onAsk();
             }}
-            placeholder="Ask which car is charging or which connector needs service"
+            placeholder="Ask which property is best for expansion, compare company offers..."
           />
           <button
             onClick={() => void onAsk()}
@@ -2019,10 +2105,11 @@ function HostAiPanel({
         </div>
         <div className="host-ai-prompts">
           {[
-            "How are my stations today?",
-            "Which cars are charging now?",
-            "Which connector needs service?",
-            "When should I stay open?",
+            "Which property is best for expansion?",
+            "List a new 4-bay property near Faizabad Airport",
+            "Compare company offers",
+            "Show my charging partnerships",
+            "Which hosted charger needs attention?",
           ].map((item) => (
             <button key={item} onClick={() => setQuestion(item)}>
               {item}
@@ -2034,14 +2121,18 @@ function HostAiPanel({
             <h3>Actions Vidyut can prepare</h3>
             {operationalActions.map((action) => (
               <button
-                key={`${action.action}-${action.stationId ?? action.connectorId ?? "route"}`}
+                key={`${action.action}-${action.stationId ?? action.connectorId ?? action.label ?? "act"}`}
                 onClick={() => void onAction(action)}
               >
                 <span>
-                  {action.action === "PUT_CONNECTOR_IN_MAINTENANCE" ? (
+                  {action.action === "REQUEST_TATA_SERVICE" || action.action === "REQUEST_SERVICE" ? (
+                    <Wrench size={16} />
+                  ) : action.action === "PUT_CONNECTOR_IN_MAINTENANCE" ? (
                     <Wrench size={16} />
                   ) : action.action === "EXTEND_HOURS" ? (
                     <Clock3 size={16} />
+                  ) : action.action === "CREATE_PROPERTY_DRAFT" ? (
+                    <Building2 size={16} />
                   ) : action.action === "OPEN_MARKETPLACE" ? (
                     <Building2 size={16} />
                   ) : (
@@ -2079,7 +2170,7 @@ function HostAiPanel({
           <strong>Vidyut may analyze automatically</strong>
           <p>Monitor · calculate · forecast · compare · prepare</p>
           <strong>Prince must approve execution</strong>
-          <p>Maintenance · published hours · customer-impacting changes</p>
+          <p>Property drafts · verification · publishing · maintenance · published hours</p>
           <strong>Always separately confirmed</strong>
           <p>Contracts · payments · finance submissions · purchases</p>
         </div>

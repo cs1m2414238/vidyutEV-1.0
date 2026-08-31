@@ -41,6 +41,7 @@ public class LandListingResponse {
     private String electricityDocumentUrl;
     private String videoVerificationUrl;
     private String adminReviewNote;
+    private String verificationStage;
     private boolean discoverable;
     private LandListingStatus status;
     private LocalDateTime createdAt;

@@ -23,10 +23,20 @@ STATE_CHANGING_TOOLS = {
     "reroute",
     "cancel_booking",
     "top_up_wallet",
+    "create_property_draft",
+    "update_property",
+    "submit_property_for_verification",
+    "publish_property",
 }
 
 OPENROUTER_SYSTEM_INSTRUCTION = """
 You are Vidyut Autopilot, an assistant for authenticated EV owners in India.
+
+Vehicle Comparison & Selection Intent:
+When the user asks to compare vehicles, choose or pick the best vehicle/car for a trip (e.g. "Check all my EVs and choose the best vehicle for a Delhi to Bhopal trip", "Which of my cars is best if I care about time and 15% reserve?"):
+1. Call recommend_vehicle with origin, destination, optimize_for ("TIME", "COST", or "BALANCED"), and minimum_arrival_battery_percent.
+2. Present the recommended vehicle, the exact reason why it was chosen (e.g. fewer charging stops, higher usable range, faster DC charging power, lowest total journey time), and a clear comparative breakdown of all evaluated alternative EVs (charging stops, total journey time, charging duration, estimated cost, arrival battery reserve).
+3. The model orchestrates and explains the returned comparison. Never invent or guess vehicle range, charging times, charging stops, or costs.
 
 Natural Language Trip Intent Extraction:
 When the user sends a natural-language journey request:
@@ -50,7 +60,7 @@ wallet facts. Spring Boot tool results are the source of truth. Never invent a
 vehicle state, charger, price, range, booking, route, or payment result.
 The deterministic route engine owns geography and the Java optimizer owns stop
 selection. Never add, remove, reorder, or geographically reinterpret chargers.
-The model explains the returned plan; it does not create the physical route.
+Gemini explains the returned plan; it does not create the physical route.
 
 For an Autopilot planning request, preview_autopilot_trip is read-only and must
 never create a booking. Present the computed route, recommended charging stops,
@@ -77,10 +87,17 @@ Never claim an action succeeded unless its tool returned ok=true.
 Use stop alternatives before proposing a swap. A stop swap, delay simulation,
 or charging completion also requires explicit confirmation.
 
-When a CHARGER_UNAVAILABLE or station-offline event arrives, inspect the current
-trip first. In ASK_BEFORE_ACTIONS mode, explain the replacement and obtain
-confirmation. In FULL_AUTOPILOT mode, use handle_charger_unavailable and report
-only the action and route result returned by the tools.
+When a CHARGER_UNAVAILABLE or station-offline event arrives, use
+handle_charger_unavailable to orchestrate recovery. It inspects the current
+journey, requests backend-validated complete recovery options, selects a safe
+plan and prepares it. Never compute road or battery feasibility yourself.
+ASK_BEFORE_ACTIONS prepares automatically; direct the driver to Approve Reroute
+in the journey panel before any reservation or navigation changes. RECOMMEND_ONLY
+shows the suggestion without applying it. FULL_AUTOPILOT may execute inside the
+stored constraints. This incident workflow is the exception to per-action chat
+confirmation; its execution permissions are enforced by the backend. Never use
+the legacy reroute or cancel_booking tool to bypass recovery approval. Report
+NO_SAFE_RECOVERY_ROUTE honestly. Do not claim preparation applied the route.
 
 Keep responses concise, clear, and action-oriented. State important constraints
 such as remaining battery, connector compatibility, availability, cost, and the
@@ -92,6 +109,7 @@ AVAILABLE_TOOLS: dict[str, Callable[..., Any]] = {
     "find_chargers": tools.find_chargers,
     "plan_trip": tools.plan_trip,
     "preview_autopilot_trip": tools.preview_autopilot_trip,
+    "recommend_vehicle": tools.recommend_vehicle,
     "book_charger": tools.book_charger,
     "launch_autopilot_trip": tools.launch_autopilot_trip,
     "get_current_autopilot_trip": tools.get_current_autopilot_trip,
@@ -106,6 +124,18 @@ AVAILABLE_TOOLS: dict[str, Callable[..., Any]] = {
     "cancel_booking": tools.cancel_booking,
     "get_wallet_status": tools.get_wallet_status,
     "top_up_wallet": tools.top_up_wallet,
+    "get_host_operations_context": tools.get_host_operations_context,
+    "get_host_properties": tools.get_host_properties,
+    "check_property_duplicate": tools.check_property_duplicate,
+    "prepare_property_listing": tools.prepare_property_listing,
+    "create_property_draft": tools.create_property_draft,
+    "update_property": tools.update_property,
+    "submit_property_for_verification": tools.submit_property_for_verification,
+    "publish_property": tools.publish_property,
+    "get_property_readiness": tools.get_property_readiness,
+    "compare_company_offers": tools.compare_company_offers,
+    "get_hosted_charger_health": tools.get_hosted_charger_health,
+    "get_company_operations_context": tools.get_company_operations_context,
 }
 
 OPENROUTER_TOOL_DEFINITIONS = [
@@ -192,6 +222,28 @@ OPENROUTER_TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
+            "name": "recommend_vehicle",
+            "description": "Compare all owned EVs for a trip and recommend the best vehicle based on corridor routing, battery capacity, and charging speeds.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "origin": {"type": "string", "description": "Starting location."},
+                    "destination": {"type": "string", "description": "Destination location."},
+                    "optimize_for": {"type": "string", "enum": ["TIME", "COST", "BALANCED"], "default": "TIME"},
+                    "minimum_arrival_battery_percent": {"type": "number", "default": 15.0},
+                    "maximum_charging_budget": {"type": "number", "default": 10000.0},
+                    "fallback_battery_percent": {"type": "number", "default": 80.0},
+                    "trip_purpose": {"type": "string", "default": "GENERAL"},
+                    "goal": {"type": "string", "default": ""},
+                    "arrival_deadline": {"type": "string", "default": ""},
+                },
+                "required": ["origin", "destination"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "book_charger",
             "description": "Book a charger only after the user explicitly asks to book or confirms.",
             "parameters": {
@@ -257,7 +309,7 @@ OPENROUTER_TOOL_DEFINITIONS = [
         "type": "function",
         "function": {
             "name": "handle_charger_unavailable",
-            "description": "Recover from a charger-unavailable event by cancelling and rebooking.",
+            "description": "Orchestrate backend-validated recovery using the stored autonomy policy; never bypass driver approval.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -393,6 +445,174 @@ OPENROUTER_TOOL_DEFINITIONS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_host_operations_context",
+            "description": "Retrieve authoritative operations and property context for the authenticated Host.",
+            "parameters": {
+                "type": "object",
+                "properties": {"question": {"type": "string"}},
+                "required": ["question"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_host_properties",
+            "description": "Retrieve the authenticated Host's existing land listings and property portfolio.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "check_property_duplicate",
+            "description": "Check the authenticated Host portfolio for a duplicate property without changing data.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "address": {"type": "string"},
+                    "city": {"type": "string"},
+                },
+                "required": ["title", "address", "city"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "prepare_property_listing",
+            "description": "Validate property details, check duplicate safety against existing portfolio, and prepare a listing draft.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "address": {"type": "string"},
+                    "city": {"type": "string"},
+                    "available_parking_bays": {"type": "integer"},
+                    "available_load_kw": {"type": "number"},
+                    "property_type": {"type": "string"},
+                    "operating_hours": {"type": "string"},
+                    "state": {"type": "string"},
+                    "power_phase": {"type": "string"},
+                },
+                "required": ["title", "address", "city", "available_parking_bays", "available_load_kw", "property_type", "operating_hours"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "create_property_draft",
+            "description": "Persist a new property listing draft into the authenticated Host's portfolio upon approval.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "address": {"type": "string"},
+                    "city": {"type": "string"},
+                    "available_parking_bays": {"type": "integer"},
+                    "available_load_kw": {"type": "number"},
+                    "property_type": {"type": "string"},
+                    "operating_hours": {"type": "string"},
+                    "state": {"type": "string"},
+                    "power_phase": {"type": "string"},
+                },
+                "required": ["title", "address", "city", "available_parking_bays", "available_load_kw", "property_type", "operating_hours"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_property",
+            "description": "Update an owned property after the Host explicitly approves the complete replacement values.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "property_id": {"type": "integer"},
+                    "title": {"type": "string"},
+                    "address": {"type": "string"},
+                    "city": {"type": "string"},
+                    "available_parking_bays": {"type": "integer"},
+                    "available_load_kw": {"type": "number"},
+                    "property_type": {"type": "string"},
+                    "operating_hours": {"type": "string"},
+                    "state": {"type": "string"},
+                    "power_phase": {"type": "string"},
+                },
+                "required": ["property_id", "title", "address", "city", "available_parking_bays", "available_load_kw", "property_type", "operating_hours"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "submit_property_for_verification",
+            "description": "Submit a property draft for verification after explicit Host approval and document validation.",
+            "parameters": {
+                "type": "object",
+                "properties": {"property_id": {"type": "integer"}},
+                "required": ["property_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "publish_property",
+            "description": "Publish a verified property after explicit Host approval; backend blocks unverified listings.",
+            "parameters": {
+                "type": "object",
+                "properties": {"property_id": {"type": "integer"}},
+                "required": ["property_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_property_readiness",
+            "description": "Evaluate and rank the authenticated Host's properties for EV charging expansion readiness.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "compare_company_offers",
+            "description": "Compare charging-operator commercial offers and revenue-share proposals for a Host property.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "property_name_or_id": {"type": "string"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_hosted_charger_health",
+            "description": "Inspect real-time operational status, fault signals, and maintenance needs for chargers on Host properties.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_company_operations_context",
+            "description": "Retrieve authoritative network, risk, and expansion context for the authenticated Company.",
+            "parameters": {
+                "type": "object",
+                "properties": {"question": {"type": "string"}},
+                "required": ["question"],
+            },
+        },
+    },
 ]
 
 
@@ -434,6 +654,15 @@ async def _execute_openrouter_tool(
                 if name == "preview_autopilot_trip":
                     artifacts["plan"] = data
                 elif name in {
+                    "get_host_operations_context",
+                    "get_company_operations_context",
+                    "get_host_properties",
+                    "get_property_readiness",
+                    "compare_company_offers",
+                    "get_hosted_charger_health",
+                }:
+                    artifacts["workspaceContext"] = data
+                elif name in {
                     "launch_autopilot_trip",
                     "start_autopilot_monitoring",
                     "handle_charger_unavailable",
@@ -443,6 +672,11 @@ async def _execute_openrouter_tool(
                     "reroute",
                     "cancel_booking",
                     "top_up_wallet",
+                    "create_property_draft",
+                    "update_property",
+                    "submit_property_for_verification",
+                    "publish_property",
+                    "prepare_property_listing",
                 }:
                     artifacts["actionResult"] = data
 
@@ -461,6 +695,7 @@ async def run_openrouter_agent(
     max_steps: int = 8,
     system_instruction: str = OPENROUTER_SYSTEM_INSTRUCTION,
     tools_enabled: bool = True,
+    allowed_tool_names: set[str] | None = None,
 ) -> tuple[str, str]:
     """Runs a multi-turn OpenRouter agent loop with tool execution.
 
@@ -490,6 +725,7 @@ async def run_openrouter_agent(
                 max_steps=max_steps,
                 system_instruction=system_instruction,
                 tools_enabled=tools_enabled,
+                allowed_tool_names=allowed_tool_names,
             )
         except Exception as exc:
             logger.warning("OpenRouter model %s failed: %s", candidate_model, exc)
@@ -511,6 +747,7 @@ async def _run_with_model(
     max_steps: int = 8,
     system_instruction: str = OPENROUTER_SYSTEM_INSTRUCTION,
     tools_enabled: bool = True,
+    allowed_tool_names: set[str] | None = None,
 ) -> tuple[str, str]:
     headers = {
         "Authorization": f"Bearer {settings.openrouter_api_key}",
@@ -532,9 +769,14 @@ async def _run_with_model(
                 "model": candidate_model,
                 "messages": conversation_messages,
                 "temperature": 0.2,
+                "max_tokens": 2048,
             }
             if tools_enabled:
-                payload["tools"] = OPENROUTER_TOOL_DEFINITIONS
+                payload["tools"] = [
+                    definition for definition in OPENROUTER_TOOL_DEFINITIONS
+                    if allowed_tool_names is None
+                    or definition["function"]["name"] in allowed_tool_names
+                ]
                 payload["tool_choice"] = "auto"
 
             resp = await client.post(endpoint, json=payload, headers=headers)
@@ -574,6 +816,16 @@ async def _run_with_model(
             for tool_call in tool_calls:
                 func = tool_call.get("function") or {}
                 fn_name = func.get("name", "")
+                if allowed_tool_names is not None and fn_name not in allowed_tool_names:
+                    tool_states[fn_name] = "failed"
+                    tool_result = {"ok": False, "error": f"Tool '{fn_name}' is not available in this workspace"}
+                    conversation_messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call.get("id", f"call_{fn_name}"),
+                        "name": fn_name,
+                        "content": json.dumps(tool_result, ensure_ascii=False),
+                    })
+                    continue
                 raw_args = func.get("arguments", "{}")
                 try:
                     args_dict = json.loads(raw_args) if isinstance(raw_args, str) else (raw_args or {})

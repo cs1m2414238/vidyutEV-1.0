@@ -36,6 +36,7 @@ import {
 import type { AccessMode, AuthData } from './services/api';
 import { createBooking, getUnreadBookingCount } from './services/bookings';
 import { getStations, stationToCharger } from './services/stations';
+import type { StationViewportBounds } from './services/stations';
 import { getVehicles } from './services/vehicles';
 import type { Vehicle } from './services/vehicles';
 import { getEvNotifications } from './services/notifications';
@@ -143,6 +144,12 @@ function MainApplication() {
   const [ownerNotificationsError, setOwnerNotificationsError] = useState('');
   const [chargerSearchQuery, setChargerSearchQuery] = useState('');
   const [chargerMapCenter, setChargerMapCenter] = useState<[number, number]>([26.8467, 80.9462]);
+  const [stationViewport, setStationViewport] = useState<StationViewportBounds>({
+    minLat: 24.5,
+    maxLat: 29.2,
+    minLng: 77.5,
+    maxLng: 84.4,
+  });
   const [chargerDataOffline, setChargerDataOffline] = useState(false);
 
   const refreshOwnerNotifications = useCallback(async () => {
@@ -231,7 +238,7 @@ function MainApplication() {
 
     const refreshStations = async () => {
       try {
-        const mapped = (await getStations()).map(stationToCharger);
+        const mapped = (await getStations(stationViewport, 250)).map(stationToCharger);
         if (ignore) return;
         setChargers(mapped); setChargerDataOffline(false);
         localStorage.setItem('vidyut:last-known-chargers', JSON.stringify({ savedAt: Date.now(), chargers: mapped }));
@@ -268,7 +275,20 @@ function MainApplication() {
       ignore = true;
       window.clearInterval(stationPoll);
     };
-  }, [isLoggedIn, activeMode, authToken, refreshOwnerNotifications]);
+  }, [isLoggedIn, activeMode, authToken, refreshOwnerNotifications, stationViewport]);
+
+  const handleStationBoundsChange = useCallback((bounds: StationViewportBounds) => {
+    const rounded: StationViewportBounds = {
+      minLat: Number(bounds.minLat.toFixed(5)),
+      maxLat: Number(bounds.maxLat.toFixed(5)),
+      minLng: Number(bounds.minLng.toFixed(5)),
+      maxLng: Number(bounds.maxLng.toFixed(5)),
+    };
+    setStationViewport((current) =>
+      current.minLat === rounded.minLat && current.maxLat === rounded.maxLat
+        && current.minLng === rounded.minLng && current.maxLng === rounded.maxLng
+        ? current : rounded);
+  }, []);
 
   const applyAuthenticatedSession = (auth: AuthData, promptForMode: boolean) => {
     const modes = auth.user.allowedModes?.length ? auth.user.allowedModes : [auth.user.defaultMode || auth.activeMode];
@@ -295,6 +315,7 @@ function MainApplication() {
     setSelectedCharger(charger);
     setModalCharger(charger);
   };
+
 
   const handleConfirmBooking = async (charger: Charger, durationMinutes: number, startTime?: string) => {
     if (!authToken) throw new Error('Please sign in again before booking a charger.');
@@ -406,6 +427,7 @@ function MainApplication() {
   const showOwnerVehicles = activeDashboardRole === 'EV_OWNER' && activeTab === 'vehicles';
   const vehicleDetailMatch = activeDashboardRole === 'EV_OWNER' ? activeTab.match(/^vehicles\/(\d+)$/) : null;
   const selectedVehicleId = vehicleDetailMatch ? Number(vehicleDetailMatch[1]) : null;
+
   const showOwnerVehicleDetail = selectedVehicleId != null && Number.isInteger(selectedVehicleId) && selectedVehicleId > 0;
   const showOwnerAutopilot = activeDashboardRole === 'EV_OWNER' && activeTab === 'autopilot';
   const showOwnerTripPlanner = activeDashboardRole === 'EV_OWNER' && activeTab === 'trip';
@@ -443,15 +465,27 @@ function MainApplication() {
               ? hostCounts.notifications
               : ownerNotifications.filter((notification) => !notification.read).length}
           onOpenMenu={() => setSidebarOpen(true)}
+          searchValue={showCompanyWorkspace ? chargerSearchQuery : undefined}
+          searchPlaceholder={showCompanyWorkspace ? `Search ${activeTab === 'chargers' ? 'chargers' : 'stations'} by location, name or code` : undefined}
+          onSearchChange={showCompanyWorkspace ? (query) => {
+            setChargerSearchQuery(query);
+            if (activeTab !== 'stations' && activeTab !== 'chargers') navigateToState('dashboard', 'stations');
+          } : undefined}
           onSearch={(query) => {
             setChargerSearchQuery(query);
             navigateToState(
               'dashboard',
-              activeDashboardRole === 'EV_OWNER' ? 'find' : activeDashboardRole === 'LANDOWNER' ? 'chargers' : 'stations',
+              activeDashboardRole === 'EV_OWNER' ? 'find' : activeDashboardRole === 'LANDOWNER' ? 'chargers' : activeTab === 'chargers' ? 'chargers' : 'stations',
             );
           }}
           onLocationChange={(location: TopBarLocation) => {
             setChargerMapCenter([location.latitude, location.longitude]);
+            setStationViewport({
+              minLat: location.latitude - 1.5,
+              maxLat: location.latitude + 1.5,
+              minLng: location.longitude - 1.5,
+              maxLng: location.longitude + 1.5,
+            });
             setChargerSearchQuery('');
             if (activeDashboardRole === 'EV_OWNER') navigateToState('dashboard', 'find');
           }}
@@ -515,7 +549,7 @@ function MainApplication() {
             />
           )}
           {showHostWorkspace && <HostWorkspace tab={activeTab} token={authToken} hostName={user.name} onNavigate={setActiveTab} onCountsChange={setHostCounts} />}
-          {showCompanyWorkspace && <CompanyWorkspace tab={activeTab} token={authToken} companyName={user.name} onNavigate={setActiveTab} onCountsChange={setCompanyCounts} />}
+          {showCompanyWorkspace && <CompanyWorkspace tab={activeTab} token={authToken} companyName={user.name} onNavigate={setActiveTab} onCountsChange={setCompanyCounts} searchQuery={chargerSearchQuery} onSearchChange={setChargerSearchQuery} />}
 
           {showOwnerBookings && (
             <BookingsView
@@ -584,6 +618,7 @@ function MainApplication() {
                 center={chargerMapCenter}
                 compatibleConnector={primaryVehicle?.connectorType || undefined}
                 offline={chargerDataOffline}
+                onBoundsChange={handleStationBoundsChange}
               />
             </div>
           )}

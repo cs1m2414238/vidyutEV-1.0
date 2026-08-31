@@ -35,6 +35,7 @@ public class Booking {
     private boolean reminderSent = false;
 
     private Long vehicleId;
+    private Long connectorId;
 
     @Column(name = "idempotency_key", length = 80)
     private String idempotencyKey;

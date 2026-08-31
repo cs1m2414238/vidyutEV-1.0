@@ -86,6 +86,7 @@ public class LandListingServiceImpl implements LandListingService {
                 .electricityDocumentUrl(l.getElectricityDocumentUrl())
                 .videoVerificationUrl(l.getVideoVerificationUrl())
                 .adminReviewNote(l.getAdminReviewNote())
+                .verificationStage(l.getVerificationStage())
                 .discoverable(l.isDiscoverable())
                 .status(l.getStatus())
                 .createdAt(l.getCreatedAt())

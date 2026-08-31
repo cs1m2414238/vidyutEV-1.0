@@ -14,4 +14,6 @@ public interface CompanyMaintenanceTicketRepository extends JpaRepository<Compan
     Optional<CompanyMaintenanceTicket> findByIdAndCompanyId(Long id, Long companyId);
     boolean existsByCompanyIdAndChargerIdAndStatusIn(Long companyId, Long chargerId,
                                                      Collection<MaintenanceTicketStatus> statuses);
+    Optional<CompanyMaintenanceTicket> findFirstByCompanyIdAndChargerIdAndStatusInOrderByUpdatedAtDesc(Long companyId, Long chargerId,
+                                                                                                      Collection<MaintenanceTicketStatus> statuses);
 }

@@ -5,5 +5,6 @@ public enum ChargerStatus {
     OFFLINE,
     CHARGING,
     MAINTENANCE,
-    FAULT
+    FAULT,
+    SUSPECTED_FAULT
 }

@@ -9,6 +9,7 @@ public class HostAgentActionRequest {
     private String action;
     private Long stationId;
     private Long connectorId;
-    private String value;
+    private Long propertyId;
+    private java.util.Map<String, Object> payload;
     private boolean approved;
 }
