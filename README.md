@@ -117,31 +117,37 @@ Vidyut features a fully connected, connector-aware highway charging corridor alo
 Vidyut orchestrates four distinct stakeholders through dedicated role-scoped cockpits powered by a unified event-driven backend:
 
 ```text
-┌────────────────────────────────────────────────────────────────────────────────────────┐
-│                                 ROLE-SCOPED COCKPITS                                    │
-│   ┌────────────────┐   ┌─────────────────┐   ┌────────────────┐   ┌────────────────┐   │
-│   │ 🚗 EV Owner    │   │ 🏢 Property Host│   │ ⚡ Charge Co.  │   │ 🛡️ Super Admin │   │
-│   │  Web & Mobile  │   │  Web & Mobile   │   │  Web & Mobile  │   │  Admin Portal  │   │
-│   └───────┬────────┘   └────────┬────────┘   └───────┬────────┘   └───────┬────────┘   │
-└───────────┼─────────────────────┼────────────────────┼────────────────────┼────────────┘
-            │                     │ mode-scoped JWT    │                    │
-            ▼                     ▼                    ▼                    ▼
-┌────────────────────────────────────────────────────────────────────────────────────────┐
-│                        SPRING BOOT 3.3.7 DOMAIN API GATEWAY                            │
-│  ├── 🔐 Identity & Auth (RBAC / JWT / Account State)                                   │
-│  ├── 🧠 Autopilot Engine (NLP Intent / SoC Curves / Multi-Stop Matrix Optimization)   │
-│  ├── ⚡ Live Charging & Reservations (OCPP 1.6J/2.0.1 bridge / Telemetry / Refunds)    │
-│  ├── 🤝 Marketplace & RESCO (Property Proposals / Surveys / Capex & Payout Models)    │
-│  └── 🛡️ Governance & Auditing (Least-Disruptive Scoped Controls / Immutable Logs)       │
-└───────────┬──────────────────────────────────────────┬────────────────────┬────────────┘
+┌────────────────────────────────────────────────────────────────────────────────────────────┐
+│                              ROLE-SCOPED COCKPITS                                           │
+│          EV Owner  |  Property Host  |  Charge Company  |  Super Admin                      │
+│                     React + TypeScript / Firebase Hosting                                   │
+│   ┌────────────────┐   ┌─────────────────┐   ┌────────────────┐   ┌────────────────┐       │
+│   │ 🚗 EV Owner    │   │ 🏢 Property Host│   │ ⚡ Charge Co.  │   │ 🛡️ Super Admin │       │
+│   └───────┬────────┘   └────────┬────────┘   └───────┬────────┘   └───────┬────────┘       │
+└───────────┼─────────────────────┼────────────────────┼────────────────────┼────────────────┘
+            │                     │  mode-scoped JWT    │                    │
+            ▼                     ▼                     ▼                    ▼
+┌────────────────────────────────────────────────────────────────────────────────────────────┐
+│                      SPRING BOOT 3.3.7 DOMAIN API                                           │
+│                          Google Cloud Run                                                   │
+│  ├── 🔐 Identity & Auth (RBAC / JWT / Account State)                                        │
+│  ├── 🧠 Autopilot Engine (NLP Intent / SoC Curves / Multi-Stop Matrix Optimization)         │
+│  ├── ⚡ Live Charging & Reservations (OCPP 1.6J/2.0.1 bridge / Telemetry / Refunds)         │
+│  ├── 🤝 Marketplace & RESCO (Property Proposals / Surveys / Capex & Payout Models)         │
+│  └── 🛡️ Governance & Auditing (Least-Disruptive Scoped Controls / Immutable Logs)           │
+└───────────┬──────────────────────────────────────────┬────────────────────┬─────────────────┘
             │                                          │                    │
             ▼                                          ▼                    ▼
-┌───────────────────────┐                  ┌──────────────────────┐ ┌────────────────────┐
-│   POSTGRESQL 15 DB    │                  │  OSRM ROUTE ENGINE   │ │ PYTHON ADK AGENT   │
-│  • Accounts & Garage  │                  │  • Primary OSRM      │ │  • Gemini 3.6 Flash│
-│  • Stations & Sockets │                  │  • Reference Mirror  │ │  • OpenRouter      │
-│  • Active Sessions    │                  │  • 1.3x Geo Fallback │ │  • Scoped Tools    │
-└───────────────────────┘                  └──────────────────────┘ └────────────────────┘
+┌───────────────────────┐                  ┌──────────────────────┐ ┌──────────────────────────┐
+│   GOOGLE CLOUD SQL    │                  │    ROUTING ENGINE    │ │  PYTHON GOOGLE ADK AGENT │
+│   PostgreSQL 15       │                  │  • Google Routes API │ │  Google Cloud Run        │
+│  • Accounts & Garage  │                  │  • OSRM / road-      │ │  • Gemini 3.6 Flash      │
+│  • Stations & Sockets │                  │    routing fallback  │ │    (Primary)             │
+│  • Active Sessions    │                  │  • Corridor filtering│ │  • OpenRouter (Fallback) │
+│  • Trips & Wallets    │                  │  • Distance / ETA    │ │  • Deterministic Policy  │
+│  • Audit Logs         │                  └──────────────────────┘ │    (Final Fallback)      │
+└───────────────────────┘                                            │  • Role-Scoped Tools     │
+                                                                     └──────────────────────────┘
 ```
 
 ---
@@ -266,14 +272,14 @@ This diagram visualizes role isolation, micro-domain communication, and real-tim
   }
 }}%%
 flowchart TB
-    subgraph COCKPIT["🎛️ Role-Scoped Experiences (Web & Mobile)"]
-        OWNER["🚗 EV Owner Cockpit<br/>Garage • Corridor Planner • Booking • Live Journey"]
-        HOST["🏢 Property Host Cockpit<br/>Listings • Occupancy • Revenue • Maintenance"]
-        COMPANY["⚡ ChargePoint Operator<br/>Stations • Pricing • Telemetry • Staff Ops"]
-        ADMIN["🛡️ Platform Control Plane<br/>Verification • Incident Isolation • Scoped Admin"]
+    subgraph COCKPIT["🎛️ Role-Scoped Cockpits — React + TypeScript / Firebase Hosting"]
+        OWNER["🚗 EV Owner<br/>Garage • Corridor Planner • Booking • Live Journey"]
+        HOST["🏢 Property Host<br/>Listings • Occupancy • Revenue • Maintenance"]
+        COMPANY["⚡ Charge Company<br/>Stations • Pricing • Telemetry • Staff Ops"]
+        ADMIN["🛡️ Super Admin<br/>Verification • Incident Isolation • Scoped Admin"]
     end
 
-    subgraph API_GATEWAY["⚡ Spring Boot Domain API (Port 8080)"]
+    subgraph API_GATEWAY["⚡ Spring Boot 3.3.7 Domain API — Google Cloud Run"]
         API["REST API & Gateway<br/>Validation • JWT Claims • Rate Limiting"]
         AUTH["Identity & Access Engine<br/>Token Issuance • Multi-Role Context"]
         AUTOPILOT["Autopilot Routing Engine<br/>Intent Parsing • Multi-Stop Matrix • SoC Curves"]
@@ -284,14 +290,14 @@ flowchart TB
     end
 
     subgraph INTELLIGENCE["🧠 AI Agent & Road Engine Subsystems"]
-        AGENT["Python ADK Agent<br/>Read-Only Tools + Scoped Confirmation"]
-        MODEL["Multi-Tier LLM Provider<br/>Gemini 3.6 Flash → OpenRouter → Fallback"]
-        OSRM["Road Routing Matrix<br/>Primary OSRM → Reference OSRM"]
+        AGENT["Python Google ADK Agent<br/>Google Cloud Run<br/>Role-Scoped Tools + Confirmation Boundaries"]
+        MODEL["Multi-Tier LLM Provider<br/>Gemini 3.6 Flash (Primary)<br/>OpenRouter (Fallback)<br/>Deterministic Policy (Final Fallback)"]
+        ROUTING["Routing Engine<br/>Google Routes API (Primary)<br/>OSRM / road-routing fallback<br/>Corridor filtering • Distance / ETA"]
         GEOCODER["Spatial Resolvers<br/>Alias Dictionary → Nominatim Geocoder"]
     end
 
-    subgraph DATA_TIER["💾 Storage & Seed Data Tier"]
-        DB[("PostgreSQL 15 Cluster<br/>Trips • Wallets • Assets • Audit Logs")]
+    subgraph DATA_TIER["💾 Google Cloud SQL — PostgreSQL 15"]
+        DB[("PostgreSQL 15<br/>Trips • Wallets • Assets • Audit Logs")]
         MIGRATIONS["Flyway Migrations<br/>Versioned Schema Evolution"]
         DEMO["Demo Data Seeders<br/>9 Canonical • 103 Highway • 777 District Hubs"]
     end
@@ -317,7 +323,7 @@ flowchart TB
 
     API <--> AGENT
     AGENT --> MODEL
-    AUTOPILOT --> OSRM
+    AUTOPILOT --> ROUTING
     AUTOPILOT --> GEOCODER
 
     AUTH --> DB
@@ -344,7 +350,7 @@ flowchart TB
 
     class OWNER,HOST,COMPANY,ADMIN cockpit;
     class API,AUTH,AUTOPILOT,OPERATIONS,MARKETPLACE,GOVERNANCE,NOTIFY core;
-    class AGENT,MODEL,OSRM,GEOCODER ai;
+    class AGENT,MODEL,ROUTING,GEOCODER ai;
     class DB,MIGRATIONS,DEMO data;
     class STATION,CONNECTOR,TELEMETRY,SESSION edge;
 ```
