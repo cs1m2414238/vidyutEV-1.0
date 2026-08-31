@@ -118,23 +118,23 @@ Vidyut orchestrates four distinct stakeholders through dedicated role-scoped coc
 
 ```text
 ┌────────────────────────────────────────────────────────────────────────────────────────────┐
-│                              ROLE-SCOPED COCKPITS                                           │
-│          EV Owner  |  Property Host  |  Charge Company  |  Super Admin                      │
-│                     React + TypeScript / Firebase Hosting                                   │
+│                              ROLE-SCOPED COCKPITS                                          │
+│          EV Owner  |  Property Host  |  Charge Company  |  Super Admin                     │
+│                     React + TypeScript / Firebase Hosting                                  │
 │   ┌────────────────┐   ┌─────────────────┐   ┌────────────────┐   ┌────────────────┐       │
-│   │ 🚗 EV Owner    │   │ 🏢 Property Host│   │ ⚡ Charge Co.  │   │ 🛡️ Super Admin │       │
+│   │ 🚗 EV Owner    │  │ 🏢 Property Host│   │ ⚡ Charge Co.  │   │ 🛡️ Super Admin│       │
 │   └───────┬────────┘   └────────┬────────┘   └───────┬────────┘   └───────┬────────┘       │
 └───────────┼─────────────────────┼────────────────────┼────────────────────┼────────────────┘
-            │                     │  mode-scoped JWT    │                    │
-            ▼                     ▼                     ▼                    ▼
+            │                     │  mode-scoped JWT   │                    │
+            ▼                     ▼                    ▼                    ▼
 ┌────────────────────────────────────────────────────────────────────────────────────────────┐
-│                      SPRING BOOT 3.3.7 DOMAIN API                                           │
-│                          Google Cloud Run                                                   │
-│  ├── 🔐 Identity & Auth (RBAC / JWT / Account State)                                        │
-│  ├── 🧠 Autopilot Engine (NLP Intent / SoC Curves / Multi-Stop Matrix Optimization)         │
-│  ├── ⚡ Live Charging & Reservations (OCPP 1.6J/2.0.1 bridge / Telemetry / Refunds)         │
+│                      SPRING BOOT 3.3.7 DOMAIN API                                          │
+│                          Google Cloud Run                                                  │
+│  ├── 🔐 Identity & Auth (RBAC / JWT / Account State)                                       │
+│  ├── 🧠 Autopilot Engine (NLP Intent / SoC Curves / Multi-Stop Matrix Optimization)        │
+│  ├── ⚡ Live Charging & Reservations (OCPP 1.6J/2.0.1 bridge / Telemetry / Refunds)        │
 │  ├── 🤝 Marketplace & RESCO (Property Proposals / Surveys / Capex & Payout Models)         │
-│  └── 🛡️ Governance & Auditing (Least-Disruptive Scoped Controls / Immutable Logs)           │
+│  └── 🛡️ Governance & Auditing (Least-Disruptive Scoped Controls / Immutable Logs)          │
 └───────────┬──────────────────────────────────────────┬────────────────────┬─────────────────┘
             │                                          │                    │
             ▼                                          ▼                    ▼
@@ -146,8 +146,8 @@ Vidyut orchestrates four distinct stakeholders through dedicated role-scoped coc
 │  • Active Sessions    │                  │  • Corridor filtering│ │  • OpenRouter (Fallback) │
 │  • Trips & Wallets    │                  │  • Distance / ETA    │ │  • Deterministic Policy  │
 │  • Audit Logs         │                  └──────────────────────┘ │    (Final Fallback)      │
-└───────────────────────┘                                            │  • Role-Scoped Tools     │
-                                                                     └──────────────────────────┘
+└───────────────────────┘                                           │  • Role-Scoped Tools     │
+                                                                    └──────────────────────────┘
 ```
 
 ---
