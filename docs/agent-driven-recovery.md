@@ -2,6 +2,8 @@
 
 Implementation status: local code and regression tests; not deployed. The production rollout previously completed for Company search is separate from this recovery change.
 
+Update, 31 August 2026: the local cross-role browser/API rehearsal has now passed. See [recovery-demo-verification.md](recovery-demo-verification.md) for fixes, observed results, repeatable commands and remaining production/Gemini limits. The deployment checklist below still applies to a production rollout.
+
 ## Responsibility and execution boundary
 
 1. Company connector operations record an incident against the exact planned connector. A healthy sibling connector does not hide it. Driver reports record an incident without changing operator hardware status.

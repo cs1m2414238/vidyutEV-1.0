@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 from unittest.mock import AsyncMock, patch
 from vidyut_agent import recovery
@@ -59,3 +60,29 @@ class RecoveryTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(recovery.backend,"request",new_callable=AsyncMock,return_value={"journey":journey(state="AWAITING_APPROVAL")}) as request:
             await recovery.run_recovery(1,"incident-1")
         self.assertEqual(request.await_count,1)
+
+    async def test_concurrent_callers_share_work_after_independent_ownership_checks(self):
+        entered, finish = asyncio.Event(), asyncio.Event()
+        async def work(*args):
+            entered.set()
+            await finish.wait()
+            return {"state": "AWAITING_APPROVAL"}
+        with patch.object(recovery, "get_recovery_context", new_callable=AsyncMock, return_value={"journey": journey()}) as context, \
+             patch.object(recovery, "_run_recovery", new_callable=AsyncMock, side_effect=work) as execute:
+            first = asyncio.create_task(recovery.run_recovery(1, "shared"))
+            await entered.wait()
+            second = asyncio.create_task(recovery.run_recovery(1, "shared"))
+            await asyncio.sleep(0)
+            self.assertEqual(context.await_count, 2)
+            self.assertEqual(execute.await_count, 1)
+            finish.set()
+            self.assertEqual(await first, await second)
+        self.assertNotIn((1, "shared"), recovery._running)
+
+    async def test_unauthorized_caller_cannot_join_an_inflight_recovery(self):
+        with patch.object(recovery, "get_recovery_context", new_callable=AsyncMock,
+                          side_effect=recovery.BackendError("not your journey", status_code=403)), \
+             patch.object(recovery, "_run_recovery", new_callable=AsyncMock) as execute:
+            with self.assertRaises(recovery.BackendError):
+                await recovery.run_recovery(1, "shared")
+        execute.assert_not_called()

@@ -1103,6 +1103,7 @@ public class CompanyOperationsService {
 
     private BookingResponse mapBooking(Booking booking) {
         return BookingResponse.builder().id(booking.getId()).userId(booking.getUserId()).stationId(booking.getStationId())
+                .connectorId(booking.getConnectorId()).endTime(booking.getEndTime()).durationMinutes(booking.getDurationMinutes())
                 .vehicleId(booking.getVehicleId()).stationName(booking.getStationName()).stationAddress(booking.getStationAddress())
                 .startTime(booking.getStartTime()).durationHours(booking.getDurationHours()).totalAmount(booking.getTotalAmount())
                 .kwhDelivered(booking.getKwhDelivered()).status(booking.getStatus()).createdAt(booking.getCreatedAt()).build();

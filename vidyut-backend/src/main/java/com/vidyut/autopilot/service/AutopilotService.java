@@ -937,7 +937,7 @@ public class AutopilotService {
                     stopRepository.findByTripIdOrderBySequenceNumberAscIdAsc(tripId), evidence));
             evidence.setState(session.getPlans().isEmpty() ? "NO_SAFE_RECOVERY_ROUTE" : "CANDIDATES_READY");
             evidence.setReason(session.getPlans().isEmpty()
-                    ? "No verified complete recovery route meets the current battery reserve, connector, budget and deadline constraints."
+                    ? java.util.Objects.requireNonNullElse(evidence.getReason(), "No verified complete recovery route meets the current battery reserve, connector, budget and deadline constraints.")
                     : "Backend verified every leg of these complete remaining-journey options.");
         } catch (BadRequestException | OsrmException unavailable) {
             session.setPlans(List.of());

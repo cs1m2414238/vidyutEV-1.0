@@ -3,6 +3,9 @@ package com.vidyut.autopilot.service;
 import com.vidyut.autopilot.dto.AutopilotRecoveryResponse;
 import com.vidyut.autopilot.entity.*;
 import com.vidyut.common.exception.BadRequestException;
+import com.vidyut.booking.entity.BookingStatus;
+import com.vidyut.booking.repository.BookingRepository;
+import com.vidyut.booking.service.BookingAvailability;
 import com.vidyut.routing.dto.*;
 import com.vidyut.routing.service.LocationResolver;
 import com.vidyut.routing.service.RouteCorridorService;
@@ -25,6 +28,7 @@ public class SafeRecoveryPlanner {
     private final RouteCorridorService corridor;
     private final ChargingRouteOptimizer optimizer;
     private final VehicleChargingProfileService profiles;
+    private final BookingRepository bookings;
     @Value("${vidyut.demo-data.enabled:false}") private boolean demoDataEnabled;
 
     public AutopilotRecoveryResponse snapshot(AutopilotTrip trip, Vehicle vehicle, AutopilotStop failed) {
@@ -56,12 +60,41 @@ public class SafeRecoveryPlanner {
         Baseline baseline = baseline(current, destination, originalStops);
         if (arrival(state, base.route().distance()/1000, state.getCurrentSoc()) >= state.getReserveSoc()) {
             return List.of(complete(trip, vehicle, failed, state, List.of(), List.of(), baseline,
-                    remainingBudget(trip, originalStops), "DIRECT_DESTINATION", null));
+                    remainingBudget(trip, originalStops), "DIRECT_DESTINATION", null, originalStops));
         }
         Long nextConnector = originalStops.stream().filter(s -> s.getSequenceNumber() > failed.getSequenceNumber()
                         && (s.getStatus() == AutopilotStopStatus.PLANNED || s.getStatus() == AutopilotStopStatus.RESERVED))
                 .min(Comparator.comparingInt(AutopilotStop::getSequenceNumber)).map(AutopilotStop::getConnectorId).orElse(null);
-        List<Candidate> candidates = discover(vehicle, failed, base.route(), nextConnector);
+        // The direct road can use an entirely different highway from the active
+        // charging itinerary. Search the remaining itinerary first so a single
+        // connector fault does not discard its healthy sibling and onward chain.
+        Set<Long> reachableSites = new HashSet<>();
+        Map<String, Integer> rejections = new LinkedHashMap<>();
+        if (baseline.road() != null) {
+            var plans = optionsAlongCorridor(trip, vehicle, failed, originalStops, state,
+                    current, destination, baseline.road(), baseline, nextConnector, reachableSites, rejections);
+            if (!plans.isEmpty()) return plans;
+        }
+        var plans = optionsAlongCorridor(trip, vehicle, failed, originalStops, state,
+                current, destination, base, baseline, nextConnector, reachableSites, rejections);
+        if (plans.isEmpty()) {
+            state.setReason(reachableSites.isEmpty() && rejections.isEmpty()
+                    ? "No compatible charger in the searched road corridors is reachable while preserving the current battery reserve."
+                    : "Found " + reachableSites.size() + " road-reachable compatible charging sites, but no complete remaining route passed validation. "
+                        + "Remaining charging budget: ₹" + String.format(Locale.ROOT, "%.2f", remainingBudget(trip, originalStops))
+                        + ". Rejected options: " + String.join("; ", rejections.keySet()) + ".");
+        }
+        return plans;
+    }
+
+    private List<RecoveryPlan> optionsAlongCorridor(AutopilotTrip trip, Vehicle vehicle, AutopilotStop failed,
+            List<AutopilotStop> originalStops, AutopilotRecoveryResponse state, Coordinate current, Coordinate destination,
+            RecoveryRoadService.RoadRoute searchRoad, Baseline baseline, Long nextConnector,
+            Set<Long> reachableSites, Map<String, Integer> rejections) {
+        List<Candidate> candidates = discover(vehicle, failed, searchRoad.route(), nextConnector);
+        Set<Long> plannedSites = originalStops.stream()
+                .filter(s -> s.getStatus() == AutopilotStopStatus.PLANNED || s.getStatus() == AutopilotStopStatus.RESERVED)
+                .map(AutopilotStop::getStationId).collect(java.util.stream.Collectors.toSet());
         List<Candidate> nearby = candidates.stream().filter(c -> RecoveryRoadService.distanceKm(current, c.point())
                         <= state.getSafeReachableDistanceKm()).toList();
         // Evaluate all nearby candidates in bounded road-matrix batches. Geometry
@@ -71,18 +104,21 @@ public class SafeRecoveryPlanner {
             List<Candidate> batch = nearby.subList(offset, Math.min(offset + 60, nearby.size()));
             List<Coordinate> points = new ArrayList<>(List.of(current));
             batch.forEach(c -> points.add(c.point()));
-            OsrmTableResponse matrix = roads.matrix(points, base.engine());
+            OsrmTableResponse matrix = roads.matrix(points, searchRoad.engine());
             for (int i = 0; i < batch.size(); i++) {
                 Double meters = matrix.distances().get(0).get(i+1), seconds = matrix.durations().get(0).get(i+1);
                 if (meters == null || seconds == null || !RecoveryRoadService.finiteNonnegative(meters)
                         || !RecoveryRoadService.finiteNonnegative(seconds)) continue;
                 double km = meters/1000;
-                if (arrival(state, km, state.getCurrentSoc()) + 1e-8 >= state.getReserveSoc()) reachable.add(new Reachable(batch.get(i), km));
+                if (arrival(state, km, state.getCurrentSoc()) + 1e-8 >= state.getReserveSoc()) {
+                    reachable.add(new Reachable(batch.get(i), km));
+                }
             }
         }
         // A reachable next planned connector is preferred. Otherwise rank only
         // already-feasible bridge options, nearest road distance first.
         reachable.sort(Comparator.comparingInt((Reachable r) -> Objects.equals(r.candidate.connector().getId(), nextConnector) ? 0 : 1)
+                .thenComparingInt(r -> Objects.equals(r.candidate.station().getId(), failed.getStationId()) ? 0 : 1)
                 .thenComparingDouble(Reachable::km).thenComparingDouble(r -> r.candidate.offsetKm())
                 .thenComparingInt(r -> waitMinutes(r.candidate.station()))
                 .thenComparingDouble(r -> -r.candidate.connector().getPowerKw())
@@ -94,15 +130,19 @@ public class SafeRecoveryPlanner {
                 // Verify the actual current-position -> charger route before it
                 // can become a complete candidate, including router snapping.
                 double realKm = roads.route(List.of(current, bridge.point())).route().distance()/1000;
-                if (arrival(state, realKm, state.getCurrentSoc()) + 1e-8 < state.getReserveSoc()) continue;
+                if (arrival(state, realKm, state.getCurrentSoc()) + 1e-8 < state.getReserveSoc()) {
+                    rejections.merge("Actual road distance exceeds the current energy reserve", 1, Integer::sum);
+                    continue;
+                }
+                reachableSites.add(bridge.station().getId());
                 List<Candidate> downstream = candidates.stream().filter(c -> !c.station().getId().equals(bridge.station().getId())
                         && c.progressKm() > bridge.progressKm() + 0.1).sorted(Comparator.comparingDouble(Candidate::progressKm)).toList();
                 List<Candidate> network = new ArrayList<>(List.of(bridge));
-                network.addAll(spread(downstream, 58));
+                network.addAll(preservePlannedChain(downstream, plannedSites, 58));
                 List<Coordinate> points = new ArrayList<>(List.of(current));
                 network.forEach(c -> points.add(c.point()));
                 points.add(destination);
-                OsrmTableResponse matrix = roads.matrix(points, base.engine());
+                OsrmTableResponse matrix = roads.matrix(points, searchRoad.engine());
                 var profile = profiles.forVehicle(vehicle);
                 double budget = remainingBudget(trip, originalStops);
                 Integer remainingMinutes = deadlineMinutes(trip);
@@ -117,11 +157,12 @@ public class SafeRecoveryPlanner {
                 List<Candidate> selected = optimized.stops().stream().map(s -> byId.get(s.option().stationId())).toList();
                 String strategy = Objects.equals(bridge.connector().getId(), nextConnector) ? "DIRECT_NEXT_STOP" : "BRIDGE_RECOVERY";
                 plans.add(complete(trip, vehicle, failed, state, selected, optimized.stops().stream()
-                        .map(ChargingRouteOptimizer.StopDecision::targetBatteryPercent).toList(), baseline, budget, strategy, null));
+                        .map(ChargingRouteOptimizer.StopDecision::targetBatteryPercent).toList(), baseline, budget, strategy, null, originalStops));
                 if (plans.size() >= 4) break;
             } catch (BadRequestException | com.vidyut.routing.exception.OsrmException unsafeOrUnavailable) {
                 // This charger can be nearby yet have no safe complete onward
                 // chain, or real route legs may invalidate its matrix estimate.
+                rejections.merge(unsafeOrUnavailable.getMessage(), 1, Integer::sum);
             }
         }
         return List.copyOf(plans);
@@ -149,12 +190,13 @@ public class SafeRecoveryPlanner {
             return new Candidate(station, connector, 0, 0);
         }).toList();
         return complete(trip, vehicle, failed, snapshot, chosen, plan.stops().stream().map(AutopilotStop::getTargetBatteryPercent).toList(),
-                new Baseline(plan.originalRemainingDistanceKm(), plan.originalRemainingMinutes(), plan.originalRemainingCost()),
-                remainingBudget(trip, existing), plan.strategy(), plan.id());
+                new Baseline(plan.originalRemainingDistanceKm(), plan.originalRemainingMinutes(), plan.originalRemainingCost(), null),
+                remainingBudget(trip, existing), plan.strategy(), plan.id(), existing);
     }
 
     private RecoveryPlan complete(AutopilotTrip trip, Vehicle vehicle, AutopilotStop failed, AutopilotRecoveryResponse state,
-            List<Candidate> selected, List<Double> targets, Baseline baseline, double budget, String strategy, String planId) {
+            List<Candidate> selected, List<Double> targets, Baseline baseline, double budget, String strategy, String planId,
+            List<AutopilotStop> existing) {
         List<Coordinate> waypoints = new ArrayList<>(List.of(positions.current(trip)));
         selected.forEach(c -> waypoints.add(c.point()));
         waypoints.add(locations.resolve(trip.getDestination()));
@@ -162,6 +204,11 @@ public class SafeRecoveryPlanner {
         List<AutopilotStop> stops = new ArrayList<>();
         double soc = state.getCurrentSoc(), cumulative = trip.getDistanceTravelledKm(), cost = 0;
         int charging = 0, waiting = 0, connections = 0;
+        double arrivalSeconds = 0;
+        var departureAt = java.time.LocalDateTime.now();
+        Set<Long> replacedBookings = existing.stream()
+                .filter(s -> s.getStatus() == AutopilotStopStatus.RESERVED || s.getStatus() == AutopilotStopStatus.PLANNED)
+                .map(AutopilotStop::getBookingId).filter(Objects::nonNull).collect(java.util.stream.Collectors.toSet());
         var profile = profiles.forVehicle(vehicle);
         for (int i = 0; i < selected.size(); i++) {
             Candidate c = selected.get(i);
@@ -173,13 +220,34 @@ public class SafeRecoveryPlanner {
             double required = Math.ceil(state.getReserveSoc() + nextEnergySoc + (i == 0 ? BRIDGE_MARGIN_SOC : 0));
             double target = Math.max(soc, i == 0 ? required : Math.max(required, targets.get(i)));
             if (target > 95 && target > soc + 1e-8) throw new BadRequestException("NO_SAFE_RECOVERY_ROUTE: charging limit exceeded");
-            var charge = optimizer.estimateCharge(state.getBatteryCapacityKwh(), compatiblePower(c.connector(), vehicle), profile.maximumDcPowerKw(),
-                    profile.efficiency(), profile.curve(), soc, target);
+            arrivalSeconds += routed.route().legs().get(i).duration();
+            var startAt = departureAt.plusMinutes((long)Math.ceil(arrivalSeconds / 60));
+            ChargingConnector chosen = null;
+            ChargingRouteOptimizer.ChargeEstimate charge = null;
+            // During discovery a free healthy sibling may replace a busy connector.
+            // Revalidation must keep the exact connector the driver was offered.
+            List<ChargingConnector> hardware = planId == null ? c.station().getConnectors().stream()
+                    .filter(connector -> eligible(c.station(), connector, vehicle, failed))
+                    .sorted(Comparator.comparingInt((ChargingConnector connector) -> connector.getId().equals(c.connector().getId()) ? 0 : 1)
+                            .thenComparingDouble(connector -> -compatiblePower(connector, vehicle))).toList() : List.of(c.connector());
+            for (ChargingConnector connector : hardware) {
+                var estimate = optimizer.estimateCharge(state.getBatteryCapacityKwh(), compatiblePower(connector, vehicle), profile.maximumDcPowerKw(),
+                        profile.efficiency(), profile.curve(), soc, target);
+                int durationMinutes = Math.max(1, (int)Math.ceil(estimate.minutes() / 60.0)) * 60;
+                if (durationMinutes % Math.max(15, c.station().getBookingSlotMinutes()) != 0) continue;
+                var overlaps = bookings.findOverlapping(c.station().getId(), startAt, startAt.plusMinutes(durationMinutes),
+                                EnumSet.of(BookingStatus.PENDING, BookingStatus.CONFIRMED, BookingStatus.IN_PROGRESS)).stream()
+                        .filter(b -> !replacedBookings.contains(b.getId())).toList();
+                if (BookingAvailability.conflict(c.station(), connector.getId(), overlaps) == null) {
+                    chosen = connector; charge = estimate; break;
+                }
+            }
+            if (chosen == null) throw new BadRequestException("NO_SAFE_RECOVERY_ROUTE: recovery connector has a reservation conflict");
             double chargeCost = Math.max(0, target-soc)/100 * state.getBatteryCapacityKwh() * c.station().getPricePerKwh();
             int queue = waitMinutes(c.station());
             stops.add(AutopilotStop.builder().tripId(trip.getId()).sequenceNumber(i+1).stationId(c.station().getId())
-                    .stationName(c.station().getName()).stationAddress(c.station().getAddress()).connectorId(c.connector().getId())
-                    .chargerCode(c.connector().getChargerCode()).connectorType(c.connector().getType().name()).powerKw(c.connector().getPowerKw())
+                    .stationName(c.station().getName()).stationAddress(c.station().getAddress()).connectorId(chosen.getId())
+                    .chargerCode(chosen.getChargerCode()).connectorType(chosen.getType().name()).powerKw(chosen.getPowerKw())
                     .effectivePowerKw(charge.effectivePowerKw()).distanceFromOriginKm(cumulative).routeOffsetKm(0)
                     .arrivalBatteryPercent(soc).targetBatteryPercent(target).estimatedWaitMinutes(queue).chargingMinutes(charge.minutes())
                     .connectionMinutes(4).estimatedCost(chargeCost).demoData(c.station().isDemoData()).status(AutopilotStopStatus.PLANNED)
@@ -188,6 +256,7 @@ public class SafeRecoveryPlanner {
                     .replacesStationId(i == 0 ? failed.getStationId() : null).replacesStationName(i == 0 ? failed.getStationName() : null)
                     .originalStopIndex(i == 0 ? failed.getSequenceNumber() : null).rerouteReason(i == 0 ? "CHARGER_FAULT" : null).build());
             soc = target; cost += chargeCost; charging += charge.minutes(); waiting += queue; connections += 4;
+            arrivalSeconds += 60.0 * (charge.minutes() + queue + 4);
         }
         soc = arrival(state, routed.route().legs().get(selected.size()).distance()/1000, soc);
         requireReserve(soc, state.getReserveSoc());
@@ -223,10 +292,11 @@ public class SafeRecoveryPlanner {
             List<Coordinate> points = new ArrayList<>(List.of(current));
             for (AutopilotStop s : remaining) { ChargingStation site=stations.findById(s.getStationId()).orElseThrow(); points.add(new Coordinate(site.getLatitude(),site.getLongitude())); }
             points.add(destination);
-            var route = roads.route(points).route();
+            var road = roads.route(points);
+            var route = road.route();
             return new Baseline(route.distance()/1000, (int)Math.ceil(route.duration()/60) + remaining.stream()
-                    .mapToInt(s -> s.getChargingMinutes()+s.getEstimatedWaitMinutes()+s.getConnectionMinutes()).sum(), cost);
-        } catch (RuntimeException unavailable) { return new Baseline(null,null,cost); }
+                    .mapToInt(s -> s.getChargingMinutes()+s.getEstimatedWaitMinutes()+s.getConnectionMinutes()).sum(), cost, road);
+        } catch (RuntimeException unavailable) { return new Baseline(null,null,cost,null); }
     }
 
     static Integer deadlineMinutes(AutopilotTrip trip) {
@@ -260,14 +330,24 @@ public class SafeRecoveryPlanner {
     }
     static int waitMinutes(ChargingStation s) { return Math.max(0,s.getQueueCount()*7)+(int)Math.round(Math.max(0,s.getOccupancyPercent())/20*3); }
     static List<Candidate> spread(List<Candidate> list,int limit) {
+        if (limit <= 0) return List.of();
+        if (limit == 1) return list.isEmpty() ? List.of() : List.of(list.get(0));
         if(list.size()<=limit)return list;
         List<Candidate> result=new ArrayList<>();
         for(int i=0;i<limit;i++) result.add(list.get((int)Math.round(i*(list.size()-1.0)/(limit-1))));
         return result;
     }
+    static List<Candidate> preservePlannedChain(List<Candidate> downstream, Set<Long> plannedSites, int limit) {
+        List<Candidate> retained = downstream.stream().filter(c -> plannedSites.contains(c.station().getId())).toList();
+        if (retained.size() >= limit) return spread(retained, limit);
+        List<Candidate> selected = new ArrayList<>(retained);
+        selected.addAll(spread(downstream.stream().filter(c -> !plannedSites.contains(c.station().getId())).toList(), limit-retained.size()));
+        selected.sort(Comparator.comparingDouble(Candidate::progressKm));
+        return List.copyOf(selected);
+    }
     record Candidate(ChargingStation station,ChargingConnector connector,double progressKm,double offsetKm) {
         Coordinate point(){return new Coordinate(station.getLatitude(),station.getLongitude());}
     }
     record Reachable(Candidate candidate,double km) {}
-    record Baseline(Double km,Integer minutes,double cost) {}
+    record Baseline(Double km,Integer minutes,double cost,RecoveryRoadService.RoadRoute road) {}
 }

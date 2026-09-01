@@ -44,7 +44,7 @@ class BookingConnectorReservationTest {
         verify(bookingRepository).save(argThat(b->b.getConnectorId().equals(11L)));
     }
     @Test void healthySecondConnectorDoesNotAllowDoubleBookingTheSelectedOne() {
-        when(bookingRepository.countConnectorOverlapping(eq(11L),any(),any(),any())).thenReturn(1L);
+        when(bookingRepository.findOverlapping(eq(1L),any(),any(),any())).thenReturn(List.of(Booking.builder().connectorId(11L).build()));
         assertThatThrownBy(()->service.createBooking(request,2L)).hasMessageContaining("exact recovery connector is already reserved");
         verify(bookingRepository,never()).save(any());
     }
@@ -52,5 +52,19 @@ class BookingConnectorReservationTest {
         request.setConnectorId(999L);
         assertThatThrownBy(()->service.createBooking(request,2L)).hasMessageContaining("no available charging connector");
         verify(bookingRepository,never()).save(any());
+    }
+    @Test void retainedFaultedBookingDoesNotConsumeHealthySiblingCapacity() {
+        var station = stationRepository.findLockedById(1L).orElseThrow();
+        station.getConnectors().get(1).setStatus(ChargerStatus.FAULT);
+        station.getConnectors().get(1).setAvailable(false);
+        when(bookingRepository.findOverlapping(eq(1L),any(),any(),any())).thenReturn(List.of(Booking.builder().connectorId(12L).build()));
+        assertThat(service.createBooking(request,2L).getConnectorId()).isEqualTo(11L);
+    }
+    @Test void legacyStationBookingStillConsumesCapacity() {
+        var station = stationRepository.findLockedById(1L).orElseThrow();
+        station.getConnectors().get(1).setStatus(ChargerStatus.FAULT);
+        when(bookingRepository.findOverlapping(eq(1L),any(),any(),any())).thenReturn(List.of(Booking.builder().build()));
+        assertThatThrownBy(() -> service.createBooking(request,2L)).hasMessageContaining("slot is full");
+        verify(bookingRepository, never()).save(any());
     }
 }

@@ -89,19 +89,10 @@ public class BookingServiceImpl implements BookingService {
 
         LocalDateTime startTime = request.getStartTime() != null ? request.getStartTime() : LocalDateTime.now();
         LocalDateTime endTime = startTime.plusMinutes(durationMinutes);
-        int connectorCapacity = (int) station.getConnectors().stream()
-                .filter(connector -> connector.isAvailable() && !connector.isMaintenanceMode()
-                        && connector.getStatus() == ChargerStatus.ONLINE)
-                .count();
-        long overlapping = bookingRepository.countOverlapping(station.getId(), startTime, endTime,
-                EnumSet.of(BookingStatus.PENDING, BookingStatus.CONFIRMED, BookingStatus.IN_PROGRESS));
-        if (overlapping >= connectorCapacity) {
-            throw new DuplicateResourceException("The selected charging slot is full. Join the waitlist or choose another time.");
-        }
-
-        if (request.getConnectorId()!=null && bookingRepository.countConnectorOverlapping(request.getConnectorId(), startTime, endTime,
-                EnumSet.of(BookingStatus.PENDING, BookingStatus.CONFIRMED, BookingStatus.IN_PROGRESS)) > 0)
-            throw new DuplicateResourceException("The exact recovery connector is already reserved for this time. Evaluate recovery again.");
+        String conflict = BookingAvailability.conflict(station, request.getConnectorId(),
+                bookingRepository.findOverlapping(station.getId(), startTime, endTime,
+                        EnumSet.of(BookingStatus.PENDING, BookingStatus.CONFIRMED, BookingStatus.IN_PROGRESS)));
+        if (conflict != null) throw new DuplicateResourceException(conflict);
 
         Booking booking = Booking.builder()
                 .userId(userId)

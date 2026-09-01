@@ -313,7 +313,9 @@ export function CompanyWorkspace({ tab, token, companyName, onNavigate, onCounts
   const filteredStations = searchingNetwork || searchError ? [] : networkSearch.stations;
   const filteredChargers = searchingNetwork || searchError ? [] : networkSearch.chargers;
   const matchingCities = [...new Set((tab === 'stations' ? filteredStations : stations.filter(station => filteredChargers.some(charger => charger.stationId === station.id))).map(station => station.city).filter(Boolean))];
-  const operationalAlerts = chargers.filter(c => ['FAULT', 'SUSPECTED_FAULT', 'MAINTENANCE', 'OFFLINE'].includes(c.status));
+  const alertChargers = tab === 'chargers' ? filteredChargers
+    : tab === 'stations' ? chargers.filter(c => filteredStations.some(s => s.id === c.stationId)) : chargers;
+  const operationalAlerts = alertChargers.filter(c => ['FAULT', 'SUSPECTED_FAULT', 'MAINTENANCE', 'OFFLINE'].includes(c.status));
   const [bookings, setBookings] = useState<Booking[]>([]);
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
@@ -651,10 +653,10 @@ export function CompanyWorkspace({ tab, token, companyName, onNavigate, onCounts
                   borderRadius: 4,
                   textTransform: 'uppercase'
                 }}>OPERATIONAL SERVICE ALERT</span>
-                <span style={{ fontSize: 11, color: '#fca5a5' }}>{operationalAlerts.length} connector(s) need attention</span>
+                <span style={{ fontSize: 11, color: '#991b1b' }}>{operationalAlerts.length} connector(s) need attention{tab === 'stations' || tab === 'chargers' ? ' in these results' : ' in your network'}</span>
               </div>
-              <strong style={{ color: '#f8fafc', fontSize: 14 }}>{operationalAlerts[0].stationName} — {operationalAlerts[0].chargerCode}</strong>
-              <p style={{ margin: '3px 0 0 0', fontSize: 12, color: '#cbd5e1' }}>
+              <strong style={{ color: '#7f1d1d', fontSize: 14 }}>{operationalAlerts[0].stationName} — {operationalAlerts[0].chargerCode}</strong>
+              <p style={{ margin: '3px 0 0 0', fontSize: 12, color: '#991b1b' }}>
                 {operationalAlerts[0].status} · {operationalAlerts[0].faultReason || 'Operator attention required. Review current journey impact with the Company Agent.'}
               </p>
             </div>
@@ -662,7 +664,7 @@ export function CompanyWorkspace({ tab, token, companyName, onNavigate, onCounts
           <button
             type="button"
             onClick={() => {
-              setQuestion("What needs attention today?");
+              setQuestion(`Review the fault and affected journeys for exact connector ${operationalAlerts[0].chargerCode} at ${operationalAlerts[0].stationName}. Prepare any actions for approval.`);
               onNavigate("ai");
             }}
             style={{

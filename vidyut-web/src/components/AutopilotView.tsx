@@ -152,6 +152,7 @@ function resolveCoordinate(nameOrAddress: string, fallbackLat?: number, fallback
 
 interface MapStop {
   id?: number | string;
+  connectorId?: number;
   stationName: string;
   stationAddress?: string;
   latitude?: number;
@@ -189,27 +190,30 @@ function AutopilotJourneyMap({
   stops: MapStop[];
   routeCoordinates?: number[][];
   vehiclePosition?: [number, number];
-  cancelledStop?: { stationName: string; latitude?: number; longitude?: number; stationAddress?: string } | null;
+  cancelledStop?: MapStop | null;
   proposedReplacement?: { stationName: string; latitude?: number; longitude?: number; stationAddress?: string; estimatedCost?: number } | null;
   title?: string;
 }) {
-  const firstStop = stops.length > 0 ? stops[0] : undefined;
-  const lastStop = stops.length > 0 ? stops[stops.length - 1] : undefined;
   const originCoord = useMemo(
-    () => resolveCoordinate(origin, firstStop?.latitude != null ? firstStop.latitude + 0.5 : undefined, firstStop?.longitude != null ? firstStop.longitude - 0.5 : undefined),
-    [origin, firstStop]
+    (): [number, number] => routeCoordinates?.length ? [routeCoordinates[0][1], routeCoordinates[0][0]]
+      : vehiclePosition ?? resolveCoordinate(origin),
+    [origin, routeCoordinates, vehiclePosition]
   );
   const destCoord = useMemo(
-    () => resolveCoordinate(destination, lastStop?.latitude != null ? lastStop.latitude - 0.5 : undefined, lastStop?.longitude != null ? lastStop.longitude + 0.5 : undefined),
-    [destination, lastStop]
+    (): [number, number] => routeCoordinates?.length
+      ? [routeCoordinates[routeCoordinates.length - 1][1], routeCoordinates[routeCoordinates.length - 1][0]]
+      : resolveCoordinate(destination),
+    [destination, routeCoordinates]
   );
 
-  const validStops = useMemo(() => stops.filter(s => s.latitude != null && s.longitude != null), [stops]);
+  const validStops = useMemo(() => stops.filter(s => s.latitude != null && s.longitude != null
+    && (s.status !== 'CANCELLED' || s.removalReason === 'CHARGER_FAULT')), [stops]);
+  const waypointCount = validStops.filter(s => s.status !== 'CANCELLED' && s.status !== 'COMPLETED').length;
   const routePolyline: [number, number][] = useMemo(() =>
     routeCoordinates?.map(p => [p[1], p[0]] as [number, number]) ?? [], [routeCoordinates]);
 
   const cancelledStopPoint = useMemo(() => {
-    const failed = validStops.find((s) => cancelledStop ? s.stationName === cancelledStop.stationName : s.removalReason === 'CHARGER_FAULT');
+    const failed = validStops.find((s) => cancelledStop ? s.id === cancelledStop.id : s.removalReason === 'CHARGER_FAULT');
     if (failed?.latitude && failed?.longitude) return [failed.latitude, failed.longitude] as [number, number];
     if (cancelledStop) {
       const resolved = resolveCoordinate(cancelledStop.stationAddress || cancelledStop.stationName, cancelledStop.latitude, cancelledStop.longitude);
@@ -251,7 +255,7 @@ function AutopilotJourneyMap({
           <div>
             <div style={{ color: '#F8FAFC', fontSize: 13, fontWeight: 700 }}>{title}</div>
             <div style={{ color: '#94A3B8', fontSize: 11 }}>
-              {routePolyline.length ? 'Backend road route' : 'Road geometry unavailable'} · {origin} → {destination} · {validStops.length} charging waypoint{validStops.length === 1 ? '' : 's'}
+              {routePolyline.length ? 'Backend road route' : 'Road geometry unavailable'} · {origin} → {destination} · {waypointCount} charging waypoint{waypointCount === 1 ? '' : 's'}
             </div>
           </div>
         </div>
@@ -292,14 +296,6 @@ function AutopilotJourneyMap({
             pathOptions={{ color: '#00A86B', weight: 4.5, opacity: 0.9 }}
           />
 
-          {/* Cancelled Faded / Dashed Detour Polyline */}
-          {cancelledStopPoint && (
-            <LeafletPolyline
-              positions={[originCoord, cancelledStopPoint]}
-              pathOptions={{ color: '#EF4444', weight: 3, opacity: 0.6, dashArray: '5, 6' }}
-            />
-          )}
-
           {vehiclePosition && <LeafletMarker position={vehiclePosition} icon={L.divIcon({ className: 'vehicle-position', html: '🚗', iconSize: [30,30] })}>
             <LeafletPopup>Current vehicle position from journey telemetry</LeafletPopup>
           </LeafletMarker>}
@@ -337,7 +333,8 @@ function AutopilotJourneyMap({
 
           {/* Charging Stops */}
           {validStops.map((stop, i) => {
-            const isFaulted = stop.removalReason === 'CHARGER_FAULT' || Boolean(cancelledStop && stop.stationName === cancelledStop.stationName);
+            const isFaulted = stop.removalReason === 'CHARGER_FAULT' || Boolean(cancelledStop
+              && (cancelledStop.connectorId != null ? stop.connectorId === cancelledStop.connectorId : stop.id === cancelledStop.id));
             const isReplacement = stop.selectionType === 'REROUTED_REPLACEMENT'
               || Boolean(stop.replacesStationName);
             const isCompleted = stop.status === 'COMPLETED';
@@ -382,7 +379,7 @@ function AutopilotJourneyMap({
                         <strong style={{ fontSize: 13, color: '#0F172A', display: 'block' }}>{stop.stationName}</strong>
                         <div style={{ fontSize: 11, color: '#EF4444', fontWeight: 700, marginTop: 4 }}>Charger fault detected</div>
                         <div style={{ fontSize: 11, color: '#64748B', marginTop: 2 }}>
-                          Replaced by <strong style={{ color: '#9333EA' }}>{stop.replacedByStationName || 'the approved recovery itinerary'}</strong>
+                          {stop.status === 'CANCELLED' ? 'Removed after recovery approval.' : 'Recovery pending; this reservation has not changed.'}
                         </div>
                       </>
                     ) : isReplacement ? (
@@ -530,6 +527,8 @@ export function AutopilotView({ token, userName, onOpenWallet }: AutopilotViewPr
 
   const cancelledStop = useMemo(() => trip?.stops.find(stop => trip.recovery?.failedConnectorId
     ? stop.connectorId === trip.recovery.failedConnectorId : stop.removalReason === 'CHARGER_FAULT') ?? null, [trip]);
+  const journeyTimelineStops = useMemo(() => trip?.recovery?.state === 'EXECUTED'
+    ? trip.stops.filter(stop => stop.status === 'RESERVED' || stop.status === 'PLANNED') : trip?.stops ?? [], [trip]);
 
   const proposedReplacement = trip?.recovery?.state !== 'EXECUTED' ? trip?.recovery?.proposedStops?.[0] ?? null : null;
   const pairedReplacement = trip?.recovery?.state === 'EXECUTED'
@@ -1287,14 +1286,15 @@ export function AutopilotView({ token, userName, onOpenWallet }: AutopilotViewPr
                 </div>
                 <div className="journey-line-scroll-wrap">
                   <div className="journey-line">
-                    <div className="journey-endpoint"><span className="journey-dot start" /><strong>{trip.origin}</strong><small>{trip.telemetry.batteryPercent}% now</small></div>
-                    {trip.stops.map((stop, stopIdx) => {
+                    <div className="journey-endpoint"><span className="journey-dot start" /><strong>{trip.recovery?.state === 'EXECUTED' ? 'Recovery start' : trip.origin}</strong><small>{trip.recovery?.state === 'EXECUTED' ? `${trip.recovery.currentSoc}% at recovery` : 'Trip origin'}</small></div>
+                    {journeyTimelineStops.length === 0 && <div className="journey-car-node"><CarFront size={15} /><strong>You are here</strong><span>{trip.telemetry.batteryPercent.toFixed(1)}% SoC</span></div>}
+                    {journeyTimelineStops.map((stop, stopIdx) => {
                       const isFaulted = stop.removalReason === 'CHARGER_FAULT' || (trip.recovery?.state !== 'EXECUTED' && stop.connectorId != null && stop.connectorId === trip.recovery?.failedConnectorId);
                       const isReplacement = stop.selectionType === 'REROUTED_REPLACEMENT'
                         || Boolean(stop.replacesStationName)
                         || (pairedReplacement && stop.id === pairedReplacement.id);
                       const isNextReserved = stop.status === 'RESERVED' && !isReplacement;
-                      const firstIncompleteIndex = trip.stops.findIndex((s) => s.status === 'RESERVED' || s.status === 'PLANNED');
+                      const firstIncompleteIndex = journeyTimelineStops.findIndex((s) => s.status === 'RESERVED' || s.status === 'PLANNED');
                       const showCarHere = stopIdx === (firstIncompleteIndex >= 0 ? firstIncompleteIndex : 0);
 
                       return (
@@ -1326,7 +1326,7 @@ export function AutopilotView({ token, userName, onOpenWallet }: AutopilotViewPr
                           </div>
                           {isFaulted && (
                             <div className="journey-reroute-indicator">
-                              <span>↓ REPLACED BY</span>
+                              <span>{stop.status === 'CANCELLED' ? 'REMOVED AFTER APPROVAL' : 'RECOVERY PENDING'}</span>
                             </div>
                           )}
                         </React.Fragment>
@@ -1338,7 +1338,7 @@ export function AutopilotView({ token, userName, onOpenWallet }: AutopilotViewPr
               </section>
 
               <AutopilotJourneyMap
-                origin={trip.origin}
+                origin={trip.recovery?.state === 'EXECUTED' ? 'Current vehicle position' : trip.origin}
                 destination={trip.destination}
                 stops={trip.stops}
                 cancelledStop={cancelledStop}

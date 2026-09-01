@@ -17,13 +17,19 @@ export function AutopilotRecoveryPanel({ trip, busy, onApprove, onRetry, onPosit
   const next = r.proposedStops?.[1];
   const prepared = Boolean(r.planId);
   const executed = r.state === 'EXECUTED';
+  const snapshotChanged = !executed && (
+    (r.currentSoc != null && Math.abs(r.currentSoc - trip.telemetry.batteryPercent) > 0.001)
+    || (r.currentLatitude != null && trip.telemetry.latitude != null && Math.abs(r.currentLatitude - trip.telemetry.latitude) > 0.00009)
+    || (r.currentLongitude != null && trip.telemetry.longitude != null && Math.abs(r.currentLongitude - trip.telemetry.longitude) > 0.00009));
   const failed = trip.stops.find(s => r.failedConnectorId ? s.connectorId === r.failedConnectorId : s.stationId === r.failedStationId);
   const title = executed ? (trip.autonomyMode === 'FULL_AUTOPILOT' ? 'Vidyut automatically rerouted your journey' : 'Approved recovery route applied')
-    : prepared ? 'Vidyut found a safe recovery route' : r.state === 'NO_SAFE_RECOVERY_ROUTE' ? 'No safe recovery route verified' : 'Vidyut is evaluating recovery';
+    : snapshotChanged ? 'Recovery needs the latest vehicle position' : prepared ? 'Vidyut found a safe recovery route' : r.state === 'NO_SAFE_RECOVERY_ROUTE' ? 'No safe recovery route verified' : 'Vidyut is evaluating recovery';
   return <section className="agent-recovery-panel" aria-live="polite">
     <span className="agent-recovery-eyebrow">EV OWNER AGENT · {r.state.replaceAll('_', ' ')}</span>
     <h2>{title}</h2>
-    <p>{failed?.stationName ?? 'Planned charging stop'} · {failed?.chargerCode ?? `connector ${r.failedConnectorId ?? 'unknown'}`} is unavailable.</p>
+    <p><strong>Charging stop unavailable:</strong> {failed?.stationName ?? 'Planned charging stop'} · {failed?.chargerCode ?? `connector ${r.failedConnectorId ?? 'unknown'}`} is excluded from this recovery.</p>
+    {r.currentLatitude != null && r.currentLongitude != null && <p>{snapshotChanged ? 'Previous evaluation used' : 'Recovery starts at'} {r.currentLatitude.toFixed(6)}, {r.currentLongitude.toFixed(6)} · {number(r.currentSoc)}% SoC. Maximum distance within the energy reserve: {number(r.safeReachableDistanceKm)} km; actual road legs and reservation times must also pass backend checks.</p>}
+    {snapshotChanged && <p role="status"><strong>The vehicle has moved or its battery has changed.</strong> Current telemetry is {number(trip.telemetry.batteryPercent)}% SoC at {number(trip.telemetry.latitude, 6)}, {number(trip.telemetry.longitude, 6)}. Re-evaluate before approving; the previous result does not describe the current position.</p>}
     {!prepared && <p>{busy ? 'The agent is asking the backend for complete routes from the current vehicle position, then selecting a safe option.' : r.reason}</p>}
     {prepared && <>
       <h3>{r.strategy === 'BRIDGE_RECOVERY' ? 'Bridge recovery charger' : r.strategy === 'DIRECT_NEXT_STOP' ? 'Continue to next planned charger' : 'Continue to destination'}: {bridge?.stationName ?? trip.destination}</h3>
@@ -42,7 +48,7 @@ export function AutopilotRecoveryPanel({ trip, busy, onApprove, onRetry, onPosit
       <ol>{r.proposedStops?.map((s, i) => <li key={s.connectorId ?? i}>{s.stationName} · {s.chargerCode} · arrive {number(s.arrivalBatteryPercent)}% → {number(s.targetBatteryPercent)}% · {s.chargingMinutes} min · ₹{number(s.estimatedCost, 2)}</li>)}</ol>
     </>}
     <p><strong>{executed ? 'Recovery reservations and navigation updated.' : r.state === 'SUGGESTED' ? 'Recommend Only: this is a suggestion. No reservations or navigation changed.' : 'Existing reservations and navigation remain unchanged until execution is permitted.'}</strong></p>
-    {r.state === 'AWAITING_APPROVAL' && <div className="agent-recovery-actions">
+    {r.state === 'AWAITING_APPROVAL' && !snapshotChanged && <div className="agent-recovery-actions">
       {!review ? <button disabled={busy} onClick={() => setReview(true)}>Review reroute approval</button> : <>
         <span>Replace remaining reservations and apply this complete route?</span>
         <button disabled={busy} onClick={() => { setReview(false); onApprove(); }}>Approve Reroute</button>

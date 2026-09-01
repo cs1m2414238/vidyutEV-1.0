@@ -75,8 +75,29 @@ async def select_safe_plan(context: dict[str, Any], candidates: list[dict[str, A
                c["plan"]["newRemainingMinutes"], c["plan"]["remainingCost"])), "AGENT_POLICY"
 
 
+_running: dict[tuple[int, str], asyncio.Task] = {}
+
+
 async def run_recovery(trip_id: int, incident_id: str) -> dict[str, Any]:
+    # Every caller must pass backend ownership validation before joining an
+    # in-flight operation. Two tabs must not launch competing long DB transactions.
     context = await get_recovery_context(trip_id, incident_id)
+    key = (trip_id, incident_id)
+    task = _running.get(key)
+    if task is None:
+        task = asyncio.create_task(_run_recovery(trip_id, incident_id, context))
+        _running[key] = task
+        def finished(done: asyncio.Task) -> None:
+            if _running.get(key) is done:
+                _running.pop(key, None)
+            if not done.cancelled():
+                done.exception()  # Retrieve failures even if all HTTP callers disconnected.
+        task.add_done_callback(finished)
+    # A caller disconnecting must not cancel another caller's authorized recovery.
+    return await asyncio.shield(task)
+
+
+async def _run_recovery(trip_id: int, incident_id: str, context: dict[str, Any]) -> dict[str, Any]:
     journey = context["journey"]
     recovery = journey.get("recovery") or {}
     state = recovery.get("state")
