@@ -26,6 +26,23 @@ WORKSPACE_APP_NAMES = {
     "COMPANY": "vidyut_company_agent",
 }
 logger = logging.getLogger(__name__)
+audit_logger = logging.getLogger("uvicorn.error")
+
+
+def _provider_failure_summary(error: Exception) -> str:
+    """Keep provider errors useful without logging SDK bodies or credentials."""
+    fields = [type(error).__name__]
+    code = getattr(error, "code", None) or getattr(error, "status_code", None)
+    if isinstance(code, int):
+        fields.append(f"http_status={code}")
+    message = str(error).upper()
+    for reason in (
+        "UNAUTHENTICATED", "ACCESS_TOKEN_TYPE_UNSUPPORTED", "PERMISSION_DENIED",
+        "RESOURCE_EXHAUSTED", "API_KEY_INVALID", "INSUFFICIENT_CREDITS",
+    ):
+        if reason in message:
+            fields.append(reason)
+    return " ".join(fields)
 
 STATE_CHANGING_TOOLS = {
     "book_charger",
@@ -474,7 +491,7 @@ async def chat(
                     break
                 except Exception as exc:
                     if not _is_quota_error(exc):
-                        logger.warning("Gemini invocation failed (%s): %s", model, exc)
+                        logger.warning("Gemini invocation failed (%s): %s", model, _provider_failure_summary(exc))
                         last_quota_error = exc
                         break
                     last_quota_error = exc
@@ -533,7 +550,7 @@ async def chat(
                     used_model = openrouter_used_model
                     used_provider = "OPENROUTER"
             except Exception as or_exc:
-                logger.warning("OpenRouter fallback invocation failed: %s", or_exc)
+                logger.warning("OpenRouter fallback invocation failed: %s", _provider_failure_summary(or_exc))
                 if last_quota_error is None:
                     last_quota_error = or_exc
 
@@ -594,10 +611,10 @@ async def chat(
     except HTTPException:
         raise
     except Exception as exc:
-        logger.exception(
-            "Agent invocation failed request_id=%s session_id=%s",
+        logger.error(
+            "Agent invocation failed request_id=%s error=%s",
             request_id,
-            session_id,
+            _provider_failure_summary(exc),
         )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
@@ -612,6 +629,16 @@ async def chat(
             detail="AI service returned an empty response",
         )
 
+    # The server logger has an INFO handler in Cloud Run. Do not include prompts,
+    # replies, bearer tokens, SDK response bodies, or environment values here.
+    audit_logger.info(json.dumps({
+        "event": "agent_chat_completed",
+        "requestId": request_id,
+        "workspace": workspace_key,
+        "provider": used_provider,
+        "model": used_model,
+        "toolCallCount": len(tool_states),
+    }))
     return ChatResponse(
         sessionId=session_id,
         requestId=request_id,

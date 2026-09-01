@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import unittest
 import os
+import json
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from vidyut_agent.config import Settings
@@ -13,11 +15,48 @@ from vidyut_agent.service import (
     _planning_reply,
     _looks_like_tool_protocol,
     _state_change_attempted,
+    _provider_failure_summary,
     chat,
 )
 
 
 class PlanningFallbackTests(unittest.IsolatedAsyncioTestCase):
+    async def test_successful_gemini_response_logs_provider_without_message_or_token(self) -> None:
+        event = SimpleNamespace(
+            content=SimpleNamespace(parts=[SimpleNamespace(text="OK")]),
+            get_function_calls=lambda: [], get_function_responses=lambda: [],
+            is_final_response=lambda: True,
+        )
+
+        async def run(**kwargs):
+            yield event
+
+        fake_runner = SimpleNamespace(run_async=run)
+        request = ChatRequest(message="private test message", workspace="HOST",
+                              sessionId="safe-session-id", requestId="safe-request-id")
+        with patch("vidyut_agent.service._ensure_session", new_callable=AsyncMock), \
+             patch("vidyut_agent.service.workspace_model_runners", {"HOST": [("gemini-test", fake_runner)]}), \
+             patch("vidyut_agent.service.settings", SimpleNamespace(
+                 any_llm_auth_configured=True, google_auth_configured=True,
+                 openrouter_auth_configured=False, model="gemini-test")), \
+             self.assertLogs("uvicorn.error", level="INFO") as captured:
+            response = await chat(request, authorization="Bearer private-test-token")
+        self.assertEqual(response.provider, "GEMINI")
+        record = json.loads(captured.records[-1].getMessage())
+        self.assertEqual(record["event"], "agent_chat_completed")
+        self.assertEqual(record["provider"], "GEMINI")
+        self.assertEqual(record["requestId"], "safe-request-id")
+        self.assertNotIn("private test message", str(captured.output))
+        self.assertNotIn("private-test-token", str(captured.output))
+
+    def test_provider_failure_log_does_not_include_credentials_or_sdk_body(self) -> None:
+        error = RuntimeError("401 UNAUTHENTICATED ACCESS_TOKEN_TYPE_UNSUPPORTED header=secret-test-value")
+        summary = _provider_failure_summary(error)
+        self.assertIn("UNAUTHENTICATED", summary)
+        self.assertIn("ACCESS_TOKEN_TYPE_UNSUPPORTED", summary)
+        self.assertNotIn("secret-test-value", summary)
+        self.assertNotIn("header=", summary)
+
     async def test_uses_structured_trip_context_without_location_defaults(self) -> None:
         request = ChatRequest(
             message="Build the plan",
