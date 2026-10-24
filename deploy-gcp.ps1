@@ -37,17 +37,26 @@ Write-Host "[OK] vidyut-backend confirmed in $Region." -ForegroundColor Green
 
 # ----------------------------------------------------------------
 # 1. Deploy vidyut-backend (contains Flyway V26)
-#    Preserve ALL existing env vars exactly.
 # ----------------------------------------------------------------
 Write-Host "`n[1/5] Deploying vidyut-backend to Cloud Run ($Region)..." -ForegroundColor Yellow
 Push-Location vidyut-backend
 try {
+    $dbUser = if ($env:DB_USER) { $env:DB_USER } else { "vidyut_app" }
+    $dbPass = $env:DB_PASSWORD
+    $jwtSecret = $env:JWT_SECRET
+    $googleApiKey = $env:GOOGLE_API_KEY
+    $demoPass = $env:DEMO_ACCOUNT_PASSWORD
+    $adminEmail = if ($env:VIDYUT_ADMIN_EMAIL) { $env:VIDYUT_ADMIN_EMAIL } else { "admin@vidyut.local" }
+    $adminPass = $env:VIDYUT_ADMIN_PASSWORD
+
+    $backendEnv = "SPRING_PROFILES_ACTIVE=cloud,DB_USER=$dbUser,DB_PASSWORD=$dbPass,JWT_SECRET=$jwtSecret,VIDYUT_AGENT_BASE_URL=$AGENT_URL,GOOGLE_API_KEY=$googleApiKey,DEMO_SEED_ENABLED=true,DEMO_ACCOUNT_PASSWORD=$demoPass,VIDYUT_ADMIN_BOOTSTRAP_ENABLED=false,VIDYUT_ADMIN_EMAIL=$adminEmail,VIDYUT_ADMIN_PASSWORD=$adminPass"
+
     gcloud run deploy vidyut-backend `
         --source . `
         --region $Region `
         --platform managed `
         --allow-unauthenticated `
-        --set-env-vars "SPRING_PROFILES_ACTIVE=cloud,DB_USER=vidyut_app,DB_PASSWORD=Sharma@2004,JWT_SECRET=s19iL0cQyTEJD4RNT8RScYXCr8k5klbkBcZkuLi7sqbMlH7PIvGMGFkj2Ph9YvvubVeGa/awGZWidjaUrsYz/g==,VIDYUT_AGENT_BASE_URL=$AGENT_URL,GOOGLE_API_KEY=AQ.Ab8RN6LtmqNK2ag_1wuqzfyGWlQ2dlKL9jcTyjROIBEHeaAcBw,DEMO_SEED_ENABLED=true,DEMO_ACCOUNT_PASSWORD=VidyutDemo@2026,VIDYUT_ADMIN_BOOTSTRAP_ENABLED=false,VIDYUT_ADMIN_EMAIL=admin@vidyut.local,VIDYUT_ADMIN_PASSWORD=VidyutAdmin123!"
+        --set-env-vars "$backendEnv"
 } finally {
     Pop-Location
 }
@@ -96,12 +105,18 @@ gcloud logging read "resource.type=cloud_run_revision AND resource.labels.servic
 Write-Host "`n[3/5] Deploying vidyut-agent to Cloud Run ($Region)..." -ForegroundColor Yellow
 Push-Location vidyut-ai\agent
 try {
+    $openRouterKey = $env:OPENROUTER_API_KEY
+    $googleApiKey = $env:GOOGLE_API_KEY
+    $agentModel = if ($env:VIDYUT_AGENT_MODEL) { $env:VIDYUT_AGENT_MODEL } else { "gemini-2.5-flash" }
+
+    $agentEnv = "VIDYUT_BACKEND_BASE_URL=$BACKEND_URL,OPENROUTER_API_KEY=$openRouterKey,GOOGLE_API_KEY=$googleApiKey,VIDYUT_AGENT_MODEL=$agentModel"
+
     gcloud run deploy vidyut-agent `
         --source . `
         --region $Region `
         --platform managed `
         --allow-unauthenticated `
-        --set-env-vars "VIDYUT_BACKEND_BASE_URL=$BACKEND_URL,OPENROUTER_API_KEY=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,GOOGLE_API_KEY=AQ.Ab8RN6LtmqNK2ag_1wuqzfyGWlQ2dlKL9jcTyjROIBEHeaAcBw,VIDYUT_AGENT_MODEL=gemini-3.6-flash"
+        --set-env-vars "$agentEnv"
 } finally {
     Pop-Location
 }

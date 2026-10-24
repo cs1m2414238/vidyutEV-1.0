@@ -24,16 +24,25 @@ tmp/
 *.log
 *.err
 *.py[cod]
+**/*.db
 .coverage
 
 # Environment & Secret Files
 .env
+.env.*
 .env.local
 .env.*.local
 **/.env.production
 !*.env.example
 
-# Expo & React Native
+*.pem
+*.key
+*service-account*.json
+credentials.json
+vidyut-ai/.env
+vidyut-backend/.env
+vidyut-web/.env
+vidyut-mobile/.env
 .expo/
 **/expo-env.d.ts
 
